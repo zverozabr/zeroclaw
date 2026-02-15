@@ -4,8 +4,11 @@ use crate::providers::{self, Provider};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Default timeout for sub-agent provider calls.
+const DELEGATE_TIMEOUT_SECS: u64 = 120;
 
 /// Tool that delegates a subtask to a named agent with a different
 /// provider/model configuration. Enables multi-agent workflows where
@@ -15,8 +18,8 @@ pub struct DelegateTool {
     agents: Arc<HashMap<String, DelegateAgentConfig>>,
     /// Global API key fallback (from config.api_key)
     fallback_api_key: Option<String>,
-    /// Current delegation depth (incremented for sub-agents)
-    current_depth: Arc<AtomicU32>,
+    /// Depth at which this tool instance lives in the delegation chain.
+    depth: u32,
 }
 
 impl DelegateTool {
@@ -27,13 +30,14 @@ impl DelegateTool {
         Self {
             agents: Arc::new(agents),
             fallback_api_key,
-            current_depth: Arc::new(AtomicU32::new(0)),
+            depth: 0,
         }
     }
 
     /// Create a DelegateTool for a sub-agent (with incremented depth).
-    #[cfg(test)]
-    fn with_depth(
+    /// When sub-agents eventually get their own tool registry, construct
+    /// their DelegateTool via this method with `depth: parent.depth + 1`.
+    pub fn with_depth(
         agents: HashMap<String, DelegateAgentConfig>,
         fallback_api_key: Option<String>,
         depth: u32,
@@ -41,7 +45,7 @@ impl DelegateTool {
         Self {
             agents: Arc::new(agents),
             fallback_api_key,
-            current_depth: Arc::new(AtomicU32::new(depth)),
+            depth,
         }
     }
 }
@@ -145,15 +149,15 @@ impl Tool for DelegateTool {
             }
         };
 
-        // Check recursion depth
-        let current = self.current_depth.load(Ordering::Relaxed);
-        if current >= agent_config.max_depth {
+        // Check recursion depth (immutable — set at construction, incremented for sub-agents)
+        if self.depth >= agent_config.max_depth {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Delegation depth limit reached ({current}/{max}). \
+                    "Delegation depth limit reached ({depth}/{max}). \
                      Cannot delegate further to prevent infinite loops.",
+                    depth = self.depth,
                     max = agent_config.max_depth
                 )),
             });
@@ -189,20 +193,30 @@ impl Tool for DelegateTool {
 
         let temperature = agent_config.temperature.unwrap_or(0.7);
 
-        // Increment depth for this call
-        self.current_depth.fetch_add(1, Ordering::Relaxed);
-
-        let result = provider
-            .chat_with_system(
+        // Wrap the provider call in a timeout to prevent indefinite blocking
+        let result = tokio::time::timeout(
+            Duration::from_secs(DELEGATE_TIMEOUT_SECS),
+            provider.chat_with_system(
                 agent_config.system_prompt.as_deref(),
                 &full_prompt,
                 &agent_config.model,
                 temperature,
-            )
-            .await;
+            ),
+        )
+        .await;
 
-        // Decrement depth after call completes
-        self.current_depth.fetch_sub(1, Ordering::Relaxed);
+        let result = match result {
+            Ok(inner) => inner,
+            Err(_elapsed) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "Agent '{agent_name}' timed out after {DELEGATE_TIMEOUT_SECS}s"
+                    )),
+                });
+            }
+        };
 
         match result {
             Ok(response) => Ok(ToolResult {
@@ -390,16 +404,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn whitespace_agent_name_not_found() {
+    async fn whitespace_agent_name_trimmed_and_found() {
         let tool = DelegateTool::new(sample_agents(), None);
-        // "researcher " with trailing space — after trim becomes "researcher" which exists,
-        // but " researcher " should trim to valid agent
+        // " researcher " with surrounding whitespace — after trim becomes "researcher"
         let result = tool
             .execute(json!({"agent": " researcher ", "prompt": "test"}))
             .await
             .unwrap();
-        // Should still find "researcher" after trim — but will fail at provider level
-        // since ollama isn't running. The important thing is it doesn't get "Unknown agent".
+        // Should find "researcher" after trim — will fail at provider level
+        // since ollama isn't running, but must NOT get "Unknown agent".
         assert!(
             result.error.is_none()
                 || !result.error.as_deref().unwrap_or("").contains("Unknown agent")
