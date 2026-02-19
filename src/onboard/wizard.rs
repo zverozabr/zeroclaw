@@ -774,6 +774,7 @@ fn supports_live_model_fetch(provider_name: &str) -> bool {
             | "together-ai"
             | "gemini"
             | "ollama"
+            | "venice"
     )
 }
 
@@ -1003,6 +1004,10 @@ fn fetch_live_models_for_provider(provider_name: &str, api_key: &str) -> Result<
         "anthropic" => fetch_anthropic_models(api_key.as_deref())?,
         "gemini" => fetch_gemini_models(api_key.as_deref())?,
         "ollama" => fetch_ollama_models()?,
+        "venice" => fetch_openai_compatible_models(
+            "https://api.venice.ai/api/v1/models",
+            api_key.as_deref(),
+        )?,
         _ => Vec::new(),
     };
 
@@ -4577,7 +4582,9 @@ mod tests {
         assert!(supports_live_model_fetch("grok"));
         assert!(supports_live_model_fetch("together"));
         assert!(supports_live_model_fetch("ollama"));
-        assert!(!supports_live_model_fetch("venice"));
+        assert!(supports_live_model_fetch("venice"));
+        assert!(!supports_live_model_fetch("imessage"));
+        assert!(!supports_live_model_fetch("telegram"));
     }
 
     #[test]
@@ -4744,7 +4751,7 @@ mod tests {
 
         let config = Config {
             workspace_dir: tmp.path().to_path_buf(),
-            default_provider: Some("venice".to_string()),
+            default_provider: Some("imessage".to_string()),
             ..Config::default()
         };
 
