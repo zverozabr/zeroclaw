@@ -1248,7 +1248,6 @@ fn ollama_uses_remote_endpoint(provider_api_url: Option<&str>) -> bool {
 
     !ollama_endpoint_is_local(&normalized)
 }
-
 fn resolve_live_models_endpoint(
     provider_name: &str,
     provider_api_url: Option<&str>,
