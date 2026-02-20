@@ -11,8 +11,18 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Gemini provider supporting multiple authentication methods.
+///
+/// For OAuth, supports multiple credential files (e.g. from separate Gemini CLI
+/// installations). On 429/5xx errors the provider rotates to the next credential.
 pub struct GeminiProvider {
     auth: Option<GeminiAuth>,
+    /// Cloud AI Companion project ID, required for OAuth (cloudcode-pa) requests.
+    /// Resolved via `loadCodeAssist` during warmup.
+    project: std::sync::Mutex<Option<String>>,
+    /// Discovered OAuth credential file paths for rotation on rate-limit errors.
+    oauth_cred_paths: Vec<PathBuf>,
+    /// Current index into `oauth_cred_paths`.
+    oauth_index: std::sync::Mutex<usize>,
 }
 
 /// Resolved credential — the variant determines both the HTTP auth method
@@ -154,10 +164,53 @@ impl GenerateContentResponse {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// OAuth token stored by Gemini CLI in `~/.gemini/oauth_creds.json`
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct GeminiCliOAuthCreds {
     access_token: Option<String>,
+    refresh_token: Option<String>,
+    scope: Option<String>,
+    token_type: Option<String>,
+    id_token: Option<serde_json::Value>,
+    /// RFC-3339 expiry (older Gemini CLI versions).
     expiry: Option<String>,
+    /// Epoch-ms expiry (current Gemini CLI).
+    expiry_date: Option<u64>,
+}
+
+/// Gemini CLI OAuth client credentials — public values published by Google in
+/// the Gemini CLI source.  Read from `~/.gemini/oauth_creds.json` client
+/// fields, or override with `GEMINI_OAUTH_CLIENT_ID` /
+/// `GEMINI_OAUTH_CLIENT_SECRET` env vars.
+///
+/// The default values are loaded from the first discovered credentials file
+/// that contains `client_id`/`client_secret` keys. If no file exists, the
+/// caller should set the env vars.
+fn oauth_client_id() -> String {
+    std::env::var("GEMINI_OAUTH_CLIENT_ID")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| load_oauth_client_field("client_id"))
+        .unwrap_or_default()
+}
+
+fn oauth_client_secret() -> String {
+    std::env::var("GEMINI_OAUTH_CLIENT_SECRET")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| load_oauth_client_field("client_secret"))
+        .unwrap_or_default()
+}
+
+/// Read a field from the first discovered Gemini OAuth credentials file.
+fn load_oauth_client_field(field: &str) -> Option<String> {
+    let home = directories::UserDirs::new()?.home_dir().to_path_buf();
+    let path = home.join(".gemini").join("oauth_creds.json");
+    let data = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+    json.get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|v| !v.is_empty())
+        .map(String::from)
 }
 
 /// Internal API endpoint used by Gemini CLI for OAuth users.
@@ -176,15 +229,22 @@ impl GeminiProvider {
     /// 3. `GOOGLE_API_KEY` environment variable
     /// 4. Gemini CLI OAuth tokens (`~/.gemini/oauth_creds.json`)
     pub fn new(api_key: Option<&str>) -> Self {
+        let oauth_cred_paths = Self::discover_oauth_cred_paths();
+
         let resolved_auth = api_key
             .and_then(Self::normalize_non_empty)
             .map(GeminiAuth::ExplicitKey)
             .or_else(|| Self::load_non_empty_env("GEMINI_API_KEY").map(GeminiAuth::EnvGeminiKey))
             .or_else(|| Self::load_non_empty_env("GOOGLE_API_KEY").map(GeminiAuth::EnvGoogleKey))
-            .or_else(|| Self::try_load_gemini_cli_token().map(GeminiAuth::OAuthToken));
+            .or_else(|| {
+                Self::load_token_from_path(oauth_cred_paths.first()?).map(GeminiAuth::OAuthToken)
+            });
 
         Self {
             auth: resolved_auth,
+            project: std::sync::Mutex::new(None),
+            oauth_cred_paths,
+            oauth_index: std::sync::Mutex::new(0),
         }
     }
 
@@ -203,27 +263,70 @@ impl GeminiProvider {
             .and_then(|value| Self::normalize_non_empty(&value))
     }
 
-    /// Try to load OAuth access token from Gemini CLI's cached credentials.
-    /// Location: `~/.gemini/oauth_creds.json`
-    fn try_load_gemini_cli_token() -> Option<String> {
-        let gemini_dir = Self::gemini_cli_dir()?;
-        let creds_path = gemini_dir.join("oauth_creds.json");
+    /// Discover all OAuth credential files from known Gemini CLI installations.
+    ///
+    /// Looks in `~/.gemini/oauth_creds.json` (default) plus any
+    /// `~/.gemini-*-home/.gemini/oauth_creds.json` siblings (extra accounts
+    /// set up via `HOME=~/.gemini-X-home gemini`).
+    fn discover_oauth_cred_paths() -> Vec<PathBuf> {
+        let home = match UserDirs::new() {
+            Some(u) => u.home_dir().to_path_buf(),
+            None => return Vec::new(),
+        };
 
-        if !creds_path.exists() {
-            return None;
+        let mut paths = Vec::new();
+
+        // Primary: ~/.gemini/oauth_creds.json
+        let primary = home.join(".gemini/oauth_creds.json");
+        if primary.exists() {
+            paths.push(primary);
         }
 
-        let content = std::fs::read_to_string(&creds_path).ok()?;
+        // Extra accounts: ~/.gemini-*-home/.gemini/oauth_creds.json
+        if let Ok(entries) = std::fs::read_dir(&home) {
+            let mut extras: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with(".gemini-") && name.ends_with("-home") {
+                        let p = e.path().join(".gemini/oauth_creds.json");
+                        if p.exists() {
+                            return Some(p);
+                        }
+                    }
+                    None
+                })
+                .collect();
+            extras.sort();
+            paths.extend(extras);
+        }
+
+        paths
+    }
+
+    /// Load an OAuth access token from a specific credential file.
+    /// If the access token is expired but a refresh token is present,
+    /// automatically refreshes and persists the new token.
+    fn load_token_from_path(path: &PathBuf) -> Option<String> {
+        let content = std::fs::read_to_string(path).ok()?;
         let creds: GeminiCliOAuthCreds = serde_json::from_str(&content).ok()?;
 
-        // Check if token is expired (basic check)
-        if let Some(ref expiry) = creds.expiry {
-            if let Ok(expiry_time) = chrono::DateTime::parse_from_rfc3339(expiry) {
-                if expiry_time < chrono::Utc::now() {
-                    tracing::warn!("Gemini CLI OAuth token expired — re-run `gemini` to refresh");
-                    return None;
-                }
+        let expired = Self::is_token_expired(&creds);
+
+        if expired {
+            // Try to refresh using the refresh_token.
+            if let Some(ref rt) = creds.refresh_token {
+                tracing::info!(
+                    "Gemini OAuth token expired in {}, refreshing…",
+                    path.display()
+                );
+                return Self::refresh_and_persist(rt, path);
             }
+            tracing::warn!(
+                "Gemini CLI OAuth token expired in {} — no refresh_token, re-run `gemini`",
+                path.display()
+            );
+            return None;
         }
 
         creds
@@ -231,14 +334,73 @@ impl GeminiProvider {
             .and_then(|token| Self::normalize_non_empty(&token))
     }
 
-    /// Get the Gemini CLI config directory (~/.gemini)
-    fn gemini_cli_dir() -> Option<PathBuf> {
-        UserDirs::new().map(|u| u.home_dir().join(".gemini"))
+    fn is_token_expired(creds: &GeminiCliOAuthCreds) -> bool {
+        if let Some(expiry_ms) = creds.expiry_date {
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            // Refresh 60s before actual expiry to avoid races.
+            return expiry_ms.saturating_sub(60_000) < now_ms;
+        }
+        if let Some(ref expiry) = creds.expiry {
+            if let Ok(expiry_time) = chrono::DateTime::parse_from_rfc3339(expiry) {
+                return expiry_time < chrono::Utc::now() + chrono::Duration::seconds(60);
+            }
+        }
+        false
+    }
+
+    /// Use the refresh_token to obtain a new access_token, persist back to file.
+    fn refresh_and_persist(refresh_token: &str, creds_path: &PathBuf) -> Option<String> {
+        // Synchronous HTTP — called from non-async context during provider init.
+        let client_id = oauth_client_id();
+        let client_secret = oauth_client_secret();
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .post("https://oauth2.googleapis.com/token")
+            .form(&[
+                ("client_id", client_id.as_str()),
+                ("client_secret", client_secret.as_str()),
+                ("refresh_token", refresh_token),
+                ("grant_type", "refresh_token"),
+            ])
+            .send()
+            .ok()?;
+
+        if !resp.status().is_success() {
+            tracing::warn!(
+                "Gemini OAuth refresh failed ({}): {}",
+                resp.status(),
+                resp.text().unwrap_or_default()
+            );
+            return None;
+        }
+
+        let body: serde_json::Value = resp.json().ok()?;
+        let new_access_token = body.get("access_token")?.as_str()?;
+        let expires_in = body
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3600);
+        let new_expiry_ms = chrono::Utc::now().timestamp_millis() as u64 + expires_in * 1000;
+
+        // Re-read and update the creds file to preserve all fields.
+        if let Ok(content) = std::fs::read_to_string(creds_path) {
+            if let Ok(mut creds) = serde_json::from_str::<GeminiCliOAuthCreds>(&content) {
+                creds.access_token = Some(new_access_token.to_string());
+                creds.expiry_date = Some(new_expiry_ms);
+                // Persist — best-effort, don't fail if write fails.
+                if let Ok(json) = serde_json::to_string_pretty(&creds) {
+                    let _ = std::fs::write(creds_path, json);
+                }
+            }
+        }
+
+        tracing::info!("Gemini OAuth: refreshed token, expires in {expires_in}s");
+        Some(new_access_token.to_string())
     }
 
     /// Check if Gemini CLI is configured and has valid credentials
     pub fn has_cli_credentials() -> bool {
-        Self::try_load_gemini_cli_token().is_some()
+        !Self::discover_oauth_cred_paths().is_empty()
     }
 
     /// Check if any Gemini authentication is available
@@ -302,6 +464,31 @@ impl GeminiProvider {
         }
     }
 
+    /// Resolve the Cloud AI Companion project ID via `loadCodeAssist`.
+    async fn resolve_oauth_project(&self, auth: &GeminiAuth) -> anyhow::Result<()> {
+        let resp = self
+            .http_client()
+            .post(format!("{CLOUDCODE_PA_ENDPOINT}:loadCodeAssist"))
+            .bearer_auth(auth.credential())
+            .json(&serde_json::json!({}))
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        if let Some(pid) = body.get("cloudaicompanionProject").and_then(|v| v.as_str()) {
+            if let Ok(mut guard) = self.project.lock() {
+                *guard = Some(pid.to_string());
+            }
+            tracing::info!("Gemini OAuth: resolved project {pid}");
+        } else {
+            tracing::warn!(
+                "Gemini OAuth: loadCodeAssist did not return a project ID; \
+                 API calls may fail"
+            );
+        }
+        Ok(())
+    }
+
     fn http_client(&self) -> Client {
         crate::config::build_runtime_proxy_client_with_timeouts("provider.gemini", 120, 10)
     }
@@ -313,27 +500,23 @@ impl GeminiProvider {
         request: &GenerateContentRequest,
         model: &str,
     ) -> reqwest::RequestBuilder {
-        let req = self.http_client().post(url).json(request);
+        let client = self.http_client();
         match auth {
             GeminiAuth::OAuthToken(token) => {
-                // Internal Code Assist API uses a wrapped payload shape:
-                // { model, project?, user_prompt_id?, request: { contents, systemInstruction?, generationConfig } }
-                let internal_request = InternalGenerateContentEnvelope {
+                let project = self.project.lock().ok().and_then(|g| g.clone());
+                let envelope = InternalGenerateContentEnvelope {
                     model: Self::format_internal_model_name(model),
-                    project: Self::resolve_oauth_project_id(),
-                    user_prompt_id: Some(uuid::Uuid::new_v4().to_string()),
+                    project,
+                    user_prompt_id: None,
                     request: InternalGenerateContentRequest {
                         contents: request.contents.clone(),
                         system_instruction: request.system_instruction.clone(),
                         generation_config: request.generation_config.clone(),
                     },
                 };
-                self.http_client()
-                    .post(url)
-                    .json(&internal_request)
-                    .bearer_auth(token)
+                client.post(url).json(&envelope).bearer_auth(token)
             }
-            _ => req,
+            _ => client.post(url).json(request),
         }
     }
 
@@ -355,6 +538,48 @@ impl GeminiProvider {
 }
 
 impl GeminiProvider {
+    /// Rotate to the next OAuth credential file. Returns `true` if a new
+    /// token was loaded successfully, `false` if no more credentials to try.
+    fn rotate_oauth(&self) -> bool {
+        if self.oauth_cred_paths.len() <= 1 {
+            return false;
+        }
+
+        let mut idx = match self.oauth_index.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+
+        let start = *idx;
+        loop {
+            let next = (*idx + 1) % self.oauth_cred_paths.len();
+            *idx = next;
+
+            if next == start {
+                return false; // wrapped around — all exhausted
+            }
+
+            if Self::load_token_from_path(&self.oauth_cred_paths[next]).is_some() {
+                tracing::info!(
+                    "Gemini OAuth: rotated to credential {}",
+                    self.oauth_cred_paths[next].display()
+                );
+                drop(idx);
+                if let Ok(mut proj) = self.project.lock() {
+                    *proj = None;
+                }
+                return true;
+            }
+        }
+    }
+
+    /// Get the current OAuth token based on oauth_index, re-reading from disk.
+    fn current_oauth_token(&self) -> Option<String> {
+        let idx = self.oauth_index.lock().ok()?;
+        let path = self.oauth_cred_paths.get(*idx)?;
+        Self::load_token_from_path(path)
+    }
+
     async fn send_generate_content(
         &self,
         contents: Vec<Content>,
@@ -372,9 +597,84 @@ impl GeminiProvider {
             )
         })?;
 
+        // For non-OAuth auth, use the simple path (no rotation).
+        if !auth.is_oauth() {
+            return self
+                .send_generate_content_once(
+                    &contents,
+                    &system_instruction,
+                    model,
+                    temperature,
+                    auth,
+                )
+                .await;
+        }
+
+        // OAuth path with rotation on 429/5xx.
+        // First, try with the current token (possibly re-read from disk for freshness).
+        let fresh_token = self
+            .current_oauth_token()
+            .unwrap_or_else(|| auth.credential().to_string());
+        let current_auth = GeminiAuth::OAuthToken(fresh_token);
+
+        match self
+            .send_generate_content_once(
+                &contents,
+                &system_instruction,
+                model,
+                temperature,
+                &current_auth,
+            )
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                let err_str = err.to_string();
+                let is_retryable = err_str.contains("429")
+                    || err_str.contains("RESOURCE_EXHAUSTED")
+                    || err_str.contains("500")
+                    || err_str.contains("503");
+
+                if is_retryable && self.rotate_oauth() {
+                    tracing::warn!("Gemini: retrying with rotated OAuth credential after: {err}");
+                    let next_token = self
+                        .current_oauth_token()
+                        .ok_or_else(|| anyhow::anyhow!("No valid OAuth token after rotation"))?;
+                    let next_auth = GeminiAuth::OAuthToken(next_token);
+                    self.send_generate_content_once(
+                        &contents,
+                        &system_instruction,
+                        model,
+                        temperature,
+                        &next_auth,
+                    )
+                    .await
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    async fn send_generate_content_once(
+        &self,
+        contents: &[Content],
+        system_instruction: &Option<Content>,
+        model: &str,
+        temperature: f64,
+        auth: &GeminiAuth,
+    ) -> anyhow::Result<String> {
+        // Lazy-resolve cloudcode-pa project ID on first OAuth request.
+        if auth.is_oauth() {
+            let needs_resolve = self.project.lock().ok().map_or(true, |g| g.is_none());
+            if needs_resolve {
+                self.resolve_oauth_project(auth).await?;
+            }
+        }
+
         let request = GenerateContentRequest {
-            contents,
-            system_instruction,
+            contents: contents.to_vec(),
+            system_instruction: system_instruction.clone(),
             generation_config: GenerationConfig {
                 temperature,
                 max_output_tokens: 8192,
@@ -490,28 +790,34 @@ impl Provider for GeminiProvider {
     }
 
     async fn warmup(&self) -> anyhow::Result<()> {
-        if let Some(auth) = self.auth.as_ref() {
-            // cloudcode-pa does not expose a lightweight model-list probe like the public API.
-            // Avoid false negatives for valid Gemini CLI OAuth credentials.
-            if auth.is_oauth() {
-                return Ok(());
-            }
+        let auth = match self.auth.as_ref() {
+            Some(a) => a,
+            None => return Ok(()),
+        };
 
-            let url = if auth.is_api_key() {
-                format!(
-                    "https://generativelanguage.googleapis.com/v1beta/models?key={}",
-                    auth.credential()
-                )
-            } else {
-                "https://generativelanguage.googleapis.com/v1beta/models".to_string()
-            };
-
-            self.http_client()
-                .get(&url)
-                .send()
-                .await?
-                .error_for_status()?;
+        if auth.is_oauth() {
+            // Use fresh token from disk (may have been auto-refreshed).
+            let token = self
+                .current_oauth_token()
+                .unwrap_or_else(|| auth.credential().to_string());
+            let fresh = GeminiAuth::OAuthToken(token);
+            return self.resolve_oauth_project(&fresh).await;
         }
+
+        let url = if auth.is_api_key() {
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+                auth.credential()
+            )
+        } else {
+            "https://generativelanguage.googleapis.com/v1beta/models".to_string()
+        };
+
+        self.http_client()
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 }
@@ -520,6 +826,15 @@ impl Provider for GeminiProvider {
 mod tests {
     use super::*;
     use reqwest::header::AUTHORIZATION;
+
+    fn test_provider(auth: Option<GeminiAuth>) -> GeminiProvider {
+        GeminiProvider {
+            auth,
+            project: std::sync::Mutex::new(None),
+            oauth_cred_paths: Vec::new(),
+            oauth_index: std::sync::Mutex::new(0),
+        }
+    }
 
     #[test]
     fn normalize_non_empty_trims_and_filters() {
@@ -554,34 +869,20 @@ mod tests {
     }
 
     #[test]
-    fn gemini_cli_dir_returns_path() {
-        let dir = GeminiProvider::gemini_cli_dir();
-        // Should return Some on systems with home dir
-        if UserDirs::new().is_some() {
-            assert!(dir.is_some());
-            assert!(dir.unwrap().ends_with(".gemini"));
-        }
-    }
-
-    #[test]
     fn auth_source_explicit_key() {
-        let provider = GeminiProvider {
-            auth: Some(GeminiAuth::ExplicitKey("key".into())),
-        };
+        let provider = test_provider(Some(GeminiAuth::ExplicitKey("key".into())));
         assert_eq!(provider.auth_source(), "config");
     }
 
     #[test]
     fn auth_source_none_without_credentials() {
-        let provider = GeminiProvider { auth: None };
+        let provider = test_provider(None);
         assert_eq!(provider.auth_source(), "none");
     }
 
     #[test]
     fn auth_source_oauth() {
-        let provider = GeminiProvider {
-            auth: Some(GeminiAuth::OAuthToken("ya29.mock".into())),
-        };
+        let provider = test_provider(Some(GeminiAuth::OAuthToken("ya29.mock".into())));
         assert_eq!(provider.auth_source(), "Gemini CLI OAuth");
     }
 
@@ -632,9 +933,7 @@ mod tests {
 
     #[test]
     fn oauth_request_uses_bearer_auth_header() {
-        let provider = GeminiProvider {
-            auth: Some(GeminiAuth::OAuthToken("ya29.mock-token".into())),
-        };
+        let provider = test_provider(Some(GeminiAuth::OAuthToken("ya29.mock-token".into())));
         let auth = GeminiAuth::OAuthToken("ya29.mock-token".into());
         let url = GeminiProvider::build_generate_content_url("gemini-2.0-flash", &auth);
         let body = GenerateContentRequest {
@@ -667,9 +966,7 @@ mod tests {
 
     #[test]
     fn oauth_request_wraps_payload_in_request_envelope() {
-        let provider = GeminiProvider {
-            auth: Some(GeminiAuth::OAuthToken("ya29.mock-token".into())),
-        };
+        let provider = test_provider(Some(GeminiAuth::OAuthToken("ya29.mock-token".into())));
         let auth = GeminiAuth::OAuthToken("ya29.mock-token".into());
         let url = GeminiProvider::build_generate_content_url("gemini-2.0-flash", &auth);
         let body = GenerateContentRequest {
@@ -705,9 +1002,7 @@ mod tests {
 
     #[test]
     fn api_key_request_does_not_set_bearer_header() {
-        let provider = GeminiProvider {
-            auth: Some(GeminiAuth::ExplicitKey("api-key-123".into())),
-        };
+        let provider = test_provider(Some(GeminiAuth::ExplicitKey("api-key-123".into())));
         let auth = GeminiAuth::ExplicitKey("api-key-123".into());
         let url = GeminiProvider::build_generate_content_url("gemini-2.0-flash", &auth);
         let body = GenerateContentRequest {
@@ -864,17 +1159,48 @@ mod tests {
 
     #[tokio::test]
     async fn warmup_without_key_is_noop() {
-        let provider = GeminiProvider { auth: None };
+        let provider = test_provider(None);
         let result = provider.warmup().await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn warmup_oauth_is_noop() {
-        let provider = GeminiProvider {
-            auth: Some(GeminiAuth::OAuthToken("ya29.mock-token".into())),
-        };
+    async fn warmup_oauth_calls_load_code_assist() {
+        // With a fake token the loadCodeAssist call will fail (401/403),
+        // so warmup should return an error rather than silently succeed.
+        let provider = test_provider(Some(GeminiAuth::OAuthToken("ya29.mock-token".into())));
         let result = provider.warmup().await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_err(),
+            "warmup with invalid OAuth token should fail"
+        );
+    }
+
+    #[test]
+    fn rotate_oauth_with_no_paths_returns_false() {
+        let provider = test_provider(Some(GeminiAuth::OAuthToken("ya29.mock".into())));
+        assert!(!provider.rotate_oauth());
+    }
+
+    #[test]
+    fn rotate_oauth_with_single_path_returns_false() {
+        let provider = GeminiProvider {
+            auth: Some(GeminiAuth::OAuthToken("ya29.mock".into())),
+            project: std::sync::Mutex::new(None),
+            oauth_cred_paths: vec![PathBuf::from("/tmp/fake_cred.json")],
+            oauth_index: std::sync::Mutex::new(0),
+        };
+        assert!(!provider.rotate_oauth());
+    }
+
+    #[test]
+    fn discover_oauth_cred_paths_includes_primary() {
+        let paths = GeminiProvider::discover_oauth_cred_paths();
+        // On this machine, ~/.gemini/oauth_creds.json exists.
+        // In CI it may not, so just check the function doesn't panic.
+        let home = std::env::var("HOME").unwrap_or_default();
+        if std::path::Path::new(&format!("{home}/.gemini/oauth_creds.json")).exists() {
+            assert!(!paths.is_empty());
+        }
     }
 }
