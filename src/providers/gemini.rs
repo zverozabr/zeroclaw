@@ -6,6 +6,7 @@
 
 use crate::auth::AuthService;
 use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
+use crate::tools::ToolSpec;
 use async_trait::async_trait;
 use directories::UserDirs;
 use reqwest::Client;
@@ -88,6 +89,14 @@ struct GenerateContentRequest {
     system_instruction: Option<Content>,
     #[serde(rename = "generationConfig")]
     generation_config: GenerationConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiToolDeclaration>>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct GeminiToolDeclaration {
+    #[serde(rename = "functionDeclarations")]
+    function_declarations: Vec<serde_json::Value>,
 }
 
 /// Request envelope for the internal cloudcode-pa API.
@@ -124,6 +133,8 @@ struct InternalGenerateContentRequest {
     system_instruction: Option<Content>,
     #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiToolDeclaration>>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -188,6 +199,15 @@ struct ResponsePart {
     /// Thinking models (e.g. gemini-3-pro-preview) mark reasoning parts with `thought: true`.
     #[serde(default)]
     thought: bool,
+    /// Function call requested by the model.
+    #[serde(default, rename = "functionCall")]
+    function_call: Option<GeminiFunctionCall>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct GeminiFunctionCall {
+    name: String,
+    args: serde_json::Value,
 }
 
 impl CandidateContent {
@@ -850,6 +870,7 @@ impl GeminiProvider {
                         } else {
                             None
                         },
+                        tools: request.tools.clone(),
                     },
                 };
                 self.http_client()
@@ -890,6 +911,19 @@ impl GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<(String, Option<TokenUsage>)> {
+        self.send_generate_content_with_tools(contents, system_instruction, model, temperature, None)
+            .await
+            .map(|(text, usage, _)| (text, usage))
+    }
+
+    async fn send_generate_content_with_tools(
+        &self,
+        contents: Vec<Content>,
+        system_instruction: Option<Content>,
+        model: &str,
+        temperature: f64,
+        tools: Option<Vec<GeminiToolDeclaration>>,
+    ) -> anyhow::Result<(String, Option<TokenUsage>, Vec<crate::providers::traits::ToolCall>)> {
         let auth = self.auth.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Gemini API key not found. Options:\n\
@@ -939,6 +973,7 @@ impl GeminiProvider {
                 temperature,
                 max_output_tokens: 8192,
             },
+            tools,
         };
 
         let url = Self::build_generate_content_url(model, auth);
@@ -1082,19 +1117,86 @@ impl GeminiProvider {
             output_tokens: u.candidates_token_count,
         });
 
-        let text = result
+        let candidate = result
             .candidates
             .and_then(|c| c.into_iter().next())
-            .and_then(|c| c.content)
-            .and_then(|c| c.effective_text())
             .ok_or_else(|| anyhow::anyhow!("No response from Gemini"))?;
 
-        Ok((text, usage))
+        let content = candidate
+            .content
+            .ok_or_else(|| anyhow::anyhow!("No content in Gemini response"))?;
+
+        // Extract function calls first (before consuming content for text)
+        let mut tool_calls = Vec::new();
+        let mut text_parts = Vec::new();
+        let mut first_thinking: Option<String> = None;
+
+        for (idx, part) in content.parts.into_iter().enumerate() {
+            // Extract function call if present
+            if let Some(fc) = part.function_call {
+                tool_calls.push(crate::providers::traits::ToolCall {
+                    id: format!("call_{}", idx),
+                    name: fc.name.clone(),
+                    arguments: serde_json::to_string(&fc.args)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                });
+            }
+
+            // Extract text
+            if let Some(text) = part.text {
+                if !text.is_empty() {
+                    if !part.thought {
+                        text_parts.push(text);
+                    } else if first_thinking.is_none() {
+                        first_thinking = Some(text);
+                    }
+                }
+            }
+        }
+
+        // Build final text response
+        let text = if text_parts.is_empty() {
+            first_thinking.unwrap_or_default()
+        } else {
+            text_parts.join("")
+        };
+
+        Ok((text, usage, tool_calls))
     }
 }
 
 #[async_trait]
 impl Provider for GeminiProvider {
+    fn capabilities(&self) -> crate::providers::traits::ProviderCapabilities {
+        crate::providers::traits::ProviderCapabilities {
+            native_tool_calling: true,
+            vision: false,
+        }
+    }
+
+    fn convert_tools(&self, tools: &[ToolSpec]) -> crate::providers::traits::ToolsPayload {
+        if tools.is_empty() {
+            return crate::providers::traits::ToolsPayload::Gemini {
+                function_declarations: Vec::new(),
+            };
+        }
+
+        let function_declarations: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters
+                })
+            })
+            .collect();
+
+        crate::providers::traits::ToolsPayload::Gemini {
+            function_declarations,
+        }
+    }
+
     async fn chat_with_system(
         &self,
         system_prompt: Option<&str>,
@@ -1213,13 +1315,36 @@ impl Provider for GeminiProvider {
             })
         };
 
-        let (text, usage) = self
-            .send_generate_content(contents, system_instruction, model, temperature)
+        // Convert tools to Gemini format if provided
+        let gemini_tools = if let Some(tools) = request.tools {
+            if !tools.is_empty() {
+                let function_declarations: Vec<serde_json::Value> = tools
+                    .iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters
+                        })
+                    })
+                    .collect();
+                Some(vec![GeminiToolDeclaration {
+                    function_declarations,
+                }])
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let (text, usage, tool_calls) = self
+            .send_generate_content_with_tools(contents, system_instruction, model, temperature, gemini_tools)
             .await?;
 
         Ok(ChatResponse {
-            text: Some(text),
-            tool_calls: Vec::new(),
+            text: if text.is_empty() { None } else { Some(text) },
+            tool_calls,
             usage,
             reasoning_content: None,
         })
@@ -1401,6 +1526,7 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
         };
 
         let request = provider
@@ -1442,6 +1568,7 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
         };
 
         let request = provider
@@ -1486,6 +1613,7 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
         };
 
         let request = provider
@@ -1523,6 +1651,7 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -1552,6 +1681,7 @@ mod tests {
                     temperature: 0.7,
                     max_output_tokens: 8192,
                 }),
+                tools: None,
             },
         };
 
@@ -1581,6 +1711,7 @@ mod tests {
                 }],
                 system_instruction: None,
                 generation_config: None,
+                tools: None,
             },
         };
 
@@ -1604,6 +1735,7 @@ mod tests {
                 }],
                 system_instruction: None,
                 generation_config: None,
+                tools: None,
             },
         };
 

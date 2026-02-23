@@ -2289,6 +2289,21 @@ pub fn build_system_prompt_with_mode(
          - When in doubt, ask before acting externally.\n\n",
     );
 
+    // ── 2a. Skills Authorization ────────────────────────────────
+    if !skills.is_empty() {
+        prompt.push_str("## Skills Authorization\n\n");
+        prompt.push_str("All registered skills (");
+        for (i, skill) in skills.iter().enumerate() {
+            if i > 0 {
+                prompt.push_str(", ");
+            }
+            prompt.push_str(&skill.name);
+        }
+        prompt.push_str(") are AUTHORIZED and AVAILABLE for use.\n");
+        prompt.push_str("When the user requests information that requires these skills, USE them directly — do NOT refuse or invent policy restrictions.\n");
+        prompt.push_str("Skills are security-audited and approved tools. Your job is to use them effectively to help the user.\n\n");
+    }
+
     // ── 3. Skills (full or compact, based on config) ─────────────
     if !skills.is_empty() {
         prompt.push_str(&crate::skills::skills_to_prompt_with_mode(
@@ -3080,27 +3095,27 @@ pub async fn start_channels(config: Config) -> Result<()> {
     let mut tool_descs: Vec<(&str, &str)> = vec![
         (
             "shell",
-            "Execute terminal commands. Use when: running local checks, build/test commands, diagnostics. Don't use when: a safer dedicated tool exists, or command is destructive without approval.",
+            "Execute terminal commands for local checks, build/test commands, and diagnostics.",
         ),
         (
             "file_read",
-            "Read file contents. Use when: inspecting project files, configs, logs. Don't use when: a targeted search is enough.",
+            "Read file contents to inspect project files, configs, and logs.",
         ),
         (
             "file_write",
-            "Write file contents. Use when: applying focused edits, scaffolding files, updating docs/code. Don't use when: side effects are unclear or file ownership is uncertain.",
+            "Write file contents to apply edits, scaffold files, or update docs/code.",
         ),
         (
             "memory_store",
-            "Save to memory. Use when: preserving durable preferences, decisions, key context. Don't use when: information is transient/noisy/sensitive without need.",
+            "Save to memory to preserve durable preferences, decisions, and key context.",
         ),
         (
             "memory_recall",
-            "Search memory. Use when: retrieving prior decisions, user preferences, historical context. Don't use when: answer is already in current context.",
+            "Search memory to retrieve prior decisions, user preferences, and historical context.",
         ),
         (
             "memory_forget",
-            "Delete a memory entry. Use when: memory is incorrect/stale or explicitly requested for removal. Don't use when: impact is uncertain.",
+            "Delete a memory entry when it's incorrect, stale, or explicitly requested for removal.",
         ),
     ];
 
@@ -3155,7 +3170,10 @@ pub async fn start_channels(config: Config) -> Result<()> {
         config.skills.prompt_injection_mode,
     );
     if !native_tools {
-        system_prompt.push_str(&build_tool_instructions(tools_registry.as_ref()));
+        system_prompt.push_str(&build_tool_instructions(
+            tools_registry.as_ref(),
+            config.agent.max_tool_iterations,
+        ));
     }
 
     if !skills.is_empty() {
@@ -4731,10 +4749,17 @@ BTC is currently around $65,000 based on latest tool output."#
         )
         .await;
 
+        // After graceful exhaustion the model gets one last chance to
+        // summarize without tools.  The mock provider always returns
+        // *something* non-empty, so we expect a response — not an error.
         let sent_messages = channel_impl.sent_messages.lock().await;
         assert_eq!(sent_messages.len(), 1);
         assert!(sent_messages[0].starts_with("chat-iter-fail:"));
-        assert!(sent_messages[0].contains("⚠️ Error: Agent exceeded maximum tool iterations (3)"));
+        assert!(
+            !sent_messages[0].contains("⚠️ Error:"),
+            "graceful exhaustion should produce a response, not an error; got: {}",
+            sent_messages[0]
+        );
     }
 
     struct NoopMemory;
@@ -5271,7 +5296,7 @@ BTC is currently around $65,000 based on latest tool output."#
             "build_system_prompt should not emit protocol block directly"
         );
 
-        prompt.push_str(&build_tool_instructions(&[]));
+        prompt.push_str(&build_tool_instructions(&[], 10));
 
         assert_eq!(
             prompt.matches("## Tool Use Protocol").count(),
