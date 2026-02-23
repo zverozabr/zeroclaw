@@ -14,6 +14,7 @@ use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -502,12 +503,12 @@ pub fn parse_code_from_redirect(input: &str, expected_state: Option<&str>) -> Re
                     if let Some(hint) =
                         crate::auth::oauth_common::detect_url_truncation(input, expected.len())
                     {
-                        err_msg.push_str(&format!(
+                        let _ = write!(err_msg,
                             "\n\n💡 Tip: {}\n   \
                             Try copying ONLY the authorization code instead of the full URL.\n   \
                             The code looks like: 4/0AfrIep...",
                             hint
-                        ));
+                        );
                     }
 
                     anyhow::bail!(err_msg);

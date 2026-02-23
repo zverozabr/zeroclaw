@@ -4,6 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
@@ -186,7 +187,7 @@ fn encode_emoji_for_discord(emoji: &str) -> String {
 
     let mut encoded = String::new();
     for byte in emoji.as_bytes() {
-        encoded.push_str(&format!("%{byte:02X}"));
+        let _ = write!(encoded, "%{byte:02X}");
     }
     encoded
 }
