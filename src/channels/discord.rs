@@ -6,6 +6,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
+use std::fmt::Write as _;
 
 /// Discord channel — connects via Gateway WebSocket for real-time messages
 pub struct DiscordChannel {
@@ -168,7 +169,7 @@ fn encode_emoji_for_discord(emoji: &str) -> String {
 
     let mut encoded = String::new();
     for byte in emoji.as_bytes() {
-        encoded.push_str(&format!("%{byte:02X}"));
+        let _ = write!(encoded, "%{byte:02X}");
     }
     encoded
 }

@@ -1262,9 +1262,7 @@ fn sanitize_tool_json_value(
         return None;
     }
 
-    let Some(object) = value.as_object() else {
-        return None;
-    };
+    let object = value.as_object()?;
 
     if let Some(tool_calls) = object.get("tool_calls").and_then(|value| value.as_array()) {
         if !tool_calls.is_empty()
@@ -1304,7 +1302,7 @@ fn strip_isolated_tool_json_artifacts(message: &str, known_tool_names: &HashSet<
     let mut saw_tool_call_payload = false;
 
     while cursor < message.len() {
-        let Some(rel_start) = message[cursor..].find(|ch: char| ch == '{' || ch == '[') else {
+        let Some(rel_start) = message[cursor..].find(['{', '[']) else {
             cleaned.push_str(&message[cursor..]);
             break;
         };
@@ -2646,6 +2644,7 @@ struct ConfiguredChannel {
     channel: Arc<dyn Channel>,
 }
 
+#[cfg_attr(not(feature = "channel-matrix"), allow(clippy::used_underscore_binding))]
 fn collect_configured_channels(
     config: &Config,
     _matrix_skip_context: &str,

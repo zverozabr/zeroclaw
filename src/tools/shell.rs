@@ -221,10 +221,12 @@ impl Tool for ShellTool {
                 let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
                 // Truncate output to prevent OOM
+                #[allow(clippy::incompatible_msrv)]
                 if stdout.len() > MAX_OUTPUT_BYTES {
                     stdout.truncate(stdout.floor_char_boundary(MAX_OUTPUT_BYTES));
                     stdout.push_str("\n... [output truncated at 1MB]");
                 }
+                #[allow(clippy::incompatible_msrv)]
                 if stderr.len() > MAX_OUTPUT_BYTES {
                     stderr.truncate(stderr.floor_char_boundary(MAX_OUTPUT_BYTES));
                     stderr.push_str("\n... [stderr truncated at 1MB]");
