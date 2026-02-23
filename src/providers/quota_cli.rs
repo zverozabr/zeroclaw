@@ -45,7 +45,7 @@ pub async fn run(
 }
 
 /// Build quota summary by combining health tracker state and OAuth profile metadata.
-fn build_quota_summary(
+pub fn build_quota_summary(
     health_tracker: &ProviderHealthTracker,
     profiles_data: &AuthProfilesData,
     provider_filter: Option<&str>,

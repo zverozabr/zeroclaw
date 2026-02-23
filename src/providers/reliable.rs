@@ -928,6 +928,18 @@ impl Provider for ReliableProvider {
                     match provider.chat(req, current_model, temperature).await {
                         Ok(resp) => {
                             self.health.record_success(provider_name);
+
+                            // Log quota metadata if available (Phase 3)
+                            if let Some(quota) = &resp.quota_metadata {
+                                tracing::debug!(
+                                    provider = provider_name,
+                                    rate_limit_remaining = ?quota.rate_limit_remaining,
+                                    rate_limit_total = ?quota.rate_limit_total,
+                                    rate_limit_reset_at = ?quota.rate_limit_reset_at,
+                                    "Quota metadata extracted from API response"
+                                );
+                            }
+
                             if attempt > 0 || *current_model != model {
                                 tracing::info!(
                                     provider = provider_name,
