@@ -1316,6 +1316,12 @@ async fn handle_linq_webhook(
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct WatiVerifyQuery {
+    #[serde(rename = "hub.challenge")]
+    pub challenge: Option<String>,
+}
+
 /// GET /wati — WATI webhook verification (echoes hub.challenge)
 async fn handle_wati_verify(
     State(state): State<AppState>,
@@ -1332,12 +1338,6 @@ async fn handle_wati_verify(
     }
 
     (StatusCode::BAD_REQUEST, "Missing hub.challenge".to_string())
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WatiVerifyQuery {
-    #[serde(rename = "hub.challenge")]
-    pub challenge: Option<String>,
 }
 
 /// POST /wati — incoming WATI WhatsApp message webhook
