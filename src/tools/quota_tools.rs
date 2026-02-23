@@ -95,23 +95,23 @@ impl Tool for CheckProviderQuotaTool {
         );
 
         if !available.is_empty() {
-            let _ = write!(
+            let _ = writeln!(
                 output,
-                "✅ Available providers: {}\n",
+                "✅ Available providers: {}",
                 available.join(", ")
             );
         }
         if !rate_limited.is_empty() {
-            let _ = write!(
+            let _ = writeln!(
                 output,
-                "⚠️  Rate-limited providers: {}\n",
+                "⚠️  Rate-limited providers: {}",
                 rate_limited.join(", ")
             );
         }
         if !circuit_open.is_empty() {
-            let _ = write!(
+            let _ = writeln!(
                 output,
-                "❌ Circuit-open providers: {}\n",
+                "❌ Circuit-open providers: {}",
                 circuit_open.join(", ")
             );
         }
@@ -142,15 +142,15 @@ impl Tool for CheckProviderQuotaTool {
                 for profile in &provider_info.profiles {
                     if let Some(remaining) = profile.rate_limit_remaining {
                         if let Some(total) = profile.rate_limit_total {
-                            let _ = write!(
+                            let _ = writeln!(
                                 output,
-                                "   {}: {}/{} requests\n",
+                                "   {}: {}/{} requests",
                                 profile.profile_name, remaining, total
                             );
                         } else {
-                            let _ = write!(
+                            let _ = writeln!(
                                 output,
-                                "   {}: {} requests remaining\n",
+                                "   {}: {} requests remaining",
                                 profile.profile_name, remaining
                             );
                         }

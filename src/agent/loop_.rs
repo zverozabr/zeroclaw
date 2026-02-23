@@ -2588,38 +2588,36 @@ pub(crate) async fn run_tool_call_loop(
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
         }
 
-        for entry in ordered_results {
-            if let Some((tool_name, tool_call_id, outcome)) = entry {
-                individual_results.push((tool_call_id.clone(), outcome.output.clone()));
+        for (tool_name, tool_call_id, outcome) in ordered_results.into_iter().flatten() {
+            individual_results.push((tool_call_id.clone(), outcome.output.clone()));
 
-                // ── Phase 5: Detect switch_provider tool calls ──
-                // If the tool is switch_provider, parse its metadata and log the request.
-                // Actual provider switching would require refactoring the agent loop
-                // to allow mutable provider state. For now, we log the intent.
-                if tool_name == "switch_provider" {
-                    if let Some((target_provider, target_model)) =
-                        crate::agent::quota_aware::parse_switch_provider_metadata(&outcome.output)
-                    {
-                        tracing::info!(
-                            current_provider = provider_name,
-                            target_provider = %target_provider,
-                            target_model = ?target_model,
-                            "Agent requested provider switch (not yet implemented in loop)"
-                        );
-                        // TODO: Implement actual provider switching by:
-                        // 1. Creating new provider instance with target_provider/model
-                        // 2. Replacing the current provider reference
-                        // 3. Continuing the loop with new provider
-                        // This requires refactoring run() to make provider mutable.
-                    }
+            // ── Phase 5: Detect switch_provider tool calls ──
+            // If the tool is switch_provider, parse its metadata and log the request.
+            // Actual provider switching would require refactoring the agent loop
+            // to allow mutable provider state. For now, we log the intent.
+            if tool_name == "switch_provider" {
+                if let Some((target_provider, target_model)) =
+                    crate::agent::quota_aware::parse_switch_provider_metadata(&outcome.output)
+                {
+                    tracing::info!(
+                        current_provider = provider_name,
+                        target_provider = %target_provider,
+                        target_model = ?target_model,
+                        "Agent requested provider switch (not yet implemented in loop)"
+                    );
+                    // TODO: Implement actual provider switching by:
+                    // 1. Creating new provider instance with target_provider/model
+                    // 2. Replacing the current provider reference
+                    // 3. Continuing the loop with new provider
+                    // This requires refactoring run() to make provider mutable.
                 }
-
-                let _ = writeln!(
-                    tool_results,
-                    "<tool_result name=\"{}\">\n{}\n</tool_result>",
-                    tool_name, outcome.output
-                );
             }
+
+            let _ = writeln!(
+                tool_results,
+                "<tool_result name=\"{}\">\n{}\n</tool_result>",
+                tool_name, outcome.output
+            );
         }
 
         // Add assistant message with tool calls + tool results to history.

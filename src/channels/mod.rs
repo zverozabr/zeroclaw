@@ -1264,9 +1264,7 @@ fn sanitize_tool_json_value(
         return None;
     }
 
-    let Some(object) = value.as_object() else {
-        return None;
-    };
+    let object = value.as_object()?;
 
     if let Some(tool_calls) = object.get("tool_calls").and_then(|value| value.as_array()) {
         if !tool_calls.is_empty()
@@ -2664,6 +2662,7 @@ struct ConfiguredChannel {
     channel: Arc<dyn Channel>,
 }
 
+#[cfg_attr(not(feature = "channel-matrix"), allow(clippy::used_underscore_binding))]
 fn collect_configured_channels(
     config: &Config,
     _matrix_skip_context: &str,
@@ -2749,9 +2748,10 @@ fn collect_configured_channels(
 
     #[cfg(not(feature = "channel-matrix"))]
     if config.channels_config.matrix.is_some() {
+        let context = _matrix_skip_context;
         tracing::warn!(
             "Matrix channel is configured but this build was compiled without `channel-matrix`; skipping Matrix {}.",
-            _matrix_skip_context
+            context
         );
     }
 

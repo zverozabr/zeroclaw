@@ -328,6 +328,7 @@ fn date_prefix(filename: &str) -> Option<NaiveDate> {
     if filename.len() < 10 {
         return None;
     }
+    #[allow(clippy::incompatible_msrv)]
     NaiveDate::parse_from_str(&filename[..filename.floor_char_boundary(10)], "%Y-%m-%d").ok()
 }
 

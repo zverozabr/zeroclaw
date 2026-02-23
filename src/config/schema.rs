@@ -2524,7 +2524,7 @@ pub struct CustomTunnelConfig {
 struct ConfigWrapper<T: ChannelConfig>(std::marker::PhantomData<T>);
 
 impl<T: ChannelConfig> ConfigWrapper<T> {
-    fn new(_: &Option<T>) -> Self {
+    fn new(_: Option<&T>) -> Self {
         Self(std::marker::PhantomData)
     }
 }
@@ -2600,79 +2600,79 @@ impl ChannelsConfig {
     pub fn channels_except_webhook(&self) -> Vec<(Box<dyn super::traits::ConfigHandle>, bool)> {
         vec![
             (
-                Box::new(ConfigWrapper::new(&self.telegram)),
+                Box::new(ConfigWrapper::new(self.telegram.as_ref())),
                 self.telegram.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.discord)),
+                Box::new(ConfigWrapper::new(self.discord.as_ref())),
                 self.discord.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.slack)),
+                Box::new(ConfigWrapper::new(self.slack.as_ref())),
                 self.slack.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.mattermost)),
+                Box::new(ConfigWrapper::new(self.mattermost.as_ref())),
                 self.mattermost.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.imessage)),
+                Box::new(ConfigWrapper::new(self.imessage.as_ref())),
                 self.imessage.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.matrix)),
+                Box::new(ConfigWrapper::new(self.matrix.as_ref())),
                 self.matrix.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.signal)),
+                Box::new(ConfigWrapper::new(self.signal.as_ref())),
                 self.signal.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.whatsapp)),
+                Box::new(ConfigWrapper::new(self.whatsapp.as_ref())),
                 self.whatsapp.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.linq)),
+                Box::new(ConfigWrapper::new(self.linq.as_ref())),
                 self.linq.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.wati)),
+                Box::new(ConfigWrapper::new(self.wati.as_ref())),
                 self.wati.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.nextcloud_talk)),
+                Box::new(ConfigWrapper::new(self.nextcloud_talk.as_ref())),
                 self.nextcloud_talk.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.email)),
+                Box::new(ConfigWrapper::new(self.email.as_ref())),
                 self.email.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.irc)),
+                Box::new(ConfigWrapper::new(self.irc.as_ref())),
                 self.irc.is_some()
             ),
             (
-                Box::new(ConfigWrapper::new(&self.lark)),
+                Box::new(ConfigWrapper::new(self.lark.as_ref())),
                 self.lark.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.feishu)),
+                Box::new(ConfigWrapper::new(self.feishu.as_ref())),
                 self.feishu.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.dingtalk)),
+                Box::new(ConfigWrapper::new(self.dingtalk.as_ref())),
                 self.dingtalk.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.qq)),
+                Box::new(ConfigWrapper::new(self.qq.as_ref())),
                 self.qq.is_some()
             ),
             (
-                Box::new(ConfigWrapper::new(&self.nostr)),
+                Box::new(ConfigWrapper::new(self.nostr.as_ref())),
                 self.nostr.is_some(),
             ),
             (
-                Box::new(ConfigWrapper::new(&self.clawdtalk)),
+                Box::new(ConfigWrapper::new(self.clawdtalk.as_ref())),
                 self.clawdtalk.is_some(),
             ),
         ]
@@ -2681,7 +2681,7 @@ impl ChannelsConfig {
     pub fn channels(&self) -> Vec<(Box<dyn super::traits::ConfigHandle>, bool)> {
         let mut ret = self.channels_except_webhook();
         ret.push((
-            Box::new(ConfigWrapper::new(&self.webhook)),
+            Box::new(ConfigWrapper::new(self.webhook.as_ref())),
             self.webhook.is_some(),
         ));
         ret

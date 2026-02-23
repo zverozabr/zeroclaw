@@ -101,6 +101,7 @@ fn pick_uniform_index(len: usize) -> usize {
     loop {
         let value = rand::random::<u64>();
         if value < reject_threshold {
+            #[allow(clippy::cast_possible_truncation)]
             return (value % upper) as usize;
         }
     }
@@ -1499,9 +1500,9 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             }
         }
         if in_code_block && !code_buf.is_empty() {
-            let _ = write!(
+            let _ = writeln!(
                 final_out,
-                "<pre><code>{}</code></pre>\n",
+                "<pre><code>{}</code></pre>",
                 code_buf.trim_end()
             );
         }
@@ -3708,7 +3709,10 @@ mod tests {
 
     #[test]
     fn telegram_split_many_short_lines() {
-        let msg: String = (0..1000).map(|i| format!("line {i}\n")).collect();
+        let msg: String = (0..1000).fold(String::new(), |mut acc, i| {
+            acc.push_str(&format!("line {i}\n"));
+            acc
+        });
         let parts = split_message_for_telegram(&msg);
         for part in &parts {
             assert!(
@@ -3955,7 +3959,7 @@ mod tests {
     /// Skipped automatically when `GROQ_API_KEY` is not set.
     /// Run: `GROQ_API_KEY=<key> cargo test --lib -- telegram::tests::e2e_live_voice_transcription_and_reply_cache --ignored`
     #[tokio::test]
-    #[ignore]
+    #[ignore = "requires GROQ_API_KEY env var"]
     async fn e2e_live_voice_transcription_and_reply_cache() {
         if std::env::var("GROQ_API_KEY").is_err() {
             eprintln!("GROQ_API_KEY not set — skipping live voice transcription test");

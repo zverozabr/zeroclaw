@@ -172,6 +172,7 @@ impl ScreenshotTool {
                 use base64::Engine;
                 let size = bytes.len();
                 let mut encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                #[allow(clippy::incompatible_msrv)]
                 let truncated = if encoded.len() > MAX_BASE64_BYTES {
                     encoded.truncate(encoded.floor_char_boundary(MAX_BASE64_BYTES));
                     true
