@@ -1248,7 +1248,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         if self.mention_only && is_group {
             let bot_username = self.bot_username.lock();
             if let Some(ref bot_username) = *bot_username {
-                if !Self::contains_bot_mention(&text, bot_username) {
+                if !Self::contains_bot_mention(text, bot_username) {
                     return None;
                 }
             } else {
@@ -1283,7 +1283,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         let content = if self.mention_only && is_group {
             let bot_username = self.bot_username.lock();
             let bot_username = bot_username.as_ref()?;
-            Self::normalize_incoming_content(&text, bot_username)?
+            Self::normalize_incoming_content(text, bot_username)?
         } else {
             text.to_string()
         };
@@ -1478,14 +1478,14 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         for line in joined.split('\n') {
             let trimmed = line.trim();
             if trimmed.starts_with("```") {
-                if !in_code_block {
-                    in_code_block = true;
-                    code_buf.clear();
-                } else {
+                if in_code_block {
                     in_code_block = false;
                     let escaped = code_buf.trim_end_matches('\n');
                     // Telegram HTML parse mode supports <pre> and <code>, but not class attributes.
                     final_out.push_str(&format!("<pre><code>{escaped}</code></pre>\n"));
+                    code_buf.clear();
+                } else {
+                    in_code_block = true;
                     code_buf.clear();
                 }
             } else if in_code_block {

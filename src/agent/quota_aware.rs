@@ -224,7 +224,7 @@ mod tests {
         let future = Utc::now() + Duration::seconds(3700);
         let formatted = format_relative_time(future);
         assert!(formatted.contains("in"));
-        assert!(formatted.contains("h"));
+        assert!(formatted.contains('h'));
 
         let past = Utc::now() - Duration::seconds(300);
         let formatted = format_relative_time(past);

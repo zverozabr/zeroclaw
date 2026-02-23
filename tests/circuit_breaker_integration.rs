@@ -2,7 +2,6 @@
 //!
 //! Tests circuit breaker opening, closing, and interaction with ReliableProvider.
 
-use std::sync::Arc;
 use std::time::Duration;
 use zeroclaw::providers::health::ProviderHealthTracker;
 

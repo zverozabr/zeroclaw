@@ -13,19 +13,12 @@ use std::time::Duration;
 
 /// Provider health state with failure tracking.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub struct ProviderHealthState {
     pub failure_count: u32,
     pub last_error: Option<String>,
 }
 
-impl Default for ProviderHealthState {
-    fn default() -> Self {
-        Self {
-            failure_count: 0,
-            last_error: None,
-        }
-    }
-}
 
 /// Thread-safe provider health tracker with circuit breaker.
 ///
@@ -70,7 +63,7 @@ impl ProviderHealthTracker {
     /// - `Err((remaining, state))` if circuit is open (provider blocked)
     pub fn should_try(&self, provider: &str) -> Result<(), (Duration, ProviderHealthState)> {
         // Check circuit breaker
-        if let Some((remaining, _)) = self.backoff.get(&provider.to_string()) {
+        if let Some((remaining, ())) = self.backoff.get(&provider.to_string()) {
             // Circuit is open - return remaining time and current state
             let states = self.states.lock();
             let state = states.get(provider).cloned().unwrap_or_default();

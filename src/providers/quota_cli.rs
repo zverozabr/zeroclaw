@@ -255,7 +255,7 @@ fn print_text(summary: &QuotaSummary) -> Result<()> {
             .unwrap_or_else(|| "-".to_string());
         let circuit_str = provider_info
             .circuit_resets_at
-            .map(|dt| format_relative_time(dt))
+            .map(format_relative_time)
             .unwrap_or_else(|| "-".to_string());
 
         println!(
@@ -283,7 +283,7 @@ fn print_text(summary: &QuotaSummary) -> Result<()> {
 
             let reset_str = profile
                 .rate_limit_reset_at
-                .map(|dt| format_relative_time(dt))
+                .map(format_relative_time)
                 .unwrap_or_else(|| "-".to_string());
 
             println!(
@@ -378,7 +378,7 @@ mod tests {
         let future = Utc::now() + chrono::Duration::seconds(3700);
         let formatted = format_relative_time(future);
         assert!(formatted.contains("in"));
-        assert!(formatted.contains("h"));
+        assert!(formatted.contains('h'));
     }
 
     #[test]

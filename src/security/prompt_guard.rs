@@ -96,21 +96,19 @@ impl PromptGuard {
         // Scores are already weighted 0.0-1.0 per category; clamp total to 1.0
         let normalized_score = total_score.min(1.0);
 
-        if !detected_patterns.is_empty() {
-            if normalized_score >= self.sensitivity {
-                match self.action {
-                    GuardAction::Block => GuardResult::Blocked(format!(
-                        "Potential prompt injection detected (score: {:.2}): {}",
-                        normalized_score,
-                        detected_patterns.join(", ")
-                    )),
-                    _ => GuardResult::Suspicious(detected_patterns, normalized_score),
-                }
-            } else {
-                GuardResult::Suspicious(detected_patterns, normalized_score)
+        if detected_patterns.is_empty() {
+            GuardResult::Safe
+        } else if normalized_score >= self.sensitivity {
+            match self.action {
+                GuardAction::Block => GuardResult::Blocked(format!(
+                    "Potential prompt injection detected (score: {:.2}): {}",
+                    normalized_score,
+                    detected_patterns.join(", ")
+                )),
+                _ => GuardResult::Suspicious(detected_patterns, normalized_score),
             }
         } else {
-            GuardResult::Safe
+            GuardResult::Suspicious(detected_patterns, normalized_score)
         }
     }
 

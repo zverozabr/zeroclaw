@@ -41,15 +41,7 @@ pub use traits::{
     ToolCall, ToolResultMessage,
 };
 
-pub use health::{ProviderHealthState, ProviderHealthTracker};
-pub use quota_adapter::{
-    AnthropicQuotaExtractor, GeminiQuotaExtractor, OpenAIQuotaExtractor, QuotaExtractor,
-    UniversalQuotaExtractor,
-};
-pub use quota_types::{
-    ProfileQuotaInfo, ProviderQuotaInfo, ProviderUsageMetrics, QuotaMetadata, QuotaStatus,
-    QuotaSummary,
-};
+pub use quota_adapter::UniversalQuotaExtractor;
 
 use crate::auth::AuthService;
 use compatible::{AuthStyle, OpenAiCompatibleProvider};
