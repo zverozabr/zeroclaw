@@ -3546,6 +3546,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 usage: None,
                 reasoning_content: None,
+                quota_metadata: None,
             })
         }
     }
@@ -3564,6 +3565,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                quota_metadata: None,
                 })
                 .collect();
             Self {
@@ -3758,6 +3760,7 @@ mod tests {
             None,
             None,
             &[],
+        None,  // config
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3804,6 +3807,7 @@ mod tests {
             None,
             None,
             &[],
+        None,  // config
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3844,6 +3848,7 @@ mod tests {
             None,
             None,
             &[],
+        None,  // config
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -3970,6 +3975,7 @@ mod tests {
             None,
             None,
             &[],
+        None,  // config
         )
         .await
         .expect("parallel execution should complete");
@@ -4039,6 +4045,7 @@ mod tests {
             None,
             None,
             &[],
+        None,  // config
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4095,6 +4102,7 @@ mod tests {
             None,
             None,
             &[],
+        None,  // config
         )
         .await
         .expect("native fallback id flow should complete");

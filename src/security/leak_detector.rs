@@ -7,7 +7,6 @@
 //! Contributed from RustyClaw (MIT licensed).
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 /// Result of leak detection.

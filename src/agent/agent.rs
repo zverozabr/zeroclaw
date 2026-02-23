@@ -653,6 +653,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                quota_metadata: None,
                 });
             }
             Ok(guard.remove(0))
@@ -692,6 +693,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                quota_metadata: None,
             }]),
         });
 
@@ -732,12 +734,14 @@ mod tests {
                     }],
                     usage: None,
                     reasoning_content: None,
+                quota_metadata: None,
                 },
                 crate::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                quota_metadata: None,
                 },
             ]),
         });

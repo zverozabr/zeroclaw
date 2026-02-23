@@ -603,6 +603,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                    quota_metadata: None,
                 })
             } else {
                 Ok(ChatResponse {
@@ -614,6 +615,7 @@ mod tests {
                     }],
                     usage: None,
                     reasoning_content: None,
+                    quota_metadata: None,
                 })
             }
         }
@@ -648,6 +650,7 @@ mod tests {
                 }],
                 usage: None,
                 reasoning_content: None,
+                quota_metadata: None,
             })
         }
     }
