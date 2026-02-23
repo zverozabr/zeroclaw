@@ -2033,6 +2033,16 @@ pub(crate) async fn run_tool_call_loop(
             return Err(ToolLoopCancelled.into());
         }
 
+        // ── Budget warning at ~80% ────────────────────────────
+        if iteration > 0 && iteration == max_iterations.saturating_mul(4) / 5 {
+            let remaining = max_iterations - iteration;
+            history.push(ChatMessage::system(format!(
+                "[SYSTEM] You have {remaining} tool-use round(s) remaining. \
+                 Wrap up now: summarize what you have found and provide your best answer. \
+                 Do not start new searches."
+            )));
+        }
+
         let image_marker_count = multimodal::count_image_markers(history);
         if image_marker_count > 0 && !provider.supports_vision() {
             return Err(ProviderCapabilityError {
@@ -2599,6 +2609,48 @@ pub(crate) async fn run_tool_call_loop(
         }
     }
 
+    // ── Graceful exhaustion: one final LLM call without tools ──────
+    // Give the model a chance to summarize what it found so far instead
+    // of returning a hard error to the user.
+    history.push(ChatMessage::system(
+        "[SYSTEM] Tool budget exhausted. Provide your answer using only the \
+         information gathered so far. Do not attempt tool calls."
+            .to_string(),
+    ));
+
+    let final_messages =
+        multimodal::prepare_messages_for_provider(history, multimodal_config).await?;
+    let final_request = ChatRequest {
+        messages: &final_messages.messages,
+        tools: None, // NO tools — force text-only response
+    };
+
+    if let Ok(resp) = provider.chat(final_request, model, temperature).await {
+        let text = resp.text_or_empty().to_string();
+        if !text.trim().is_empty() {
+            // Stream + return the salvaged response.
+            if let Some(ref tx) = on_delta {
+                let _ = tx.send(DRAFT_CLEAR_SENTINEL.to_string()).await;
+                let _ = tx.send(text.clone()).await;
+            }
+            history.push(ChatMessage::assistant(text.clone()));
+            runtime_trace::record_event(
+                "tool_loop_graceful_exhaustion",
+                Some(channel_name),
+                Some(provider_name),
+                Some(model),
+                Some(&turn_id),
+                Some(true),
+                Some("agent summarized partial results after budget exhaustion"),
+                serde_json::json!({
+                    "max_iterations": max_iterations,
+                }),
+            );
+            return Ok(text);
+        }
+    }
+
+    // Last resort: hard error if the model couldn't produce a summary.
     runtime_trace::record_event(
         "tool_loop_exhausted",
         Some(channel_name),
@@ -2616,9 +2668,18 @@ pub(crate) async fn run_tool_call_loop(
 
 /// Build the tool instruction block for the system prompt so the LLM knows
 /// how to invoke tools.
-pub(crate) fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
+pub(crate) fn build_tool_instructions(
+    tools_registry: &[Box<dyn Tool>],
+    max_iterations: usize,
+) -> String {
     let mut instructions = String::new();
     instructions.push_str("\n## Tool Use Protocol\n\n");
+    let _ = writeln!(
+        instructions,
+        "You have a budget of {max_iterations} tool-use rounds for this message. \
+         Plan accordingly — prioritize the most important actions first and be ready \
+         to summarize partial progress.\n"
+    );
     instructions.push_str("To use a tool, wrap a JSON object in <tool_call></tool_call> tags:\n\n");
     instructions.push_str("```\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n```\n\n");
     instructions.push_str(
@@ -2773,6 +2834,18 @@ pub async fn run(
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
     let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
+
+    // ── Skill tools (from SKILL.toml definitions) ────────────────
+    let skill_tools = crate::skills::create_skill_tools(&skills, security.clone());
+    if !skill_tools.is_empty() {
+        tracing::info!(
+            count = skill_tools.len(),
+            skills = skills.len(),
+            "Skill tools registered"
+        );
+        tools_registry.extend(skill_tools);
+    }
+
     let mut tool_descs: Vec<(&str, &str)> = vec![
         (
             "shell",
@@ -2900,7 +2973,10 @@ pub async fn run(
 
     // Append structured tool-use instructions with schemas (only for non-native providers)
     if !native_tools {
-        system_prompt.push_str(&build_tool_instructions(&tools_registry));
+        system_prompt.push_str(&build_tool_instructions(
+            &tools_registry,
+            config.agent.max_tool_iterations,
+        ));
     }
 
     // ── Approval manager (supervised mode) ───────────────────────
@@ -3178,6 +3254,11 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
     tools_registry.extend(peripheral_tools);
 
+    // ── Skill tools (from SKILL.toml definitions) ────────────────
+    let skills_for_tools = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
+    let skill_tools = crate::skills::create_skill_tools(&skills_for_tools, security.clone());
+    tools_registry.extend(skill_tools);
+
     let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
     let model_name = config
         .default_model
@@ -3279,7 +3360,10 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         config.skills.prompt_injection_mode,
     );
     if !native_tools {
-        system_prompt.push_str(&build_tool_instructions(&tools_registry));
+        system_prompt.push_str(&build_tool_instructions(
+            &tools_registry,
+            config.agent.max_tool_iterations,
+        ));
     }
 
     let mem_context = build_context(mem.as_ref(), message, config.memory.min_relevance_score).await;
@@ -4399,9 +4483,10 @@ Tail"#;
             std::path::Path::new("/tmp"),
         ));
         let tools = tools::default_tools(security);
-        let instructions = build_tool_instructions(&tools);
+        let instructions = build_tool_instructions(&tools, 10);
 
         assert!(instructions.contains("## Tool Use Protocol"));
+        assert!(instructions.contains("budget of 10 tool-use rounds"));
         assert!(instructions.contains("<tool_call>"));
         assert!(instructions.contains("shell"));
         assert!(instructions.contains("file_read"));

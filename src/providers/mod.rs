@@ -27,6 +27,9 @@ pub mod ollama;
 pub mod openai;
 pub mod openai_codex;
 pub mod openrouter;
+pub mod quota_adapter;
+pub mod quota_cli;
+pub mod quota_types;
 pub mod reliable;
 pub mod router;
 pub mod telnyx;
@@ -39,6 +42,14 @@ pub use traits::{
 };
 
 pub use health::{ProviderHealthState, ProviderHealthTracker};
+pub use quota_adapter::{
+    AnthropicQuotaExtractor, GeminiQuotaExtractor, OpenAIQuotaExtractor, QuotaExtractor,
+    UniversalQuotaExtractor,
+};
+pub use quota_types::{
+    ProfileQuotaInfo, ProviderQuotaInfo, ProviderUsageMetrics, QuotaMetadata, QuotaStatus,
+    QuotaSummary,
+};
 
 use crate::auth::AuthService;
 use compatible::{AuthStyle, OpenAiCompatibleProvider};

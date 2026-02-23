@@ -656,17 +656,45 @@ fn get_default_pricing() -> std::collections::HashMap<String, ModelPricing> {
 
     // Google models
     prices.insert(
-        "google/gemini-2.0-flash".into(),
+        "google/gemini-3.1-pro-preview".into(),
         ModelPricing {
-            input: 0.10,
-            output: 0.40,
+            input: 2.50,
+            output: 15.0,
         },
     );
     prices.insert(
-        "google/gemini-1.5-pro".into(),
+        "google/gemini-3-pro-preview".into(),
         ModelPricing {
             input: 1.25,
-            output: 5.0,
+            output: 10.0,
+        },
+    );
+    prices.insert(
+        "google/gemini-3-flash-preview".into(),
+        ModelPricing {
+            input: 0.15,
+            output: 0.60,
+        },
+    );
+    prices.insert(
+        "google/gemini-2.5-pro".into(),
+        ModelPricing {
+            input: 1.25,
+            output: 10.0,
+        },
+    );
+    prices.insert(
+        "google/gemini-2.5-flash".into(),
+        ModelPricing {
+            input: 0.15,
+            output: 0.60,
+        },
+    );
+    prices.insert(
+        "google/gemini-2.5-flash-lite".into(),
+        ModelPricing {
+            input: 0.075,
+            output: 0.30,
         },
     );
 

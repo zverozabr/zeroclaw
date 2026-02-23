@@ -1054,7 +1054,7 @@ impl GeminiProvider {
     ) -> anyhow::Result<(String, Option<TokenUsage>)> {
         self.send_generate_content_with_tools(contents, system_instruction, model, temperature, None)
             .await
-            .map(|(text, usage, _)| (text, usage))
+            .map(|(text, usage, _, _)| (text, usage))
     }
 
     async fn send_generate_content_with_tools(
@@ -1064,7 +1064,7 @@ impl GeminiProvider {
         model: &str,
         temperature: f64,
         tools: Option<Vec<GeminiToolDeclaration>>,
-    ) -> anyhow::Result<(String, Option<TokenUsage>, Vec<crate::providers::traits::ToolCall>)> {
+    ) -> anyhow::Result<(String, Option<TokenUsage>, Vec<crate::providers::traits::ToolCall>, Option<super::quota_types::QuotaMetadata>)> {
         let auth = self.auth.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Gemini API key not found. Options:\n\
@@ -1254,6 +1254,10 @@ impl GeminiProvider {
             anyhow::bail!("Gemini API error ({status}): {error_text}");
         }
 
+        // Extract quota metadata from response headers before consuming body
+        let quota_extractor = super::UniversalQuotaExtractor::new();
+        let quota_metadata = quota_extractor.extract("gemini", response.headers(), None);
+
         let result: GenerateContentResponse = response.json().await?;
         if let Some(err) = &result.error {
             anyhow::bail!("Gemini API error: {}", err.message);
@@ -1312,7 +1316,7 @@ impl GeminiProvider {
             text_parts.join("")
         };
 
-        Ok((text, usage, tool_calls))
+        Ok((text, usage, tool_calls, quota_metadata))
     }
 }
 
@@ -1527,7 +1531,7 @@ impl Provider for GeminiProvider {
             None
         };
 
-        let (text, usage, tool_calls) = self
+        let (text, usage, tool_calls, quota_metadata) = self
             .send_generate_content_with_tools(contents, system_instruction, model, temperature, gemini_tools)
             .await?;
 
@@ -1536,6 +1540,7 @@ impl Provider for GeminiProvider {
             tool_calls,
             usage,
             reasoning_content: None,
+            quota_metadata,
         })
     }
 

@@ -326,6 +326,28 @@ Examples:
     /// List supported AI providers
     Providers,
 
+    /// Check provider rate limit and quota status
+    #[command(long_about = "\
+Check provider rate limit and quota status.
+
+Shows current rate limit status, circuit breaker state, failure counts, \
+and retry-after times for all configured providers. Helps diagnose quota \
+exhaustion and rate limiting issues.
+
+Examples:
+  zeroclaw providers-quota                    # show all providers
+  zeroclaw providers-quota --provider gemini  # show specific provider
+  zeroclaw providers-quota --format json      # JSON output")]
+    ProvidersQuota {
+        /// Specific provider to check (optional, shows all if omitted)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
     /// Manage channels (telegram, discord, slack)
     #[command(long_about = "\
 Manage communication channels.
@@ -900,6 +922,10 @@ async fn main() -> Result<()> {
                 onboard::run_models_refresh(&config, provider.as_deref(), force).await
             }
         },
+
+        Commands::ProvidersQuota { provider, format } => {
+            providers::quota_cli::run(&config, provider.as_deref(), &format).await
+        }
 
         Commands::Providers => {
             let providers = providers::list_providers();

@@ -287,6 +287,7 @@ impl OpenAiProvider {
             tool_calls,
             usage: None,
             reasoning_content,
+            quota_metadata: None,
         }
     }
 
@@ -381,6 +382,10 @@ impl Provider for OpenAiProvider {
             return Err(super::api_error("OpenAI", response).await);
         }
 
+        // Extract quota metadata from response headers before consuming body
+        let quota_extractor = super::UniversalQuotaExtractor::new();
+        let quota_metadata = quota_extractor.extract("openai", response.headers(), None);
+
         let native_response: NativeChatResponse = response.json().await?;
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
@@ -394,6 +399,7 @@ impl Provider for OpenAiProvider {
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
         let mut result = Self::parse_native_response(message);
         result.usage = usage;
+        result.quota_metadata = quota_metadata;
         Ok(result)
     }
 
@@ -444,6 +450,10 @@ impl Provider for OpenAiProvider {
             return Err(super::api_error("OpenAI", response).await);
         }
 
+        // Extract quota metadata from response headers before consuming body
+        let quota_extractor = super::UniversalQuotaExtractor::new();
+        let quota_metadata = quota_extractor.extract("openai", response.headers(), None);
+
         let native_response: NativeChatResponse = response.json().await?;
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
@@ -457,6 +467,7 @@ impl Provider for OpenAiProvider {
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
         let mut result = Self::parse_native_response(message);
         result.usage = usage;
+        result.quota_metadata = quota_metadata;
         Ok(result)
     }
 

@@ -1083,8 +1083,16 @@ fn curated_models_for_provider(provider_name: &str) -> Vec<(String, String)> {
         ],
         "gemini" => vec![
             (
+                "gemini-3.1-pro-preview".to_string(),
+                "Gemini 3.1 Pro Preview (API-key only, not available via OAuth)".to_string(),
+            ),
+            (
                 "gemini-3-pro-preview".to_string(),
                 "Gemini 3 Pro Preview (latest frontier reasoning)".to_string(),
+            ),
+            (
+                "gemini-3-flash-preview".to_string(),
+                "Gemini 3 Flash Preview (fast + powerful)".to_string(),
             ),
             (
                 "gemini-2.5-pro".to_string(),
