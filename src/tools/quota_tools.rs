@@ -14,6 +14,7 @@ use crate::tools::{Tool, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,28 +88,32 @@ impl Tool for CheckProviderQuotaTool {
         let circuit_open = summary.circuit_open_providers();
 
         let mut output = String::new();
-        output.push_str(&format!(
+        let _ = write!(
+            output,
             "📊 Quota Status ({})\n\n",
             summary.timestamp.format("%Y-%m-%d %H:%M UTC")
-        ));
+        );
 
         if !available.is_empty() {
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "✅ Available providers: {}\n",
                 available.join(", ")
-            ));
+            );
         }
         if !rate_limited.is_empty() {
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "⚠️  Rate-limited providers: {}\n",
                 rate_limited.join(", ")
-            ));
+            );
         }
         if !circuit_open.is_empty() {
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "❌ Circuit-open providers: {}\n",
                 circuit_open.join(", ")
-            ));
+            );
         }
 
         if available.is_empty() && rate_limited.is_empty() && circuit_open.is_empty() {
@@ -120,31 +125,34 @@ impl Tool for CheckProviderQuotaTool {
         // Add details for each provider
         for provider_info in &summary.providers {
             if provider_filter.is_some() || provider_info.status != QuotaStatus::Ok {
-                output.push_str(&format!(
+                let _ = write!(
+                    output,
                     "\n📍 {}: {:?}\n",
                     provider_info.provider, provider_info.status
-                ));
+                );
 
                 if provider_info.failure_count > 0 {
-                    output.push_str(&format!("   Failures: {}\n", provider_info.failure_count));
+                    let _ = writeln!(output, "   Failures: {}", provider_info.failure_count);
                 }
 
                 if let Some(retry_after) = provider_info.retry_after_seconds {
-                    output.push_str(&format!("   Retry after: {}s\n", retry_after));
+                    let _ = writeln!(output, "   Retry after: {}s", retry_after);
                 }
 
                 for profile in &provider_info.profiles {
                     if let Some(remaining) = profile.rate_limit_remaining {
                         if let Some(total) = profile.rate_limit_total {
-                            output.push_str(&format!(
+                            let _ = write!(
+                                output,
                                 "   {}: {}/{} requests\n",
                                 profile.profile_name, remaining, total
-                            ));
+                            );
                         } else {
-                            output.push_str(&format!(
+                            let _ = write!(
+                                output,
                                 "   {}: {} requests remaining\n",
                                 profile.profile_name, remaining
-                            ));
+                            );
                         }
                     }
                 }
@@ -152,14 +160,15 @@ impl Tool for CheckProviderQuotaTool {
         }
 
         // Add metadata as JSON at the end of output for programmatic parsing
-        output.push_str(&format!(
+        let _ = write!(
+            output,
             "\n\n<!-- metadata: {} -->",
             json!({
                 "available_providers": available,
                 "rate_limited_providers": rate_limited,
                 "circuit_open_providers": circuit_open,
             })
-        ));
+        );
 
         Ok(ToolResult {
             success: true,
