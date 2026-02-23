@@ -599,7 +599,7 @@ mod tests {
 
         // Model sends contact_name as integer (use i64 for large Telegram IDs)
         let args = serde_json::json!({
-            "contact_name": 5084292206_i64,
+            "contact_name": 5_084_292_206_i64,
             "limit": 100
         });
 

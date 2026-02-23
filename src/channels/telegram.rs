@@ -2612,7 +2612,7 @@ mod tests {
             "update_id": 1,
             "message": {
                 "message_id": 99,
-                "chat": { "id": -100123456 }
+                "chat": { "id": -100_123_456 }
             }
         });
 
