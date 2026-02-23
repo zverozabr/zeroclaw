@@ -6,154 +6,12 @@
 
 use crate::auth::AuthService;
 use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
-use crate::tools::ToolSpec;
 use async_trait::async_trait;
 use directories::UserDirs;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info};
-
-// ══════════════════════════════════════════════════════════════════════════════
-// SCHEMA CONVERSION FOR GEMINI API
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// Convert JSON Schema format to Gemini API format
-/// Gemini API requirements (based on official gemini-cli source):
-/// 1. Lowercase type names (string, object, number, boolean, array) - standard JSON Schema
-/// 2. MUST include "type": "object" at parameters root level
-/// 3. Remove unsupported JSON Schema fields: additionalProperties, default, minimum, maximum, etc.
-/// 4. No union types (["string", "null"]) - take first non-null type
-/// 5. No oneOf/anyOf - flatten to most appropriate alternative (prefer array > object > string)
-fn convert_schema_to_gemini_format(schema: &serde_json::Value) -> serde_json::Value {
-    match schema {
-        serde_json::Value::Object(map) => {
-            let mut new_map = serde_json::Map::new();
-
-            // Gemini REQUIRES "type": "object" at the parameters root level
-            // Never skip the type field - it's mandatory for Gemini API
-            // (Kept variable name for git history but it's always false and unused)
-            let _should_skip_type = false;
-
-            // Fields that Gemini API doesn't support (from JSON Schema)
-            // NOTE: "pattern" is NOT included here because it's also a common property name
-            // (e.g., content_search, glob_search tools have a "pattern" parameter).
-            // We should only remove JSON Schema validation fields, not property names.
-            let unsupported_fields = [
-                "additionalProperties",
-                "default",
-                "minimum",
-                "maximum",
-                "minLength",
-                "maxLength",
-                // "pattern",  // REMOVED: conflicts with property names
-                "format",
-            ];
-
-            // Handle oneOf/anyOf by flattening to the most appropriate alternative
-            // Gemini doesn't support oneOf/anyOf directly
-            if map.contains_key("oneOf") || map.contains_key("anyOf") {
-                let alternatives_key = if map.contains_key("oneOf") { "oneOf" } else { "anyOf" };
-
-                if let Some(serde_json::Value::Array(alternatives)) = map.get(alternatives_key) {
-                    // Find the most appropriate alternative:
-                    // Prefer array over string, prefer complex over simple
-                    let mut chosen_alt: Option<&serde_json::Value> = None;
-
-                    for alt in alternatives {
-                        if let Some(alt_map) = alt.as_object() {
-                            if let Some(serde_json::Value::String(type_str)) = alt_map.get("type") {
-                                match type_str.as_str() {
-                                    "array" => {
-                                        // Array is the most flexible, choose it
-                                        chosen_alt = Some(alt);
-                                        break;
-                                    }
-                                    "object" if chosen_alt.is_none() => {
-                                        chosen_alt = Some(alt);
-                                    }
-                                    "string" if chosen_alt.is_none() => {
-                                        chosen_alt = Some(alt);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-
-                    // If we found an alternative, use it; otherwise skip oneOf entirely
-                    if let Some(alt) = chosen_alt {
-                        return convert_schema_to_gemini_format(alt);
-                    } else {
-                        // No valid alternative found, return empty object
-                        return serde_json::Value::Object(serde_json::Map::new());
-                    }
-                }
-            }
-
-            for (key, value) in map {
-                // NEVER skip "type" field - Gemini requires "type": "object" at root!
-                // (Removed the old should_skip_type check that was causing the bug)
-
-                // Skip unsupported fields (including oneOf/anyOf now handled above)
-                if unsupported_fields.contains(&key.as_str()) || key == "oneOf" || key == "anyOf" {
-                    continue;
-                }
-
-                if key == "items" {
-                    // Special handling for array items schema
-                    // Gemini expects: "items": { "type": "STRING" } but we need to convert it
-                    // Actually, based on error, items with ONLY a type field might need special treatment
-                    let converted_items = convert_schema_to_gemini_format(value);
-
-                    // If items is just {"type": "SOMETHING"}, Gemini might want it as a direct type reference
-                    // But let's keep it as-is for now since the recursion should handle it
-                    new_map.insert(key.clone(), converted_items);
-                } else if key == "type" {
-                    // Handle type field - Gemini doesn't support union types like ["string", "null"]
-                    // Convert union types to just the first non-null type
-                    match value {
-                        serde_json::Value::Array(arr) => {
-                            // Union type: ["string", "null"] -> "string" (take first non-null)
-                            let first_type = arr
-                                .iter()
-                                .find(|v| {
-                                    if let serde_json::Value::String(s) = v {
-                                        s != "null"
-                                    } else {
-                                        false
-                                    }
-                                })
-                                .or_else(|| arr.first());
-
-                            if let Some(t) = first_type {
-                                new_map.insert(key.clone(), t.clone());
-                            }
-                            // If no valid type found, skip the type field entirely
-                        }
-                        _ => {
-                            // Single type or other format, keep as-is
-                            new_map.insert(key.clone(), value.clone());
-                        }
-                    }
-                } else {
-                    // Recursively convert nested schemas
-                    new_map.insert(key.clone(), convert_schema_to_gemini_format(value));
-                }
-            }
-            serde_json::Value::Object(new_map)
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(
-                arr.iter()
-                    .map(|v| convert_schema_to_gemini_format(v))
-                    .collect(),
-            )
-        }
-        other => other.clone(),
-    }
-}
 
 /// Gemini provider supporting multiple authentication methods.
 pub struct GeminiProvider {
@@ -230,14 +88,6 @@ struct GenerateContentRequest {
     system_instruction: Option<Content>,
     #[serde(rename = "generationConfig")]
     generation_config: GenerationConfig,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<GeminiToolDeclaration>>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct GeminiToolDeclaration {
-    #[serde(rename = "functionDeclarations")]
-    function_declarations: Vec<serde_json::Value>,
 }
 
 /// Request envelope for the internal cloudcode-pa API.
@@ -274,8 +124,6 @@ struct InternalGenerateContentRequest {
     system_instruction: Option<Content>,
     #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<GeminiToolDeclaration>>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -340,15 +188,6 @@ struct ResponsePart {
     /// Thinking models (e.g. gemini-3-pro-preview) mark reasoning parts with `thought: true`.
     #[serde(default)]
     thought: bool,
-    /// Function call requested by the model.
-    #[serde(default, rename = "functionCall")]
-    function_call: Option<GeminiFunctionCall>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct GeminiFunctionCall {
-    name: String,
-    args: serde_json::Value,
 }
 
 impl CandidateContent {
@@ -1011,7 +850,6 @@ impl GeminiProvider {
                         } else {
                             None
                         },
-                        tools: request.tools.clone(),
                     },
                 };
                 self.http_client()
@@ -1052,19 +890,6 @@ impl GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<(String, Option<TokenUsage>)> {
-        self.send_generate_content_with_tools(contents, system_instruction, model, temperature, None)
-            .await
-            .map(|(text, usage, _, _)| (text, usage))
-    }
-
-    async fn send_generate_content_with_tools(
-        &self,
-        contents: Vec<Content>,
-        system_instruction: Option<Content>,
-        model: &str,
-        temperature: f64,
-        tools: Option<Vec<GeminiToolDeclaration>>,
-    ) -> anyhow::Result<(String, Option<TokenUsage>, Vec<crate::providers::traits::ToolCall>, Option<super::quota_types::QuotaMetadata>)> {
         let auth = self.auth.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Gemini API key not found. Options:\n\
@@ -1114,18 +939,7 @@ impl GeminiProvider {
                 temperature,
                 max_output_tokens: 8192,
             },
-            tools: tools.clone(),
         };
-
-        // Debug: log tools payload if present
-        if let Some(ref tools_list) = request.tools {
-            debug!("🚀 Sending request with {} tool declarations", tools_list.len());
-            if !tools_list.is_empty() && !tools_list[0].function_declarations.is_empty() {
-                debug!("📦 Sample tool declaration (first one):\n{}",
-                    serde_json::to_string_pretty(&tools_list[0].function_declarations[0])
-                        .unwrap_or_else(|_| "ERROR".to_string()));
-            }
-        }
 
         let url = Self::build_generate_content_url(model, auth);
 
@@ -1254,10 +1068,6 @@ impl GeminiProvider {
             anyhow::bail!("Gemini API error ({status}): {error_text}");
         }
 
-        // Extract quota metadata from response headers before consuming body
-        let quota_extractor = super::UniversalQuotaExtractor::new();
-        let quota_metadata = quota_extractor.extract("gemini", response.headers(), None);
-
         let result: GenerateContentResponse = response.json().await?;
         if let Some(err) = &result.error {
             anyhow::bail!("Gemini API error: {}", err.message);
@@ -1272,104 +1082,19 @@ impl GeminiProvider {
             output_tokens: u.candidates_token_count,
         });
 
-        let candidate = result
+        let text = result
             .candidates
             .and_then(|c| c.into_iter().next())
+            .and_then(|c| c.content)
+            .and_then(|c| c.effective_text())
             .ok_or_else(|| anyhow::anyhow!("No response from Gemini"))?;
 
-        let content = candidate
-            .content
-            .ok_or_else(|| anyhow::anyhow!("No content in Gemini response"))?;
-
-        // Extract function calls first (before consuming content for text)
-        let mut tool_calls = Vec::new();
-        let mut text_parts = Vec::new();
-        let mut first_thinking: Option<String> = None;
-
-        for (idx, part) in content.parts.into_iter().enumerate() {
-            // Extract function call if present
-            if let Some(fc) = part.function_call {
-                tool_calls.push(crate::providers::traits::ToolCall {
-                    id: format!("call_{}", idx),
-                    name: fc.name.clone(),
-                    arguments: serde_json::to_string(&fc.args)
-                        .unwrap_or_else(|_| "{}".to_string()),
-                });
-            }
-
-            // Extract text
-            if let Some(text) = part.text {
-                if !text.is_empty() {
-                    if !part.thought {
-                        text_parts.push(text);
-                    } else if first_thinking.is_none() {
-                        first_thinking = Some(text);
-                    }
-                }
-            }
-        }
-
-        // Build final text response
-        let text = if text_parts.is_empty() {
-            first_thinking.unwrap_or_default()
-        } else {
-            text_parts.join("")
-        };
-
-        Ok((text, usage, tool_calls, quota_metadata))
+        Ok((text, usage))
     }
 }
 
 #[async_trait]
 impl Provider for GeminiProvider {
-    fn capabilities(&self) -> crate::providers::traits::ProviderCapabilities {
-        crate::providers::traits::ProviderCapabilities {
-            native_tool_calling: true,
-            vision: false,
-        }
-    }
-
-    fn convert_tools(&self, tools: &[ToolSpec]) -> crate::providers::traits::ToolsPayload {
-        if tools.is_empty() {
-            return crate::providers::traits::ToolsPayload::Gemini {
-                function_declarations: Vec::new(),
-            };
-        }
-
-        info!("🔧 Converting {} tools for Gemini API", tools.len());
-
-        let function_declarations: Vec<serde_json::Value> = tools
-            .iter()
-            .enumerate()
-            .map(|(idx, tool)| {
-                debug!("   Tool[{}]: {}", idx, tool.name);
-
-                // Convert JSON Schema types to Gemini API format (uppercase types)
-                let gemini_params = convert_schema_to_gemini_format(&tool.parameters);
-
-                let decl = serde_json::json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": gemini_params
-                });
-
-                // Log first tool in detail for debugging
-                if idx == 0 {
-                    debug!("   📋 First tool declaration:\n{}",
-                        serde_json::to_string_pretty(&decl).unwrap_or_else(|_| "ERROR".to_string()));
-                }
-
-                decl
-            })
-            .collect();
-
-        info!("✅ Converted {} function declarations", function_declarations.len());
-
-        crate::providers::traits::ToolsPayload::Gemini {
-            function_declarations,
-        }
-    }
-
     async fn chat_with_system(
         &self,
         system_prompt: Option<&str>,
@@ -1488,59 +1213,16 @@ impl Provider for GeminiProvider {
             })
         };
 
-        // Convert tools to Gemini format if provided
-        let gemini_tools = if let Some(tools) = request.tools {
-            if !tools.is_empty() {
-                info!("🔧 Converting {} tools for Gemini API in chat()", tools.len());
-
-                let function_declarations: Vec<serde_json::Value> = tools
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, tool)| {
-                        debug!("   Tool[{}]: {}", idx, tool.name);
-
-                        // CRITICAL: Convert schema to Gemini format (uppercase types, no root "type": "object")
-                        let gemini_params = convert_schema_to_gemini_format(&tool.parameters);
-
-                        let decl = serde_json::json!({
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": gemini_params
-                        });
-
-                        // Log tool 16 (17th, where error occurs) and first few
-                        if idx == 16 || idx < 3 {
-                            debug!("   📋 Tool[{}] '{}' after conversion:\n{}",
-                                idx, tool.name,
-                                serde_json::to_string_pretty(&decl).unwrap_or_else(|_| "ERROR".to_string()));
-                        }
-
-                        decl
-                    })
-                    .collect();
-
-                info!("✅ Converted {} function declarations in chat()", function_declarations.len());
-
-                Some(vec![GeminiToolDeclaration {
-                    function_declarations,
-                }])
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let (text, usage, tool_calls, quota_metadata) = self
-            .send_generate_content_with_tools(contents, system_instruction, model, temperature, gemini_tools)
+        let (text, usage) = self
+            .send_generate_content(contents, system_instruction, model, temperature)
             .await?;
 
         Ok(ChatResponse {
-            text: if text.is_empty() { None } else { Some(text) },
-            tool_calls,
+            text: Some(text),
+            tool_calls: Vec::new(),
             usage,
             reasoning_content: None,
-            quota_metadata,
+            quota_metadata: None,
         })
     }
 
@@ -1720,7 +1402,6 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
-            tools: None,
         };
 
         let request = provider
@@ -1762,7 +1443,6 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
-            tools: None,
         };
 
         let request = provider
@@ -1807,7 +1487,6 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
-            tools: None,
         };
 
         let request = provider
@@ -1845,7 +1524,6 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
-            tools: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -1875,7 +1553,6 @@ mod tests {
                     temperature: 0.7,
                     max_output_tokens: 8192,
                 }),
-                tools: None,
             },
         };
 
@@ -1905,7 +1582,6 @@ mod tests {
                 }],
                 system_instruction: None,
                 generation_config: None,
-                tools: None,
             },
         };
 
@@ -1929,7 +1605,6 @@ mod tests {
                 }],
                 system_instruction: None,
                 generation_config: None,
-                tools: None,
             },
         };
 
@@ -2267,192 +1942,5 @@ mod tests {
         let json = r#"{"candidates": [{"content": {"parts": [{"text": "Hello"}]}}]}"#;
         let resp: GenerateContentResponse = serde_json::from_str(json).unwrap();
         assert!(resp.usage_metadata.is_none());
-    }
-
-    #[test]
-    fn test_schema_conversion_removes_root_type() {
-        let input = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search term"
-                },
-                "limit": {
-                    "type": "number",
-                    "description": "Result limit"
-                }
-            },
-            "required": ["query"]
-        });
-
-        let result = convert_schema_to_gemini_format(&input);
-
-        println!("\nInput schema:");
-        println!("{}", serde_json::to_string_pretty(&input).unwrap());
-
-        println!("\nConverted schema:");
-        println!("{}", serde_json::to_string_pretty(&result).unwrap());
-
-        // Check root "type" is removed
-        assert!(result.get("type").is_none(), "Root 'type' should be removed");
-
-        // Check properties types are uppercase
-        let props = result.get("properties").unwrap();
-        let query_type = props.get("query").unwrap().get("type").unwrap();
-        assert_eq!(query_type.as_str().unwrap(), "STRING");
-
-        let limit_type = props.get("limit").unwrap().get("type").unwrap();
-        assert_eq!(limit_type.as_str().unwrap(), "NUMBER");
-    }
-
-    #[test]
-    fn test_schema_conversion_nested_objects() {
-        // Test nested object within array
-        let input = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "age": {"type": "number"}
-                        }
-                    }
-                }
-            }
-        });
-
-        let result = convert_schema_to_gemini_format(&input);
-
-        println!("\nNested input:");
-        println!("{}", serde_json::to_string_pretty(&input).unwrap());
-
-        println!("\nNested converted:");
-        println!("{}", serde_json::to_string_pretty(&result).unwrap());
-
-        // Root "type": "object" should be removed
-        assert!(result.get("type").is_none());
-
-        // Navigate to nested object
-        let items = result.get("properties").unwrap().get("items").unwrap();
-        assert_eq!(items.get("type").unwrap().as_str().unwrap(), "ARRAY");
-
-        let nested_items = items.get("items").unwrap();
-        // Nested "type": "object" should ALSO be removed
-        assert!(nested_items.get("type").is_none(), "Nested object 'type' should be removed");
-
-        // But nested properties should have uppercase types
-        let nested_props = nested_items.get("properties").unwrap();
-        assert_eq!(nested_props.get("name").unwrap().get("type").unwrap().as_str().unwrap(), "STRING");
-        assert_eq!(nested_props.get("age").unwrap().get("type").unwrap().as_str().unwrap(), "NUMBER");
-    }
-
-    #[test]
-    fn test_schema_conversion_union_types() {
-        // Test union types (nullable fields)
-        let input = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "api_key": {
-                    "type": ["string", "null"],
-                    "description": "Optional API key"
-                },
-                "count": {
-                    "type": ["integer", "null"]
-                }
-            }
-        });
-
-        let result = convert_schema_to_gemini_format(&input);
-
-        println!("\nUnion types input:");
-        println!("{}", serde_json::to_string_pretty(&input).unwrap());
-
-        println!("\nUnion types converted:");
-        println!("{}", serde_json::to_string_pretty(&result).unwrap());
-
-        // Root "type": "object" should be removed
-        assert!(result.get("type").is_none());
-
-        let props = result.get("properties").unwrap();
-
-        // Single type should be uppercase string
-        assert_eq!(props.get("name").unwrap().get("type").unwrap().as_str().unwrap(), "STRING");
-
-        // Union type should be uppercase array
-        let api_key_type = props.get("api_key").unwrap().get("type").unwrap().as_array().unwrap();
-        assert_eq!(api_key_type.len(), 2);
-        assert_eq!(api_key_type[0].as_str().unwrap(), "STRING");
-        assert_eq!(api_key_type[1].as_str().unwrap(), "NULL");
-
-        let count_type = props.get("count").unwrap().get("type").unwrap().as_array().unwrap();
-        assert_eq!(count_type[0].as_str().unwrap(), "INTEGER");
-        assert_eq!(count_type[1].as_str().unwrap(), "NULL");
-    }
-
-    #[test]
-    fn test_schema_conversion_removes_unsupported_fields() {
-        // Test that JSON Schema fields unsupported by Gemini are removed
-        let input = serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100
-                },
-                "age": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 150,
-                    "default": 18
-                },
-                "email": {
-                    "type": "string",
-                    "format": "email",
-                    "pattern": "^[a-z]+@[a-z]+\\.[a-z]+$"
-                }
-            }
-        });
-
-        let result = convert_schema_to_gemini_format(&input);
-
-        println!("\nUnsupported fields input:");
-        println!("{}", serde_json::to_string_pretty(&input).unwrap());
-
-        println!("\nUnsupported fields removed:");
-        println!("{}", serde_json::to_string_pretty(&result).unwrap());
-
-        // Root "type": "object" should be removed
-        assert!(result.get("type").is_none());
-
-        // additionalProperties should be removed
-        assert!(result.get("additionalProperties").is_none());
-
-        let props = result.get("properties").unwrap();
-
-        // Check name field - minLength, maxLength should be removed
-        let name = props.get("name").unwrap();
-        assert_eq!(name.get("type").unwrap().as_str().unwrap(), "STRING");
-        assert!(name.get("minLength").is_none());
-        assert!(name.get("maxLength").is_none());
-
-        // Check age field - minimum, maximum, default should be removed
-        let age = props.get("age").unwrap();
-        assert_eq!(age.get("type").unwrap().as_str().unwrap(), "INTEGER");
-        assert!(age.get("minimum").is_none());
-        assert!(age.get("maximum").is_none());
-        assert!(age.get("default").is_none());
-
-        // Check email field - format, pattern should be removed
-        let email = props.get("email").unwrap();
-        assert_eq!(email.get("type").unwrap().as_str().unwrap(), "STRING");
-        assert!(email.get("format").is_none());
-        assert!(email.get("pattern").is_none());
     }
 }
