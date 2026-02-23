@@ -6191,7 +6191,7 @@ default_temperature = 0.7
         let _ = fs::remove_dir_all(default_config_dir).await;
     }
 
-    #[test]
+    #[tokio::test]
     async fn resolve_runtime_config_dirs_uses_active_workspace_marker() {
         let _env_guard = env_override_lock().await;
         let default_config_dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
@@ -6199,6 +6199,7 @@ default_temperature = 0.7
         let marker_config_dir = default_config_dir.join("profiles").join("alpha");
         let state_path = default_config_dir.join(ACTIVE_WORKSPACE_STATE_FILE);
 
+        std::env::remove_var("ZEROCLAW_CONFIG_DIR");
         std::env::remove_var("ZEROCLAW_WORKSPACE");
         fs::create_dir_all(&default_config_dir).await.unwrap();
         let state = ActiveWorkspaceState {
@@ -6220,12 +6221,13 @@ default_temperature = 0.7
         let _ = fs::remove_dir_all(default_config_dir).await;
     }
 
-    #[test]
+    #[tokio::test]
     async fn resolve_runtime_config_dirs_falls_back_to_default_layout() {
         let _env_guard = env_override_lock().await;
         let default_config_dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let default_workspace_dir = default_config_dir.join("workspace");
 
+        std::env::remove_var("ZEROCLAW_CONFIG_DIR");
         std::env::remove_var("ZEROCLAW_WORKSPACE");
         let (config_dir, resolved_workspace_dir, source) =
             resolve_runtime_config_dirs(&default_config_dir, &default_workspace_dir)
@@ -6239,7 +6241,7 @@ default_temperature = 0.7
         let _ = fs::remove_dir_all(default_config_dir).await;
     }
 
-    #[test]
+    #[tokio::test]
     async fn load_or_init_workspace_override_uses_workspace_root_for_config() {
         let _env_guard = env_override_lock().await;
         let temp_home =
@@ -6248,6 +6250,7 @@ default_temperature = 0.7
 
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &temp_home);
+        std::env::remove_var("ZEROCLAW_CONFIG_DIR");
         std::env::set_var("ZEROCLAW_WORKSPACE", &workspace_dir);
 
         let config = Config::load_or_init().await.unwrap();
@@ -6265,7 +6268,7 @@ default_temperature = 0.7
         let _ = fs::remove_dir_all(temp_home).await;
     }
 
-    #[test]
+    #[tokio::test]
     async fn load_or_init_workspace_suffix_uses_legacy_config_layout() {
         let _env_guard = env_override_lock().await;
         let temp_home =
@@ -6275,6 +6278,7 @@ default_temperature = 0.7
 
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &temp_home);
+        std::env::remove_var("ZEROCLAW_CONFIG_DIR");
         std::env::set_var("ZEROCLAW_WORKSPACE", &workspace_dir);
 
         let config = Config::load_or_init().await.unwrap();
@@ -6292,7 +6296,7 @@ default_temperature = 0.7
         let _ = fs::remove_dir_all(temp_home).await;
     }
 
-    #[test]
+    #[tokio::test]
     async fn load_or_init_workspace_override_keeps_existing_legacy_config() {
         let _env_guard = env_override_lock().await;
         let temp_home =
@@ -6313,6 +6317,7 @@ default_model = "legacy-model"
 
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &temp_home);
+        std::env::remove_var("ZEROCLAW_CONFIG_DIR");
         std::env::set_var("ZEROCLAW_WORKSPACE", &workspace_dir);
 
         let config = Config::load_or_init().await.unwrap();
@@ -6330,7 +6335,7 @@ default_model = "legacy-model"
         let _ = fs::remove_dir_all(temp_home).await;
     }
 
-    #[test]
+    #[tokio::test]
     async fn load_or_init_uses_persisted_active_workspace_marker() {
         let _env_guard = env_override_lock().await;
         let temp_home =
@@ -6347,6 +6352,7 @@ default_model = "legacy-model"
 
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &temp_home);
+        std::env::remove_var("ZEROCLAW_CONFIG_DIR");
         std::env::remove_var("ZEROCLAW_WORKSPACE");
 
         persist_active_workspace_config_dir(&custom_config_dir)
@@ -6367,7 +6373,7 @@ default_model = "legacy-model"
         let _ = fs::remove_dir_all(temp_home).await;
     }
 
-    #[test]
+    #[tokio::test]
     async fn load_or_init_env_workspace_override_takes_priority_over_marker() {
         let _env_guard = env_override_lock().await;
         let temp_home =
@@ -6385,6 +6391,7 @@ default_model = "legacy-model"
 
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &temp_home);
+        std::env::remove_var("ZEROCLAW_CONFIG_DIR");
         persist_active_workspace_config_dir(&marker_config_dir)
             .await
             .unwrap();
