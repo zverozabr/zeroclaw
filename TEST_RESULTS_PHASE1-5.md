@@ -288,7 +288,7 @@ provider="gemini" failure_count=3 threshold=3 cooldown_secs=60
 Skipping provider - circuit breaker open
 provider="gemini" remaining_secs=42 failure_count=3
 ```
-**Behavior**: 
+**Behavior**:
 - Opens after 3 failures ✅
 - Shows countdown to reset ✅
 - Skips provider while open ✅
@@ -296,7 +296,7 @@ provider="gemini" remaining_secs=42 failure_count=3
 #### ✅ Rate Limit Detection
 ```
 Provider call failed, retrying
-reason="rate_limited" 
+reason="rate_limited"
 error="Gemini API error (429 Too Many Requests)"
 ```
 **Detection**: ✅ Correctly identifies 429 errors as rate limits
@@ -326,5 +326,5 @@ error="Gemini API error (429 Too Many Requests)"
 
 **Phases 1-5 не только компилируются, но и реально работают в продакшене!** 🎉
 
-Единственный лимит: quota metadata не персистится между запусками (хранится в памяти). 
+Единственный лимит: quota metadata не персистится между запусками (хранится в памяти).
 Это запланировано для будущих фаз, если понадобится.

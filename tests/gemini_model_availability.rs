@@ -24,9 +24,7 @@ const GEMINI_MODELS: &[&str] = &[
 ];
 
 /// Models available only via API key (not via OAuth / cloudcode-pa).
-const GEMINI_MODELS_API_KEY_ONLY: &[&str] = &[
-    "gemini-3.1-pro-preview",
-];
+const GEMINI_MODELS_API_KEY_ONLY: &[&str] = &["gemini-3.1-pro-preview"];
 
 /// Create a Gemini provider using managed OAuth from auth-profiles.json.
 fn create_gemini_provider(profile: Option<&str>) -> Box<dyn Provider> {

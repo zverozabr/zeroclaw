@@ -27,9 +27,9 @@ pub async fn check_quota_warning(
     }
 
     let health_tracker = ProviderHealthTracker::new(
-        3,                          // failure_threshold
-        Duration::from_secs(60),    // cooldown
-        100,                        // max tracked providers
+        3,                       // failure_threshold
+        Duration::from_secs(60), // cooldown
+        100,                     // max tracked providers
     );
 
     let auth_store = AuthProfilesStore::new(&config.workspace_dir, config.secrets.encrypt);
@@ -42,7 +42,11 @@ pub async fn check_quota_warning(
     )?;
 
     // Find the provider in summary
-    if let Some(provider_info) = summary.providers.iter().find(|p| p.provider == provider_name) {
+    if let Some(provider_info) = summary
+        .providers
+        .iter()
+        .find(|p| p.provider == provider_name)
+    {
         // Check circuit breaker status
         if provider_info.status == QuotaStatus::CircuitOpen {
             let reset_str = if let Some(resets_at) = provider_info.circuit_resets_at {
@@ -120,7 +124,10 @@ pub fn parse_switch_provider_metadata(tool_output: &str) -> Option<(String, Opti
                         .get("provider")
                         .and_then(|v| v.as_str())
                         .map(String::from);
-                    let model = metadata.get("model").and_then(|v| v.as_str()).map(String::from);
+                    let model = metadata
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
 
                     if let Some(p) = provider {
                         return Some((p, model));
@@ -168,9 +175,9 @@ pub async fn find_available_provider(
     current_provider: &str,
 ) -> Result<Option<String>> {
     let health_tracker = ProviderHealthTracker::new(
-        3,                          // failure_threshold
-        Duration::from_secs(60),    // cooldown
-        100,                        // max tracked providers
+        3,                       // failure_threshold
+        Duration::from_secs(60), // cooldown
+        100,                     // max tracked providers
     );
 
     let auth_store = AuthProfilesStore::new(&config.workspace_dir, config.secrets.encrypt);
@@ -181,9 +188,7 @@ pub async fn find_available_provider(
 
     // Find providers with Ok status (not current provider)
     for provider_info in &summary.providers {
-        if provider_info.provider != current_provider
-            && provider_info.status == QuotaStatus::Ok
-        {
+        if provider_info.provider != current_provider && provider_info.status == QuotaStatus::Ok {
             return Ok(Some(provider_info.provider.clone()));
         }
     }

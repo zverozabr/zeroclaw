@@ -1819,7 +1819,7 @@ pub(crate) async fn agent_turn(
         None,
         None,
         &[],
-        None,  // Phase 5: config parameter
+        None, // Phase 5: config parameter
     )
     .await
 }
@@ -2010,7 +2010,7 @@ pub(crate) async fn run_tool_call_loop(
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
-    config: Option<&crate::config::Config>,  // Phase 5: for quota awareness
+    config: Option<&crate::config::Config>, // Phase 5: for quota awareness
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -3086,7 +3086,7 @@ pub async fn run(
             None,
             None,
             &[],
-        None,  // Phase 5: config parameter
+            None, // Phase 5: config parameter
         )
         .await?;
         final_output = response.clone();
@@ -3208,7 +3208,7 @@ pub async fn run(
                 None,
                 None,
                 &[],
-                            Some(&config),  // Phase 5: pass config for interactive mode
+                Some(&config), // Phase 5: pass config for interactive mode
             )
             .await
             {
@@ -3565,7 +3565,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
-                quota_metadata: None,
+                    quota_metadata: None,
                 })
                 .collect();
             Self {
@@ -3760,7 +3760,7 @@ mod tests {
             None,
             None,
             &[],
-        None,  // config
+            None, // config
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3807,7 +3807,7 @@ mod tests {
             None,
             None,
             &[],
-        None,  // config
+            None, // config
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3848,7 +3848,7 @@ mod tests {
             None,
             None,
             &[],
-        None,  // config
+            None, // config
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -3975,7 +3975,7 @@ mod tests {
             None,
             None,
             &[],
-        None,  // config
+            None, // config
         )
         .await
         .expect("parallel execution should complete");
@@ -4045,7 +4045,7 @@ mod tests {
             None,
             None,
             &[],
-        None,  // config
+            None, // config
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4102,7 +4102,7 @@ mod tests {
             None,
             None,
             &[],
-        None,  // config
+            None, // config
         )
         .await
         .expect("native fallback id flow should complete");

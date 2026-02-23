@@ -313,7 +313,10 @@ impl ReliableProvider {
         // Find all providers with same base but different profile
         self.providers.iter().filter(move |(name, _)| {
             // Check if this is the same base provider
-            let this_base = name.split_once(':').map(|(base, _)| base).unwrap_or(name.as_str());
+            let this_base = name
+                .split_once(':')
+                .map(|(base, _)| base)
+                .unwrap_or(name.as_str());
 
             // Same base provider AND different name (different profile) AND circuit breaker closed
             this_base == base_provider
@@ -417,7 +420,8 @@ impl Provider for ReliableProvider {
                             // between multiple accounts of the same provider (e.g., gemini:account1 → gemini:account2).
                             if rate_limited && !non_retryable_rate_limit && attempt == 0 {
                                 // On first rate limit, check for alternative profiles
-                                let alt_profiles: Vec<_> = self.find_alternative_profiles(provider_name).collect();
+                                let alt_profiles: Vec<_> =
+                                    self.find_alternative_profiles(provider_name).collect();
 
                                 if !alt_profiles.is_empty() {
                                     tracing::info!(
@@ -430,7 +434,12 @@ impl Provider for ReliableProvider {
                                     // Try each alternative profile
                                     for (alt_name, alt_provider) in &alt_profiles {
                                         match alt_provider
-                                            .chat_with_system(system_prompt, message, current_model, temperature)
+                                            .chat_with_system(
+                                                system_prompt,
+                                                message,
+                                                current_model,
+                                                temperature,
+                                            )
                                             .await
                                         {
                                             Ok(resp) => {
@@ -445,8 +454,10 @@ impl Provider for ReliableProvider {
                                             }
                                             Err(alt_err) => {
                                                 // Record failure for alternative profile
-                                                let alt_error_detail = compact_error_detail(&alt_err);
-                                                self.health.record_failure(alt_name, &alt_error_detail);
+                                                let alt_error_detail =
+                                                    compact_error_detail(&alt_err);
+                                                self.health
+                                                    .record_failure(alt_name, &alt_error_detail);
                                                 tracing::debug!(
                                                     alternative_provider = alt_name,
                                                     error = %alt_error_detail,
@@ -599,7 +610,8 @@ impl Provider for ReliableProvider {
                             // Rate-limit: try alternative profiles of the same provider first
                             if rate_limited && !non_retryable_rate_limit && attempt == 0 {
                                 // On first rate limit, check for alternative profiles
-                                let alt_profiles: Vec<_> = self.find_alternative_profiles(provider_name).collect();
+                                let alt_profiles: Vec<_> =
+                                    self.find_alternative_profiles(provider_name).collect();
 
                                 if !alt_profiles.is_empty() {
                                     tracing::info!(
@@ -627,8 +639,10 @@ impl Provider for ReliableProvider {
                                             }
                                             Err(alt_err) => {
                                                 // Record failure for alternative profile
-                                                let alt_error_detail = compact_error_detail(&alt_err);
-                                                self.health.record_failure(alt_name, &alt_error_detail);
+                                                let alt_error_detail =
+                                                    compact_error_detail(&alt_err);
+                                                self.health
+                                                    .record_failure(alt_name, &alt_error_detail);
                                                 tracing::debug!(
                                                     alternative_provider = alt_name,
                                                     error = %alt_error_detail,
@@ -787,7 +801,8 @@ impl Provider for ReliableProvider {
                             // Rate-limit: try alternative profiles of the same provider first
                             if rate_limited && !non_retryable_rate_limit && attempt == 0 {
                                 // On first rate limit, check for alternative profiles
-                                let alt_profiles: Vec<_> = self.find_alternative_profiles(provider_name).collect();
+                                let alt_profiles: Vec<_> =
+                                    self.find_alternative_profiles(provider_name).collect();
 
                                 if !alt_profiles.is_empty() {
                                     tracing::info!(
@@ -800,7 +815,12 @@ impl Provider for ReliableProvider {
                                     // Try each alternative profile
                                     for (alt_name, alt_provider) in &alt_profiles {
                                         match alt_provider
-                                            .chat_with_tools(messages, tools, current_model, temperature)
+                                            .chat_with_tools(
+                                                messages,
+                                                tools,
+                                                current_model,
+                                                temperature,
+                                            )
                                             .await
                                         {
                                             Ok(resp) => {
@@ -815,8 +835,10 @@ impl Provider for ReliableProvider {
                                             }
                                             Err(alt_err) => {
                                                 // Record failure for alternative profile
-                                                let alt_error_detail = compact_error_detail(&alt_err);
-                                                self.health.record_failure(alt_name, &alt_error_detail);
+                                                let alt_error_detail =
+                                                    compact_error_detail(&alt_err);
+                                                self.health
+                                                    .record_failure(alt_name, &alt_error_detail);
                                                 tracing::debug!(
                                                     alternative_provider = alt_name,
                                                     error = %alt_error_detail,
@@ -974,7 +996,8 @@ impl Provider for ReliableProvider {
                             // Rate-limit: try alternative profiles of the same provider first
                             if rate_limited && !non_retryable_rate_limit && attempt == 0 {
                                 // On first rate limit, check for alternative profiles
-                                let alt_profiles: Vec<_> = self.find_alternative_profiles(provider_name).collect();
+                                let alt_profiles: Vec<_> =
+                                    self.find_alternative_profiles(provider_name).collect();
 
                                 if !alt_profiles.is_empty() {
                                     tracing::info!(
@@ -1009,8 +1032,10 @@ impl Provider for ReliableProvider {
                                             }
                                             Err(alt_err) => {
                                                 // Record failure for alternative profile
-                                                let alt_error_detail = compact_error_detail(&alt_err);
-                                                self.health.record_failure(alt_name, &alt_error_detail);
+                                                let alt_error_detail =
+                                                    compact_error_detail(&alt_err);
+                                                self.health
+                                                    .record_failure(alt_name, &alt_error_detail);
                                                 tracing::debug!(
                                                     alternative_provider = alt_name,
                                                     error = %alt_error_detail,
@@ -2333,7 +2358,10 @@ mod tests {
             1,
         );
 
-        let result = provider.simple_chat("hello", "test-model", 0.0).await.unwrap();
+        let result = provider
+            .simple_chat("hello", "test-model", 0.0)
+            .await
+            .unwrap();
         assert_eq!(result, "rotated ok", "should have rotated to profile-2");
         assert_eq!(
             profile1_calls.load(Ordering::SeqCst),
@@ -2382,7 +2410,10 @@ mod tests {
             .chat_with_history(&messages, "test-model", 0.0)
             .await
             .unwrap();
-        assert_eq!(result, "history rotated", "should have rotated to profile-2");
+        assert_eq!(
+            result, "history rotated",
+            "should have rotated to profile-2"
+        );
         assert_eq!(profile1_calls.load(Ordering::SeqCst), 1);
         assert_eq!(profile2_calls.load(Ordering::SeqCst), 1);
     }
@@ -2516,7 +2547,10 @@ mod tests {
             1,
         );
 
-        let result = provider.simple_chat("hello", "test-model", 0.0).await.unwrap();
+        let result = provider
+            .simple_chat("hello", "test-model", 0.0)
+            .await
+            .unwrap();
         assert_eq!(
             result, "openai ok",
             "should fall back to openai as normal provider fallback, not profile rotation"

@@ -271,7 +271,7 @@ mod tests {
             }],
             usage: None,
             reasoning_content: None,
-                quota_metadata: None,
+            quota_metadata: None,
         };
         let dispatcher = NativeToolDispatcher;
         let (_, calls) = dispatcher.parse_response(&response);

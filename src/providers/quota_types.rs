@@ -73,7 +73,9 @@ impl QuotaSummary {
     pub fn rate_limited_providers(&self) -> Vec<&str> {
         self.providers
             .iter()
-            .filter(|p| p.status == QuotaStatus::RateLimited || p.status == QuotaStatus::QuotaExhausted)
+            .filter(|p| {
+                p.status == QuotaStatus::RateLimited || p.status == QuotaStatus::QuotaExhausted
+            })
             .map(|p| p.provider.as_str())
             .collect()
     }
