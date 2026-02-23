@@ -411,6 +411,7 @@ impl DelegateTool {
                 None,
                 None,
                 &[],
+                None,  // Phase 5: delegate tool doesn't need quota awareness
             ),
         )
         .await;

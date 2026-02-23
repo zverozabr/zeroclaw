@@ -1819,6 +1819,7 @@ pub(crate) async fn agent_turn(
         None,
         None,
         &[],
+        None,  // Phase 5: config parameter
     )
     .await
 }
@@ -2009,6 +2010,7 @@ pub(crate) async fn run_tool_call_loop(
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
+    config: Option<&crate::config::Config>,  // Phase 5: for quota awareness
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -3038,6 +3040,7 @@ pub async fn run(
             None,
             None,
             &[],
+        None,  // Phase 5: config parameter
         )
         .await?;
         final_output = response.clone();
@@ -3159,6 +3162,7 @@ pub async fn run(
                 None,
                 None,
                 &[],
+                            Some(&config),  // Phase 5: pass config for interactive mode
             )
             .await
             {

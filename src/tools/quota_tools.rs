@@ -6,12 +6,12 @@
 //! - Estimate quota costs before operations
 //! - Report usage metrics to the user
 
-use crate::auth::profiles::{AuthProfilesData, AuthProfilesStore};
+use crate::auth::profiles::AuthProfilesStore;
 use crate::config::Config;
 use crate::providers::health::ProviderHealthTracker;
 use crate::providers::quota_types::{QuotaStatus, QuotaSummary};
 use crate::tools::{Tool, ToolResult};
-use anyhow::{bail, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;

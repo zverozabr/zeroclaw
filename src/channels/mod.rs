@@ -1722,6 +1722,7 @@ async fn process_channel_message(
                 } else {
                     ctx.non_cli_excluded_tools.as_ref()
                 },
+                None,  // Phase 5: channels don't have config
             ),
         ) => LlmExecutionResult::Completed(result),
     };
