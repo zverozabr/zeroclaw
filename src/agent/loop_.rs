@@ -2325,6 +2325,29 @@ pub(crate) async fn run_tool_call_loop(
             let _ = std::io::stdout().flush();
         }
 
+        // ── Proactive Quota Check (Phase 5): Warn before parallel operations ──
+        // Check if we should warn about low quota before executing multiple tools in parallel.
+        if let Some(cfg) = config {
+            if tool_calls.len() >= 5 {
+                if let Ok(Some(warning)) = crate::agent::quota_aware::check_quota_warning(
+                    cfg,
+                    provider_name,
+                    tool_calls.len(),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        provider = provider_name,
+                        parallel_count = tool_calls.len(),
+                        "Low quota detected before parallel tool execution"
+                    );
+                    if let Some(ref tx) = on_delta {
+                        let _ = tx.send(format!("\n{warning}\n\n")).await;
+                    }
+                }
+            }
+        }
+
         // Execute tool calls and build results. `individual_results` tracks per-call output so
         // native-mode history can emit one role=tool message per tool call with the correct ID.
         //
@@ -2567,7 +2590,30 @@ pub(crate) async fn run_tool_call_loop(
 
         for entry in ordered_results {
             if let Some((tool_name, tool_call_id, outcome)) = entry {
-                individual_results.push((tool_call_id, outcome.output.clone()));
+                individual_results.push((tool_call_id.clone(), outcome.output.clone()));
+
+                // ── Phase 5: Detect switch_provider tool calls ──
+                // If the tool is switch_provider, parse its metadata and log the request.
+                // Actual provider switching would require refactoring the agent loop
+                // to allow mutable provider state. For now, we log the intent.
+                if tool_name == "switch_provider" {
+                    if let Some((target_provider, target_model)) =
+                        crate::agent::quota_aware::parse_switch_provider_metadata(&outcome.output)
+                    {
+                        tracing::info!(
+                            current_provider = provider_name,
+                            target_provider = %target_provider,
+                            target_model = ?target_model,
+                            "Agent requested provider switch (not yet implemented in loop)"
+                        );
+                        // TODO: Implement actual provider switching by:
+                        // 1. Creating new provider instance with target_provider/model
+                        // 2. Replacing the current provider reference
+                        // 3. Continuing the loop with new provider
+                        // This requires refactoring run() to make provider mutable.
+                    }
+                }
+
                 let _ = writeln!(
                     tool_results,
                     "<tool_result name=\"{}\">\n{}\n</tool_result>",
