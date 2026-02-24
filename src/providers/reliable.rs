@@ -223,7 +223,9 @@ fn push_failure(
 
 /// Provider wrapper with retry, fallback, auth rotation, and model failover.
 pub struct ReliableProvider {
-    providers: Vec<(String, Box<dyn Provider>)>,
+    /// Each provider with its name and optional default model
+    /// (name, provider, default_model)
+    providers: Vec<(String, Box<dyn Provider>, Option<String>)>,
     max_retries: u32,
     base_backoff_ms: u64,
     /// Extra API keys for rotation (index tracks round-robin position).
@@ -235,7 +237,7 @@ pub struct ReliableProvider {
 
 impl ReliableProvider {
     pub fn new(
-        providers: Vec<(String, Box<dyn Provider>)>,
+        providers: Vec<(String, Box<dyn Provider>, Option<String>)>,
         max_retries: u32,
         base_backoff_ms: u64,
     ) -> Self {
@@ -293,7 +295,7 @@ impl ReliableProvider {
 #[async_trait]
 impl Provider for ReliableProvider {
     async fn warmup(&self) -> anyhow::Result<()> {
-        for (name, provider) in &self.providers {
+        for (name, provider, _default_model) in &self.providers {
             tracing::info!(provider = name, "Warming up provider connection pool");
             if provider.warmup().await.is_err() {
                 tracing::warn!(provider = name, "Warmup failed (non-fatal)");
@@ -317,21 +319,25 @@ impl Provider for ReliableProvider {
         // immediately. On non-retryable error, break to next provider. On
         // retryable error, sleep with exponential backoff and retry.
         for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+            for (provider_name, provider, default_model) in &self.providers {
                 let mut backoff_ms = self.base_backoff_ms;
+
+                // Use provider's default model if set, else use requested model
+                let effective_model = default_model.as_deref().unwrap_or(*current_model);
 
                 for attempt in 0..=self.max_retries {
                     match provider
-                        .chat_with_system(system_prompt, message, current_model, temperature)
+                        .chat_with_system(system_prompt, message, effective_model, temperature)
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model {
+                            if attempt > 0 || *current_model != model || effective_model != *current_model {
                                 tracing::info!(
                                     provider = provider_name,
-                                    model = *current_model,
+                                    model = effective_model,
                                     attempt,
                                     original_model = model,
+                                    requested_model = *current_model,
                                     "Provider recovered (failover/retry)"
                                 );
                             }
@@ -347,7 +353,7 @@ impl Provider for ReliableProvider {
                             push_failure(
                                 &mut failures,
                                 provider_name,
-                                current_model,
+                                effective_model,
                                 attempt + 1,
                                 self.max_retries + 1,
                                 failure_reason,
@@ -437,21 +443,25 @@ impl Provider for ReliableProvider {
         let mut failures = Vec::new();
 
         for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+            for (provider_name, provider, default_model) in &self.providers {
                 let mut backoff_ms = self.base_backoff_ms;
+
+                // Use provider's default model if set, else use requested model
+                let effective_model = default_model.as_deref().unwrap_or(*current_model);
 
                 for attempt in 0..=self.max_retries {
                     match provider
-                        .chat_with_history(messages, current_model, temperature)
+                        .chat_with_history(messages, effective_model, temperature)
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model {
+                            if attempt > 0 || *current_model != model || effective_model != *current_model {
                                 tracing::info!(
                                     provider = provider_name,
-                                    model = *current_model,
+                                    model = effective_model,
                                     attempt,
                                     original_model = model,
+                                    requested_model = *current_model,
                                     "Provider recovered (failover/retry)"
                                 );
                             }
@@ -467,7 +477,7 @@ impl Provider for ReliableProvider {
                             push_failure(
                                 &mut failures,
                                 provider_name,
-                                current_model,
+                                effective_model,
                                 attempt + 1,
                                 self.max_retries + 1,
                                 failure_reason,
@@ -540,14 +550,14 @@ impl Provider for ReliableProvider {
     fn supports_native_tools(&self) -> bool {
         self.providers
             .first()
-            .map(|(_, p)| p.supports_native_tools())
+            .map(|(_, p, _)| p.supports_native_tools())
             .unwrap_or(false)
     }
 
     fn supports_vision(&self) -> bool {
         self.providers
             .iter()
-            .any(|(_, provider)| provider.supports_vision())
+            .any(|(_, provider, _)| provider.supports_vision())
     }
 
     async fn chat_with_tools(
@@ -561,21 +571,25 @@ impl Provider for ReliableProvider {
         let mut failures = Vec::new();
 
         for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+            for (provider_name, provider, default_model) in &self.providers {
                 let mut backoff_ms = self.base_backoff_ms;
+
+                // Use provider's default model if set, else use requested model
+                let effective_model = default_model.as_deref().unwrap_or(*current_model);
 
                 for attempt in 0..=self.max_retries {
                     match provider
-                        .chat_with_tools(messages, tools, current_model, temperature)
+                        .chat_with_tools(messages, tools, effective_model, temperature)
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model {
+                            if attempt > 0 || *current_model != model || effective_model != *current_model {
                                 tracing::info!(
                                     provider = provider_name,
-                                    model = *current_model,
+                                    model = effective_model,
                                     attempt,
                                     original_model = model,
+                                    requested_model = *current_model,
                                     "Provider recovered (failover/retry)"
                                 );
                             }
@@ -591,7 +605,7 @@ impl Provider for ReliableProvider {
                             push_failure(
                                 &mut failures,
                                 provider_name,
-                                current_model,
+                                effective_model,
                                 attempt + 1,
                                 self.max_retries + 1,
                                 failure_reason,
@@ -671,22 +685,26 @@ impl Provider for ReliableProvider {
         let mut failures = Vec::new();
 
         for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+            for (provider_name, provider, default_model) in &self.providers {
                 let mut backoff_ms = self.base_backoff_ms;
+
+                // Use provider's default model if set, else use requested model
+                let effective_model = default_model.as_deref().unwrap_or(*current_model);
 
                 for attempt in 0..=self.max_retries {
                     let req = ChatRequest {
                         messages: request.messages,
                         tools: request.tools,
                     };
-                    match provider.chat(req, current_model, temperature).await {
+                    match provider.chat(req, effective_model, temperature).await {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model {
+                            if attempt > 0 || *current_model != model || effective_model != *current_model {
                                 tracing::info!(
                                     provider = provider_name,
-                                    model = *current_model,
+                                    model = effective_model,
                                     attempt,
                                     original_model = model,
+                                    requested_model = *current_model,
                                     "Provider recovered (failover/retry)"
                                 );
                             }
@@ -702,7 +720,7 @@ impl Provider for ReliableProvider {
                             push_failure(
                                 &mut failures,
                                 provider_name,
-                                current_model,
+                                effective_model,
                                 attempt + 1,
                                 self.max_retries + 1,
                                 failure_reason,
@@ -781,7 +799,7 @@ impl Provider for ReliableProvider {
     }
 
     fn supports_streaming(&self) -> bool {
-        self.providers.iter().any(|(_, p)| p.supports_streaming())
+        self.providers.iter().any(|(_, p, _)| p.supports_streaming())
     }
 
     fn stream_chat_with_system(
@@ -794,7 +812,7 @@ impl Provider for ReliableProvider {
     ) -> stream::BoxStream<'static, StreamResult<StreamChunk>> {
         // Try each provider/model combination for streaming
         // For streaming, we use the first provider that supports it and has streaming enabled
-        for (provider_name, provider) in &self.providers {
+        for (provider_name, provider, _default_model) in &self.providers {
             if !provider.supports_streaming() || !options.enabled {
                 continue;
             }
@@ -936,6 +954,7 @@ mod tests {
                     response: "ok",
                     error: "boom",
                 }),
+                None,
             )],
             2,
             1,
@@ -958,6 +977,7 @@ mod tests {
                     response: "recovered",
                     error: "temporary",
                 }),
+                None,
             )],
             2,
             1,
@@ -983,6 +1003,7 @@ mod tests {
                         response: "never",
                         error: "primary down",
                     }),
+                    None,
                 ),
                 (
                     "fallback".into(),
@@ -992,6 +1013,7 @@ mod tests {
                         response: "from fallback",
                         error: "fallback down",
                     }),
+                    None,
                 ),
             ],
             1,
@@ -1016,6 +1038,7 @@ mod tests {
                         response: "never",
                         error: "p1 error",
                     }),
+                    None,
                 ),
                 (
                     "p2".into(),
@@ -1025,6 +1048,7 @@ mod tests {
                         response: "never",
                         error: "p2 error",
                     }),
+                    None,
                 ),
             ],
             0,
@@ -1094,6 +1118,7 @@ mod tests {
                     response: "never",
                     error: "OpenAI Codex stream error: Your input exceeds the context window of this model. Please adjust your input and try again.",
                 }),
+                None,
             )],
             4,
             1,
@@ -1123,6 +1148,7 @@ mod tests {
                     response: "never",
                     error: "unsupported model: glm-4.7",
                 }),
+                None,
             )],
             3,
             1,
@@ -1155,6 +1181,7 @@ mod tests {
                         response: "never",
                         error: "401 Unauthorized",
                     }),
+                    None,
                 ),
                 (
                     "fallback".into(),
@@ -1164,6 +1191,7 @@ mod tests {
                         response: "from fallback",
                         error: "fallback err",
                     }),
+                    None,
                 ),
             ],
             3,
@@ -1189,6 +1217,7 @@ mod tests {
                     response: "history ok",
                     error: "temporary",
                 }),
+                None,
             )],
             2,
             1,
@@ -1218,6 +1247,7 @@ mod tests {
                         response: "never",
                         error: "primary down",
                     }),
+                    None,
                 ),
                 (
                     "fallback".into(),
@@ -1227,6 +1257,7 @@ mod tests {
                         response: "fallback ok",
                         error: "fallback err",
                     }),
+                    None,
                 ),
             ],
             1,
@@ -1262,6 +1293,7 @@ mod tests {
             vec![(
                 "anthropic".into(),
                 Box::new(mock.clone()) as Box<dyn Provider>,
+                None,
             )],
             0, // no retries — force immediate model failover
             1,
@@ -1297,7 +1329,7 @@ mod tests {
         );
 
         let provider = ReliableProvider::new(
-            vec![("p1".into(), Box::new(mock.clone()) as Box<dyn Provider>)],
+            vec![("p1".into(), Box::new(mock.clone()) as Box<dyn Provider>, None)],
             0,
             1,
         )
@@ -1325,6 +1357,7 @@ mod tests {
                     response: "ok",
                     error: "boom",
                 }),
+                None,
             )],
             2,
             1,
@@ -1348,6 +1381,7 @@ mod tests {
                     response: "ok",
                     error: "",
                 }),
+                None,
             )],
             0,
             1,
@@ -1571,6 +1605,7 @@ mod tests {
                     response: "never",
                     error: "API error (401 Unauthorized): invalid key",
                 }),
+                None,
             )],
             5,
             1,
@@ -1597,6 +1632,7 @@ mod tests {
                     response: "never",
                     error: "API error (429 Too Many Requests): {\"code\":1311,\"message\":\"plan does not include glm-5\"}",
                 }),
+                None,
             )],
             5,
             1,
@@ -1693,6 +1729,7 @@ mod tests {
                     tool_calls: vec![tool_call.clone()],
                     error: "boom",
                 }) as Box<dyn Provider>,
+                    None,
             )],
             2,
             1,
@@ -1729,6 +1766,7 @@ mod tests {
                     tool_calls: vec![tool_call],
                     error: "temporary failure",
                 }) as Box<dyn Provider>,
+                    None,
             )],
             3,
             1,
@@ -1761,6 +1799,7 @@ mod tests {
                     tool_calls: vec![],
                     error: "boom",
                 }) as Box<dyn Provider>,
+                    None,
             )],
             2,
             1,
@@ -1789,6 +1828,7 @@ mod tests {
                         tool_calls: vec![],
                         error: "p1 chat error",
                     }) as Box<dyn Provider>,
+                    None,
                 ),
                 (
                     "p2".into(),
@@ -1799,6 +1839,7 @@ mod tests {
                         tool_calls: vec![],
                         error: "p2 chat error",
                     }) as Box<dyn Provider>,
+                    None,
                 ),
             ],
             0,
@@ -1915,6 +1956,7 @@ mod tests {
             vec![(
                 "anthropic".into(),
                 Box::new(mock.clone()) as Box<dyn Provider>,
+                None,
             )],
             0, // no retries — force immediate model failover
             1,
@@ -1953,6 +1995,7 @@ mod tests {
                         tool_calls: vec![],
                         error: "401 Unauthorized",
                     }) as Box<dyn Provider>,
+                    None,
                 ),
                 (
                     "fallback".into(),
@@ -1963,6 +2006,7 @@ mod tests {
                         tool_calls: vec![],
                         error: "fallback err",
                     }) as Box<dyn Provider>,
+                    None,
                 ),
             ],
             3,

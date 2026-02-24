@@ -5,7 +5,7 @@
 //! - Google Cloud ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
 
 use crate::auth::AuthService;
-use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
+use crate::providers::traits::{ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage};
 use async_trait::async_trait;
 use directories::UserDirs;
 use reqwest::Client;
@@ -1095,6 +1095,13 @@ impl GeminiProvider {
 
 #[async_trait]
 impl Provider for GeminiProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            native_tool_calling: true,
+            vision: true,
+        }
+    }
+
     async fn chat_with_system(
         &self,
         system_prompt: Option<&str>,

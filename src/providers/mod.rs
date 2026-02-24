@@ -675,6 +675,8 @@ pub struct ProviderRuntimeOptions {
     pub zeroclaw_dir: Option<PathBuf>,
     pub secrets_encrypt: bool,
     pub reasoning_enabled: Option<bool>,
+    /// Provider's fallback model when requested model is incompatible
+    pub default_model: Option<String>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -684,6 +686,7 @@ impl Default for ProviderRuntimeOptions {
             zeroclaw_dir: None,
             secrets_encrypt: true,
             reasoning_enabled: None,
+            default_model: None,
         }
     }
 }
@@ -1272,7 +1275,7 @@ pub fn create_resilient_provider_with_options(
     reliability: &crate::config::ReliabilityConfig,
     options: &ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
-    let mut providers: Vec<(String, Box<dyn Provider>)> = Vec::new();
+    let mut providers: Vec<(String, Box<dyn Provider>, Option<String>)> = Vec::new();
 
     let primary_provider = match primary_name {
         "openai-codex" | "openai_codex" | "codex" => {
@@ -1280,10 +1283,15 @@ pub fn create_resilient_provider_with_options(
         }
         _ => create_provider_with_url_and_options(primary_name, api_key, api_url, options)?,
     };
-    providers.push((primary_name.to_string(), primary_provider));
+    // Use default_model from options if set
+    providers.push((
+        primary_name.to_string(),
+        primary_provider,
+        options.default_model.clone(),
+    ));
 
     for fallback in &reliability.fallback_providers {
-        if fallback == primary_name || providers.iter().any(|(name, _)| name == fallback) {
+        if fallback == primary_name || providers.iter().any(|(name, _, _)| name == fallback) {
             continue;
         }
 
@@ -1307,8 +1315,20 @@ pub fn create_resilient_provider_with_options(
             None => options.clone(),
         };
 
+        // TEMPORARY FIX: Hardcode default models for known providers
+        // TODO: Extract from Config [[providers.NAME]] sections
+        let provider_default_model = match provider_name {
+            "openai" => Some("gpt-5.2".to_string()),
+            "openai-codex" | "openai_codex" | "codex" => Some("gpt-5.2".to_string()),
+            _ => fallback_options.default_model.clone(),
+        };
+
         match create_provider_with_options(provider_name, None, &fallback_options) {
-            Ok(provider) => providers.push((fallback.clone(), provider)),
+            Ok(provider) => providers.push((
+                fallback.clone(),
+                provider,
+                provider_default_model,
+            )),
             Err(_error) => {
                 tracing::warn!(
                     fallback_provider = fallback,
@@ -2874,5 +2894,20 @@ mod tests {
 
         let provider = create_resilient_provider("ollama", None, None, &reliability);
         assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn provider_runtime_options_default_model() {
+        let opts = ProviderRuntimeOptions {
+            auth_profile_override: None,
+            zeroclaw_dir: None,
+            secrets_encrypt: true,
+            reasoning_enabled: None,
+            default_model: Some("gpt-4o-mini".to_string()),
+        };
+        assert_eq!(opts.default_model.as_deref(), Some("gpt-4o-mini"));
+
+        let default_opts = ProviderRuntimeOptions::default();
+        assert_eq!(default_opts.default_model, None);
     }
 }
