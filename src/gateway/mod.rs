@@ -33,6 +33,7 @@ use axum::{
     Router,
 };
 use parking_lot::Mutex;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -1316,6 +1317,12 @@ async fn handle_linq_webhook(
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WatiVerifyQuery {
+    #[serde(rename = "hub.challenge")]
+    pub challenge: Option<String>,
+}
+
 /// GET /wati — WATI webhook verification (echoes hub.challenge)
 async fn handle_wati_verify(
     State(state): State<AppState>,
@@ -1332,12 +1339,6 @@ async fn handle_wati_verify(
     }
 
     (StatusCode::BAD_REQUEST, "Missing hub.challenge".to_string())
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WatiVerifyQuery {
-    #[serde(rename = "hub.challenge")]
-    pub challenge: Option<String>,
 }
 
 /// POST /wati — incoming WATI WhatsApp message webhook
@@ -1639,6 +1640,7 @@ mod tests {
             linq_signing_secret: None,
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
+            wati: None,
             observer,
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
@@ -2357,6 +2359,7 @@ mod tests {
             linq_signing_secret: None,
             nextcloud_talk: Some(channel),
             nextcloud_talk_webhook_secret: Some(Arc::from(secret)),
+            wati: None,
             observer: Arc::new(crate::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
