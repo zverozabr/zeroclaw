@@ -83,21 +83,25 @@ impl PromptGuard {
     /// Scan a message for prompt injection patterns.
     pub fn scan(&self, content: &str) -> GuardResult {
         let mut detected_patterns = Vec::new();
-        let mut total_score = 0.0;
+        let mut max_score: f64 = 0.0;
 
-        // Check each pattern category
-        total_score += self.check_system_override(content, &mut detected_patterns);
-        total_score += self.check_role_confusion(content, &mut detected_patterns);
-        total_score += self.check_tool_injection(content, &mut detected_patterns);
-        total_score += self.check_secret_extraction(content, &mut detected_patterns);
-        total_score += self.check_command_injection(content, &mut detected_patterns);
-        total_score += self.check_jailbreak_attempts(content, &mut detected_patterns);
+        // Check each pattern category and track maximum score
+        // Using max instead of sum because even one high-confidence detection should trigger
+        max_score = max_score.max(self.check_system_override(content, &mut detected_patterns));
+        max_score = max_score.max(self.check_role_confusion(content, &mut detected_patterns));
+        max_score = max_score.max(self.check_tool_injection(content, &mut detected_patterns));
+        max_score = max_score.max(self.check_secret_extraction(content, &mut detected_patterns));
+        max_score = max_score.max(self.check_command_injection(content, &mut detected_patterns));
+        max_score = max_score.max(self.check_jailbreak_attempts(content, &mut detected_patterns));
 
-        // Normalize score to 0.0-1.0 range (max possible is 6.0, one per category)
-        let normalized_score = (total_score / 6.0).min(1.0);
+        // Score is already normalized: each category returns 0.0-1.0
+        // We use the maximum score across all categories
+        let normalized_score = max_score;
 
         if !detected_patterns.is_empty() {
-            if normalized_score >= self.sensitivity {
+            // For Block mode, block any detected pattern strictly above sensitivity threshold
+            // For Warn mode, warn about any detected pattern but only if score is high enough
+            if normalized_score > self.sensitivity {
                 match self.action {
                     GuardAction::Block => GuardResult::Blocked(format!(
                         "Potential prompt injection detected (score: {:.2}): {}",
@@ -107,6 +111,8 @@ impl PromptGuard {
                     _ => GuardResult::Suspicious(detected_patterns, normalized_score),
                 }
             } else {
+                // Score below threshold but patterns detected
+                // Still report as suspicious (could be false positive)
                 GuardResult::Suspicious(detected_patterns, normalized_score)
             }
         } else {
@@ -119,9 +125,9 @@ impl PromptGuard {
         static SYSTEM_OVERRIDE_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
         let regexes = SYSTEM_OVERRIDE_PATTERNS.get_or_init(|| {
             vec![
-                Regex::new(r"(?i)ignore\s+(previous|all|above|prior)\s+(instructions?|prompts?|commands?)").unwrap(),
-                Regex::new(r"(?i)disregard\s+(previous|all|above|prior)").unwrap(),
-                Regex::new(r"(?i)forget\s+(previous|all|everything|above)").unwrap(),
+                Regex::new(r"(?i)ignore\s+(\w+\s+)?(previous|all|above|prior)\s+(\w+\s+)?(instructions?|prompts?|commands?)").unwrap(),
+                Regex::new(r"(?i)disregard\s+(\w+\s+)?(previous|all|above|prior)").unwrap(),
+                Regex::new(r"(?i)forget\s+(\w+\s+)?(previous|all|everything|above)").unwrap(),
                 Regex::new(r"(?i)new\s+(instructions?|rules?|system\s+prompt)").unwrap(),
                 Regex::new(r"(?i)override\s+(system|instructions?|rules?)").unwrap(),
                 Regex::new(r"(?i)reset\s+(instructions?|context|system)").unwrap(),
@@ -183,8 +189,8 @@ impl PromptGuard {
         static SECRET_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
         let regexes = SECRET_PATTERNS.get_or_init(|| {
             vec![
-                Regex::new(r"(?i)(list|show|print|display|reveal|tell\s+me)\s+(all\s+)?(secrets?|credentials?|passwords?|tokens?|keys?)").unwrap(),
-                Regex::new(r"(?i)(what|show)\s+(are|is|me)\s+(your|the)\s+(api\s+)?(keys?|secrets?|credentials?)").unwrap(),
+                Regex::new(r"(?i)(list|show|print|display|reveal|tell\s+me)\s+(\w+\s+)?(all\s+)?(\w+\s+)?(secrets?|credentials?|passwords?|tokens?|api\s+keys?)").unwrap(),
+                Regex::new(r"(?i)(what|show)\s+(\w+\s+)?(are|is|me)\s+(\w+\s+)?(your|the)\s+(\w+\s+)?(api\s+)?(keys?|secrets?|credentials?)").unwrap(),
                 Regex::new(r"(?i)contents?\s+of\s+(vault|secrets?|credentials?)").unwrap(),
                 Regex::new(r"(?i)(dump|export)\s+(vault|secrets?|credentials?)").unwrap(),
             ]
