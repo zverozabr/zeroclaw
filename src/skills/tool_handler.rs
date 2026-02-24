@@ -44,9 +44,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 /// Regex to extract {placeholder} names from command templates
-static PLACEHOLDER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{(\w+)\}").expect("placeholder regex compilation failed")
-});
+static PLACEHOLDER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{(\w+)\}").expect("placeholder regex compilation failed"));
 
 /// Parameter metadata for skill tools
 #[derive(Debug, Clone)]
@@ -143,7 +142,8 @@ impl SkillToolHandler {
             || desc_lower.contains("count")
             || desc_lower.contains("limit")
             || desc_lower.contains("maximum")
-            || desc_lower.contains("minimum") {
+            || desc_lower.contains("minimum")
+        {
             return ParameterType::Integer;
         }
 
@@ -152,7 +152,8 @@ impl SkillToolHandler {
             || desc_lower.contains("disable")
             || desc_lower.contains("true")
             || desc_lower.contains("false")
-            || desc_lower.contains("flag") {
+            || desc_lower.contains("flag")
+        {
             return ParameterType::Boolean;
         }
 
@@ -200,7 +201,9 @@ impl SkillToolHandler {
     /// Escape shell special characters for safe command execution
     fn shell_escape(s: &str) -> String {
         // If the string is simple (alphanumeric + safe chars), return as-is
-        if s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/') {
+        if s.chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/')
+        {
             return s.to_string();
         }
 
@@ -367,11 +370,7 @@ impl Tool for SkillToolHandler {
             } else {
                 format!("Command failed:\n{}", scrubbed_stderr)
             },
-            error: if success {
-                None
-            } else {
-                Some(scrubbed_stderr)
-            },
+            error: if success { None } else { Some(scrubbed_stderr) },
         })
     }
 }
@@ -533,8 +532,8 @@ mod tests {
         // Shell escape should quote the entire string
         // Our implementation uses single quotes: 'hello; rm -rf /'
         assert!(command.contains("echo '"));
-        assert!(command.contains("rm -rf"));  // Should be inside quotes
-        // The dangerous part should NOT be outside quotes (no unquoted semicolon)
+        assert!(command.contains("rm -rf")); // Should be inside quotes
+                                             // The dangerous part should NOT be outside quotes (no unquoted semicolon)
         assert!(!command.starts_with("echo hello; rm"));
     }
 
@@ -584,7 +583,10 @@ mod tests {
             kind: "shell".to_string(),
             command: "python3 script.py --contact-name {contact_name} --limit {limit}".to_string(),
             args: [
-                ("contact_name".to_string(), "Telegram contact username or ID".to_string()),
+                (
+                    "contact_name".to_string(),
+                    "Telegram contact username or ID".to_string(),
+                ),
                 ("limit".to_string(), "Maximum number of results".to_string()),
             ]
             .iter()

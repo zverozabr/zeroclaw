@@ -72,13 +72,14 @@ impl QuotaExtractor for OpenAIQuotaExtractor {
         let error_str = error.to_string();
 
         // Parse "retry after X seconds" from error message
-        let retry_after_seconds = if error_str.contains("retry after") || error_str.contains("Retry after") {
-            error_str
-                .split_whitespace()
-                .find_map(|word| word.parse::<u64>().ok())
-        } else {
-            None
-        };
+        let retry_after_seconds =
+            if error_str.contains("retry after") || error_str.contains("Retry after") {
+                error_str
+                    .split_whitespace()
+                    .find_map(|word| word.parse::<u64>().ok())
+            } else {
+                None
+            };
 
         if retry_after_seconds.is_some() {
             Some(QuotaMetadata {
@@ -331,7 +332,10 @@ mod tests {
     fn test_anthropic_extractor_headers() {
         let extractor = AnthropicQuotaExtractor;
         let mut headers = HeaderMap::new();
-        headers.insert("anthropic-ratelimit-requests-remaining", "50".parse().unwrap());
+        headers.insert(
+            "anthropic-ratelimit-requests-remaining",
+            "50".parse().unwrap(),
+        );
         headers.insert("retry-after", "30".parse().unwrap());
 
         let quota = extractor.extract_from_headers(&headers).unwrap();
@@ -378,7 +382,9 @@ mod tests {
         headers.insert("X-RateLimit-Remaining", "25".parse().unwrap());
 
         // Request for "custom-provider" should fallback to OpenAI extractor
-        let quota = extractor.extract("custom-provider", &headers, None).unwrap();
+        let quota = extractor
+            .extract("custom-provider", &headers, None)
+            .unwrap();
         assert_eq!(quota.rate_limit_remaining, Some(25));
     }
 

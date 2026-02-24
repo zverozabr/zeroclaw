@@ -13,11 +13,7 @@ use std::time::Duration;
 ///
 /// Combines provider health state from circuit breaker with OAuth profile metadata
 /// to show comprehensive quota information.
-pub async fn run(
-    config: &Config,
-    provider_filter: Option<&str>,
-    format: &str,
-) -> Result<()> {
+pub async fn run(config: &Config, provider_filter: Option<&str>, format: &str) -> Result<()> {
     // 1. Initialize health tracker (same default settings as used in reliable.rs)
     let failure_threshold = 3; // Default from reliable.rs
     let cooldown_secs = 60; // Default from reliable.rs
@@ -29,7 +25,10 @@ pub async fn run(
 
     // 2. Load OAuth profiles
     let auth_store = AuthProfilesStore::new(&config.workspace_dir, config.secrets.encrypt);
-    let profiles_data = auth_store.load().await.context("Failed to load auth profiles")?;
+    let profiles_data = auth_store
+        .load()
+        .await
+        .context("Failed to load auth profiles")?;
 
     // 3. Build quota summary
     let summary = build_quota_summary(&health_tracker, &profiles_data, provider_filter)?;
@@ -119,14 +118,22 @@ pub fn build_quota_summary(
             }
         }
 
-        let profiles = profiles_by_provider.remove(&provider_name).unwrap_or_default();
+        let profiles = profiles_by_provider
+            .remove(&provider_name)
+            .unwrap_or_default();
 
         // Determine overall provider status
         let status = if health_state.failure_count >= 3 {
             QuotaStatus::CircuitOpen
-        } else if profiles.iter().any(|p| p.status == QuotaStatus::QuotaExhausted) {
+        } else if profiles
+            .iter()
+            .any(|p| p.status == QuotaStatus::QuotaExhausted)
+        {
             QuotaStatus::QuotaExhausted
-        } else if profiles.iter().any(|p| p.status == QuotaStatus::RateLimited) {
+        } else if profiles
+            .iter()
+            .any(|p| p.status == QuotaStatus::RateLimited)
+        {
             QuotaStatus::RateLimited
         } else {
             QuotaStatus::Ok
@@ -160,9 +167,15 @@ pub fn build_quota_summary(
 
     // Add remaining providers that have profiles but no health state
     for (provider_name, profiles) in profiles_by_provider {
-        let status = if profiles.iter().any(|p| p.status == QuotaStatus::QuotaExhausted) {
+        let status = if profiles
+            .iter()
+            .any(|p| p.status == QuotaStatus::QuotaExhausted)
+        {
             QuotaStatus::QuotaExhausted
-        } else if profiles.iter().any(|p| p.status == QuotaStatus::RateLimited) {
+        } else if profiles
+            .iter()
+            .any(|p| p.status == QuotaStatus::RateLimited)
+        {
             QuotaStatus::RateLimited
         } else {
             QuotaStatus::Ok
@@ -192,9 +205,11 @@ pub fn build_quota_summary(
 fn parse_retry_after_from_error(error: &str) -> Option<u64> {
     if error.contains("retry after") || error.contains("Retry after") {
         // Try to extract number from error message
-        error
-            .split_whitespace()
-            .find_map(|word| word.trim_matches(|c: char| !c.is_numeric()).parse::<u64>().ok())
+        error.split_whitespace().find_map(|word| {
+            word.trim_matches(|c: char| !c.is_numeric())
+                .parse::<u64>()
+                .ok()
+        })
     } else {
         None
     }
@@ -210,7 +225,10 @@ fn print_json(summary: &QuotaSummary) -> Result<()> {
 
 /// Print quota summary in human-readable text format with a table.
 fn print_text(summary: &QuotaSummary) -> Result<()> {
-    println!("\nProvider Quota Status ({0})\n", summary.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+    println!(
+        "\nProvider Quota Status ({0})\n",
+        summary.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+    );
 
     if summary.providers.is_empty() {
         println!("No provider quota information available.");
@@ -219,9 +237,15 @@ fn print_text(summary: &QuotaSummary) -> Result<()> {
     }
 
     // Print table header
-    println!("┌────────────────────┬────────────────┬────────┬──────────────────┬─────────────────────┐");
-    println!("│ Provider           │ Status         │ Errors │ Retry After (s)  │ Circuit Resets At   │");
-    println!("├────────────────────┼────────────────┼────────┼──────────────────┼─────────────────────┤");
+    println!(
+        "┌────────────────────┬────────────────┬────────┬──────────────────┬─────────────────────┐"
+    );
+    println!(
+        "│ Provider           │ Status         │ Errors │ Retry After (s)  │ Circuit Resets At   │"
+    );
+    println!(
+        "├────────────────────┼────────────────┼────────┼──────────────────┼─────────────────────┤"
+    );
 
     for provider_info in &summary.providers {
         let status_str = format_status(&provider_info.status);
@@ -373,8 +397,14 @@ mod tests {
 
     #[test]
     fn test_parse_retry_after() {
-        assert_eq!(parse_retry_after_from_error("retry after 60 seconds"), Some(60));
-        assert_eq!(parse_retry_after_from_error("Please retry after 120s"), Some(120));
+        assert_eq!(
+            parse_retry_after_from_error("retry after 60 seconds"),
+            Some(60)
+        );
+        assert_eq!(
+            parse_retry_after_from_error("Please retry after 120s"),
+            Some(120)
+        );
         assert_eq!(parse_retry_after_from_error("No retry info"), None);
     }
 }

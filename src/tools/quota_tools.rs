@@ -32,13 +32,14 @@ impl CheckProviderQuotaTool {
     async fn build_quota_summary(&self, provider_filter: Option<&str>) -> Result<QuotaSummary> {
         // Initialize health tracker with same settings as reliable.rs
         let health_tracker = ProviderHealthTracker::new(
-            3,                              // failure_threshold
-            Duration::from_secs(60),        // cooldown
-            100,                            // max tracked providers
+            3,                       // failure_threshold
+            Duration::from_secs(60), // cooldown
+            100,                     // max tracked providers
         );
 
         // Load OAuth profiles
-        let auth_store = AuthProfilesStore::new(&self.config.workspace_dir, self.config.secrets.encrypt);
+        let auth_store =
+            AuthProfilesStore::new(&self.config.workspace_dir, self.config.secrets.encrypt);
         let profiles_data = auth_store.load().await?;
 
         // Build quota summary using quota_cli logic
@@ -86,26 +87,43 @@ impl Tool for CheckProviderQuotaTool {
         let circuit_open = summary.circuit_open_providers();
 
         let mut output = String::new();
-        output.push_str(&format!("📊 Quota Status ({})\n\n", summary.timestamp.format("%Y-%m-%d %H:%M UTC")));
+        output.push_str(&format!(
+            "📊 Quota Status ({})\n\n",
+            summary.timestamp.format("%Y-%m-%d %H:%M UTC")
+        ));
 
         if !available.is_empty() {
-            output.push_str(&format!("✅ Available providers: {}\n", available.join(", ")));
+            output.push_str(&format!(
+                "✅ Available providers: {}\n",
+                available.join(", ")
+            ));
         }
         if !rate_limited.is_empty() {
-            output.push_str(&format!("⚠️  Rate-limited providers: {}\n", rate_limited.join(", ")));
+            output.push_str(&format!(
+                "⚠️  Rate-limited providers: {}\n",
+                rate_limited.join(", ")
+            ));
         }
         if !circuit_open.is_empty() {
-            output.push_str(&format!("❌ Circuit-open providers: {}\n", circuit_open.join(", ")));
+            output.push_str(&format!(
+                "❌ Circuit-open providers: {}\n",
+                circuit_open.join(", ")
+            ));
         }
 
         if available.is_empty() && rate_limited.is_empty() && circuit_open.is_empty() {
-            output.push_str("ℹ️  No quota information available. Quota is populated after API calls.\n");
+            output.push_str(
+                "ℹ️  No quota information available. Quota is populated after API calls.\n",
+            );
         }
 
         // Add details for each provider
         for provider_info in &summary.providers {
             if provider_filter.is_some() || provider_info.status != QuotaStatus::Ok {
-                output.push_str(&format!("\n📍 {}: {:?}\n", provider_info.provider, provider_info.status));
+                output.push_str(&format!(
+                    "\n📍 {}: {:?}\n",
+                    provider_info.provider, provider_info.status
+                ));
 
                 if provider_info.failure_count > 0 {
                     output.push_str(&format!("   Failures: {}\n", provider_info.failure_count));
@@ -118,9 +136,15 @@ impl Tool for CheckProviderQuotaTool {
                 for profile in &provider_info.profiles {
                     if let Some(remaining) = profile.rate_limit_remaining {
                         if let Some(total) = profile.rate_limit_total {
-                            output.push_str(&format!("   {}: {}/{} requests\n", profile.profile_name, remaining, total));
+                            output.push_str(&format!(
+                                "   {}: {}/{} requests\n",
+                                profile.profile_name, remaining, total
+                            ));
                         } else {
-                            output.push_str(&format!("   {}: {} requests remaining\n", profile.profile_name, remaining));
+                            output.push_str(&format!(
+                                "   {}: {} requests remaining\n",
+                                profile.profile_name, remaining
+                            ));
                         }
                     }
                 }
@@ -184,9 +208,14 @@ impl Tool for SwitchProviderTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
-        let provider = args["provider"].as_str().ok_or_else(|| anyhow::anyhow!("Missing provider"))?;
+        let provider = args["provider"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing provider"))?;
         let model = args.get("model").and_then(|v| v.as_str());
-        let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("user request");
+        let reason = args
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("user request");
 
         // This tool sets metadata for the agent loop to pick up
         // The actual switching happens in agent/loop_.rs
@@ -250,9 +279,17 @@ impl Tool for EstimateQuotaCostTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
-        let operation = args["operation"].as_str().ok_or_else(|| anyhow::anyhow!("Missing operation"))?;
-        let estimated_tokens = args.get("estimated_tokens").and_then(|v| v.as_u64()).unwrap_or(1000);
-        let parallel_count = args.get("parallel_count").and_then(|v| v.as_u64()).unwrap_or(1);
+        let operation = args["operation"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing operation"))?;
+        let estimated_tokens = args
+            .get("estimated_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1000);
+        let parallel_count = args
+            .get("parallel_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1);
 
         // Simple cost estimation (can be improved with provider-specific pricing)
         let total_tokens = estimated_tokens * parallel_count;
@@ -294,7 +331,10 @@ mod tests {
     fn test_switch_provider_schema() {
         let tool = SwitchProviderTool;
         let schema = tool.parameters_schema();
-        assert!(schema["required"].as_array().unwrap().contains(&json!("provider")));
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("provider")));
     }
 
     #[test]

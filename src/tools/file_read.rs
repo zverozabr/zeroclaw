@@ -745,7 +745,7 @@ mod tests {
                         tool_calls: vec![],
                         usage: None,
                         reasoning_content: None,
-                quota_metadata: None,
+                        quota_metadata: None,
                     });
                 }
                 Ok(guard.remove(0))

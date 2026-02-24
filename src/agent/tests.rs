@@ -333,7 +333,7 @@ fn tool_response(calls: Vec<ToolCall>) -> ChatResponse {
         tool_calls: calls,
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     }
 }
 
@@ -344,7 +344,7 @@ fn text_response(text: &str) -> ChatResponse {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     }
 }
 
@@ -357,7 +357,7 @@ fn xml_tool_response(name: &str, args: &str) -> ChatResponse {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     }
 }
 
@@ -748,7 +748,7 @@ async fn turn_handles_empty_text_response() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     }]));
 
     let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
@@ -764,7 +764,7 @@ async fn turn_handles_none_text_response() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     }]));
 
     let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
@@ -790,7 +790,7 @@ async fn turn_preserves_text_alongside_tool_calls() {
             }],
             usage: None,
             reasoning_content: None,
-                quota_metadata: None,
+            quota_metadata: None,
         },
         text_response("Here are the results"),
     ]));
@@ -1029,7 +1029,7 @@ async fn native_dispatcher_handles_stringified_arguments() {
         }],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     };
 
     let (_, calls) = dispatcher.parse_response(&response);
@@ -1057,7 +1057,7 @@ fn xml_dispatcher_handles_nested_json() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     };
 
     let dispatcher = XmlToolDispatcher;
@@ -1077,7 +1077,7 @@ fn xml_dispatcher_handles_empty_tool_call_tag() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     };
 
     let dispatcher = XmlToolDispatcher;
@@ -1093,7 +1093,7 @@ fn xml_dispatcher_handles_unclosed_tool_call() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
-                quota_metadata: None,
+        quota_metadata: None,
     };
 
     let dispatcher = XmlToolDispatcher;
