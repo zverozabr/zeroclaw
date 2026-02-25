@@ -327,7 +327,9 @@ Examples:
     Providers,
 
     /// Show provider quota and rate limit status
-    #[command(name = "providers-quota", long_about = "\
+    #[command(
+        name = "providers-quota",
+        long_about = "\
 Show provider quota and rate limit status.
 
 Displays quota remaining, rate limit resets, circuit breaker state, \
@@ -336,7 +338,8 @@ and per-profile breakdown for all configured providers.
 Examples:
   zeroclaw providers-quota                    # text output, all providers
   zeroclaw providers-quota --format json      # JSON output
-  zeroclaw providers-quota --provider gemini  # filter by provider")]
+  zeroclaw providers-quota --provider gemini  # filter by provider"
+    )]
     ProvidersQuota {
         /// Filter by provider name
         #[arg(long)]
@@ -787,8 +790,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Onboard { .. } => unreachable!(),
-        Commands::Completions { .. } => unreachable!(),
+        Commands::Onboard { .. } | Commands::Completions { .. } => unreachable!(),
 
         Commands::Agent {
             message,

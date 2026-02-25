@@ -1358,8 +1358,7 @@ pub fn create_resilient_provider_with_options(
         // TEMPORARY FIX: Hardcode default models for known providers
         // TODO: Extract from Config [[providers.NAME]] sections
         let provider_default_model = match provider_name {
-            "openai" => Some("gpt-5.2".to_string()),
-            "openai-codex" | "openai_codex" | "codex" => Some("gpt-5.2".to_string()),
+            "openai" | "openai-codex" | "openai_codex" | "codex" => Some("gpt-5.2".to_string()),
             _ => fallback_options.default_model.clone(),
         };
 
@@ -2946,6 +2945,7 @@ mod tests {
     fn provider_runtime_options_default_model() {
         let opts = ProviderRuntimeOptions {
             auth_profile_override: None,
+            provider_api_url: None,
             zeroclaw_dir: None,
             secrets_encrypt: true,
             reasoning_enabled: None,

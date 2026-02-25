@@ -105,19 +105,19 @@ impl Tool for CheckProviderQuotaTool {
         );
 
         if !available.is_empty() {
-            let _ = write!(output, "✅ Available providers: {}\n", available.join(", "));
+            let _ = writeln!(output, "✅ Available providers: {}", available.join(", "));
         }
         if !rate_limited.is_empty() {
-            let _ = write!(
+            let _ = writeln!(
                 output,
-                "⚠️  Rate-limited providers: {}\n",
+                "⚠️  Rate-limited providers: {}",
                 rate_limited.join(", ")
             );
         }
         if !circuit_open.is_empty() {
-            let _ = write!(
+            let _ = writeln!(
                 output,
-                "❌ Circuit-open providers: {}\n",
+                "❌ Circuit-open providers: {}",
                 circuit_open.join(", ")
             );
         }
@@ -168,7 +168,11 @@ impl Tool for CheckProviderQuotaTool {
                     }
                 }
                 if let Some(reset_at) = profile.rate_limit_reset_at {
-                    let _ = writeln!(output, "     Resets at: {}", reset_at.format("%Y-%m-%d %H:%M UTC"));
+                    let _ = writeln!(
+                        output,
+                        "     Resets at: {}",
+                        reset_at.format("%Y-%m-%d %H:%M UTC")
+                    );
                 }
                 if let Some(expires) = profile.token_expires_at {
                     let now = chrono::Utc::now();
@@ -177,7 +181,12 @@ impl Tool for CheckProviderQuotaTool {
                         let _ = writeln!(output, "     Token: EXPIRED ({}h ago)", ago.num_hours());
                     } else {
                         let left = expires.signed_duration_since(now);
-                        let _ = writeln!(output, "     Token: valid (expires in {}h {}m)", left.num_hours(), left.num_minutes() % 60);
+                        let _ = writeln!(
+                            output,
+                            "     Token: valid (expires in {}h {}m)",
+                            left.num_hours(),
+                            left.num_minutes() % 60
+                        );
                     }
                 }
                 if let Some(ref plan) = profile.plan_type {
@@ -526,7 +535,7 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert!(result.output.contains("5000"));
-        assert!(result.output.contains("$"));
+        assert!(result.output.contains('$'));
     }
 
     #[tokio::test]

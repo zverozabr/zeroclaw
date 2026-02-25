@@ -479,10 +479,8 @@ fn factory_anthropic_custom_endpoint_resolves() {
 
 #[tokio::test]
 async fn fallback_provider_uses_its_own_default_model() {
-    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use zeroclaw::config::ReliabilityConfig;
     use zeroclaw::providers::reliable::ReliableProvider;
     use zeroclaw::providers::traits::{ChatMessage, Provider};
 

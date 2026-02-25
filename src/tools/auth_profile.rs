@@ -33,8 +33,8 @@ impl ManageAuthProfileTool {
         let mut count = 0u32;
         for (id, profile) in &data.profiles {
             if let Some(filter) = provider_filter {
-                let normalized = crate::auth::normalize_provider(filter)
-                    .unwrap_or_else(|_| filter.to_string());
+                let normalized =
+                    crate::auth::normalize_provider(filter).unwrap_or_else(|_| filter.to_string());
                 if profile.provider != normalized {
                     continue;
                 }
@@ -78,7 +78,11 @@ impl ManageAuthProfileTool {
                     let _ = writeln!(output, "  Token: no expiry set");
                 }
                 let has_refresh = ts.refresh_token.is_some();
-                let _ = writeln!(output, "  Refresh token: {}", if has_refresh { "yes" } else { "no" });
+                let _ = writeln!(
+                    output,
+                    "  Refresh token: {}",
+                    if has_refresh { "yes" } else { "no" }
+                );
             } else if profile.token.is_some() {
                 let _ = writeln!(output, "  Token: API key (no expiry)");
             }
@@ -101,11 +105,7 @@ impl ManageAuthProfileTool {
         })
     }
 
-    async fn handle_switch(
-        &self,
-        provider: &str,
-        profile_name: &str,
-    ) -> Result<ToolResult> {
+    async fn handle_switch(&self, provider: &str, profile_name: &str) -> Result<ToolResult> {
         let auth = AuthService::from_config(&self.config);
         let profile_id = auth.set_active_profile(provider, profile_name).await?;
 
@@ -121,28 +121,28 @@ impl ManageAuthProfileTool {
         let auth = AuthService::from_config(&self.config);
 
         let result = match normalized.as_str() {
-            "openai-codex" => {
-                match auth.get_valid_openai_access_token(None).await {
-                    Ok(Some(_)) => "OpenAI Codex token refreshed successfully.".to_string(),
-                    Ok(None) => "No OpenAI Codex profile found to refresh.".to_string(),
-                    Err(e) => return Ok(ToolResult {
+            "openai-codex" => match auth.get_valid_openai_access_token(None).await {
+                Ok(Some(_)) => "OpenAI Codex token refreshed successfully.".to_string(),
+                Ok(None) => "No OpenAI Codex profile found to refresh.".to_string(),
+                Err(e) => {
+                    return Ok(ToolResult {
                         success: false,
                         output: String::new(),
                         error: Some(format!("OpenAI token refresh failed: {e}")),
-                    }),
+                    })
                 }
-            }
-            "gemini" => {
-                match auth.get_valid_gemini_access_token(None).await {
-                    Ok(Some(_)) => "Gemini token refreshed successfully.".to_string(),
-                    Ok(None) => "No Gemini profile found to refresh.".to_string(),
-                    Err(e) => return Ok(ToolResult {
+            },
+            "gemini" => match auth.get_valid_gemini_access_token(None).await {
+                Ok(Some(_)) => "Gemini token refreshed successfully.".to_string(),
+                Ok(None) => "No Gemini profile found to refresh.".to_string(),
+                Err(e) => {
+                    return Ok(ToolResult {
                         success: false,
                         output: String::new(),
                         error: Some(format!("Gemini token refresh failed: {e}")),
-                    }),
+                    })
                 }
-            }
+            },
             other => {
                 // For non-OAuth providers, just verify the token exists
                 match auth.get_provider_bearer_token(other, None).await {
@@ -299,10 +299,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_action() {
         let tool = ManageAuthProfileTool::new(Arc::new(Config::default()));
-        let result = tool
-            .execute(json!({"action": "delete"}))
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"action": "delete"})).await.unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("Unknown action"));
     }
