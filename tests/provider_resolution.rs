@@ -472,3 +472,250 @@ fn factory_anthropic_custom_endpoint_resolves() {
         None,
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Provider fallback with model-specific defaults
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn fallback_provider_uses_its_own_default_model() {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use zeroclaw::config::ReliabilityConfig;
+    use zeroclaw::providers::reliable::ReliableProvider;
+    use zeroclaw::providers::traits::{ChatMessage, Provider};
+
+    // Mock provider that tracks which model was requested
+    struct ModelTracker {
+        name: String,
+        calls: Arc<AtomicUsize>,
+        requested_models: Arc<std::sync::Mutex<Vec<String>>>,
+        fail_until: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ModelTracker {
+        async fn chat_with_system(
+            &self,
+            _system: Option<&str>,
+            _message: &str,
+            model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<String> {
+            let call_num = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.requested_models
+                .lock()
+                .unwrap()
+                .push(model.to_string());
+
+            if call_num < self.fail_until {
+                anyhow::bail!("429 Rate Limited")
+            } else {
+                Ok(format!("response from {} with model {}", self.name, model))
+            }
+        }
+
+        async fn chat_with_history(
+            &self,
+            _messages: &[ChatMessage],
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+
+        async fn chat_with_tools(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[serde_json::Value],
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<zeroclaw::providers::traits::ChatResponse> {
+            unimplemented!()
+        }
+    }
+
+    let gemini_models = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let codex_models = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let gemini = ModelTracker {
+        name: "gemini".to_string(),
+        calls: Arc::new(AtomicUsize::new(0)),
+        requested_models: Arc::clone(&gemini_models),
+        fail_until: usize::MAX, // Always fail
+    };
+
+    let codex = ModelTracker {
+        name: "codex".to_string(),
+        calls: Arc::new(AtomicUsize::new(0)),
+        requested_models: Arc::clone(&codex_models),
+        fail_until: 0, // Succeed immediately
+    };
+
+    // Create ReliableProvider with fallback chain:
+    // Primary: gemini with no default model
+    // Fallback: codex with default_model="gpt-4o-mini"
+    let provider = ReliableProvider::new(
+        vec![
+            (
+                "gemini".to_string(),
+                Box::new(gemini) as Box<dyn Provider>,
+                None, // No default model for gemini
+            ),
+            (
+                "codex".to_string(),
+                Box::new(codex) as Box<dyn Provider>,
+                Some("gpt-4o-mini".to_string()), // Codex uses gpt-4o-mini as default
+            ),
+        ],
+        1,  // 1 retry
+        10, // 10ms backoff
+    );
+
+    // Request with gemini-specific model
+    let result = provider
+        .chat_with_system(None, "test", "gemini-3-flash-preview", 0.7)
+        .await
+        .unwrap();
+
+    // Verify:
+    // 1. Gemini was tried with the requested model
+    let gemini_requested = gemini_models.lock().unwrap();
+    assert!(
+        gemini_requested.contains(&"gemini-3-flash-preview".to_string()),
+        "Gemini should receive the requested model"
+    );
+
+    // 2. Codex was tried with its default model (gpt-4o-mini), not the gemini model
+    let codex_requested = codex_models.lock().unwrap();
+    assert!(
+        codex_requested.contains(&"gpt-4o-mini".to_string()),
+        "Codex should use its default model (gpt-4o-mini), not gemini's model. Got: {:?}",
+        codex_requested
+    );
+    assert!(
+        !codex_requested.contains(&"gemini-3-flash-preview".to_string()),
+        "Codex should NOT receive gemini-specific model"
+    );
+
+    // 3. Final response is from codex
+    assert!(result.contains("codex"));
+    assert!(result.contains("gpt-4o-mini"));
+}
+
+#[tokio::test]
+async fn model_fallback_within_same_provider() {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use zeroclaw::providers::reliable::ReliableProvider;
+    use zeroclaw::providers::traits::{ChatMessage, Provider};
+
+    // Mock provider that fails for gemini-2.0 but succeeds for gemini-1.5-pro
+    struct GeminiMock {
+        calls: Arc<AtomicUsize>,
+        requested_models: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for GeminiMock {
+        async fn chat_with_system(
+            &self,
+            _system: Option<&str>,
+            _message: &str,
+            model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.requested_models
+                .lock()
+                .unwrap()
+                .push(model.to_string());
+
+            if model == "gemini-2.0-flash-exp" {
+                // Simulate quota exceeded for gemini-2.0
+                anyhow::bail!("429 Rate Limited: quota exceeded for gemini-2.0-flash-exp")
+            } else if model == "gemini-1.5-pro" {
+                Ok(format!("success with {}", model))
+            } else {
+                anyhow::bail!("Unknown model: {}", model)
+            }
+        }
+
+        async fn chat_with_history(
+            &self,
+            _messages: &[ChatMessage],
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+
+        async fn chat_with_tools(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[serde_json::Value],
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<zeroclaw::providers::traits::ChatResponse> {
+            unimplemented!()
+        }
+    }
+
+    let requested_models = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let gemini = GeminiMock {
+        calls: Arc::new(AtomicUsize::new(0)),
+        requested_models: Arc::clone(&requested_models),
+    };
+
+    // Configure model fallback: gemini-2.0-flash-exp → gemini-1.5-pro
+    let mut model_fallbacks = HashMap::new();
+    model_fallbacks.insert(
+        "gemini-2.0-flash-exp".to_string(),
+        vec!["gemini-1.5-pro".to_string()],
+    );
+
+    let provider = ReliableProvider::new(
+        vec![(
+            "gemini".to_string(),
+            Box::new(gemini) as Box<dyn Provider>,
+            None,
+        )],
+        1,  // 1 retry
+        10, // 10ms backoff
+    )
+    .with_model_fallbacks(model_fallbacks);
+
+    // Request with gemini-2.0-flash-exp (will fail due to quota)
+    let result = provider
+        .chat_with_system(None, "test", "gemini-2.0-flash-exp", 0.7)
+        .await
+        .unwrap();
+
+    // Verify model fallback worked
+    let models = requested_models.lock().unwrap();
+
+    // Should try gemini-2.0 (with retries), then fallback to gemini-1.5-pro
+    assert!(
+        models.len() >= 2,
+        "Should try at least 2 models (with retries): {:?}",
+        models
+    );
+
+    // First attempts should be gemini-2.0 (potentially multiple due to retries)
+    assert_eq!(models[0], "gemini-2.0-flash-exp", "First try gemini-2.0");
+
+    // Last attempt should be the fallback model
+    assert_eq!(
+        models.last().unwrap(),
+        "gemini-1.5-pro",
+        "Should eventually fallback to gemini-1.5-pro"
+    );
+
+    assert!(
+        result.contains("gemini-1.5-pro"),
+        "Final response should be from fallback model"
+    );
+}

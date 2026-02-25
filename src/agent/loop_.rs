@@ -2584,7 +2584,17 @@ pub(crate) async fn run_tool_call_loop(
                     history.push(ChatMessage::tool(tool_msg.to_string()));
                 }
             } else {
-                history.push(ChatMessage::user(format!("[Tool results]\n{tool_results}")));
+                let remaining = max_iterations.saturating_sub(iteration + 1);
+                let iteration_info = if remaining <= 3 {
+                    format!("\n\n<system-reminder>\nYou have used {} of {} tool iterations. {} iterations remaining. Plan carefully to complete the task within the limit.\n</system-reminder>",
+                        iteration + 1, max_iterations, remaining)
+                } else {
+                    format!("\n\n<system-reminder>\nIteration {} of {}. {} iterations remaining.\n</system-reminder>",
+                        iteration + 1, max_iterations, remaining)
+                };
+                history.push(ChatMessage::user(format!(
+                    "[Tool results]\n{tool_results}{iteration_info}"
+                )));
             }
         } else {
             for (native_call, (_, result)) in
@@ -2734,6 +2744,7 @@ pub async fn run(
         zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
         secrets_encrypt: config.secrets.encrypt,
         reasoning_enabled: config.runtime.reasoning_enabled,
+        default_model: None,
     };
 
     let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
@@ -2896,6 +2907,7 @@ pub async fn run(
         bootstrap_max_chars,
         native_tools,
         config.skills.prompt_injection_mode,
+        Some(&config),
     );
 
     // Append structured tool-use instructions with schemas (only for non-native providers)
@@ -3188,6 +3200,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
         secrets_encrypt: config.secrets.encrypt,
         reasoning_enabled: config.runtime.reasoning_enabled,
+        default_model: None,
     };
     let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
         provider_name,
@@ -3277,6 +3290,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         bootstrap_max_chars,
         native_tools,
         config.skills.prompt_injection_mode,
+        Some(&config),
     );
     if !native_tools {
         system_prompt.push_str(&build_tool_instructions(&tools_registry));
@@ -5126,6 +5140,7 @@ Let me check the result."#;
             None, // no bootstrap_max_chars
             true, // native_tools
             crate::config::SkillsPromptInjectionMode::Full,
+            None, // no config for provider context
         );
 
         // Must contain zero XML protocol artifacts

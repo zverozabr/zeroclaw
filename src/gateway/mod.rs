@@ -12,7 +12,9 @@ pub mod sse;
 pub mod static_files;
 pub mod ws;
 
-use crate::channels::{Channel, LinqChannel, NextcloudTalkChannel, SendMessage, WatiChannel, WhatsAppChannel};
+use crate::channels::{
+    Channel, LinqChannel, NextcloudTalkChannel, SendMessage, WatiChannel, WhatsAppChannel,
+};
 use crate::config::Config;
 use crate::cost::CostTracker;
 use crate::memory::{self, Memory, MemoryCategory};
@@ -347,6 +349,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
             secrets_encrypt: config.secrets.encrypt,
             reasoning_enabled: config.runtime.reasoning_enabled,
+            default_model: None,
         },
     )?);
     let model = config
@@ -1342,10 +1345,7 @@ async fn handle_wati_verify(
 }
 
 /// POST /wati — incoming WATI WhatsApp message webhook
-async fn handle_wati_webhook(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_wati_webhook(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let Some(ref wati) = state.wati else {
         return (
             StatusCode::NOT_FOUND,

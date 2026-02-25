@@ -5,7 +5,9 @@
 //! - Google Cloud ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
 
 use crate::auth::AuthService;
-use crate::providers::traits::{ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage};
+use crate::providers::traits::{
+    ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage,
+};
 use async_trait::async_trait;
 use directories::UserDirs;
 use reqwest::Client;

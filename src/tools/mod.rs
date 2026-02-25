@@ -15,6 +15,7 @@
 //! To add a new tool, implement [`Tool`] in a new submodule and register it in
 //! [`all_tools_with_runtime`]. See `AGENTS.md` §7.3 for the full change playbook.
 
+pub mod auth_profile;
 pub mod browser;
 pub mod browser_open;
 pub mod cli_discovery;
@@ -44,6 +45,7 @@ pub mod model_routing_config;
 pub mod pdf_read;
 pub mod proxy_config;
 pub mod pushover;
+pub mod quota_tools;
 pub mod schedule;
 pub mod schema;
 pub mod screenshot;
@@ -51,6 +53,7 @@ pub mod shell;
 pub mod traits;
 pub mod web_search_tool;
 
+pub use auth_profile::ManageAuthProfileTool;
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
@@ -79,6 +82,7 @@ pub use model_routing_config::ModelRoutingConfigTool;
 pub use pdf_read::PdfReadTool;
 pub use proxy_config::ProxyConfigTool;
 pub use pushover::PushoverTool;
+pub use quota_tools::{CheckProviderQuotaTool, SwitchProviderTool};
 pub use schedule::ScheduleTool;
 #[allow(unused_imports)]
 pub use schema::{CleaningStrategy, SchemaCleanr};
@@ -228,6 +232,9 @@ pub fn all_tools_with_runtime(
             security.clone(),
             workspace_dir.to_path_buf(),
         )),
+        Arc::new(CheckProviderQuotaTool::new(config.clone())),
+        Arc::new(SwitchProviderTool::new(config.clone())),
+        Arc::new(ManageAuthProfileTool::new(config.clone())),
     ];
 
     if browser_config.enabled {
@@ -316,6 +323,7 @@ pub fn all_tools_with_runtime(
                     .map(std::path::PathBuf::from),
                 secrets_encrypt: root_config.secrets.encrypt,
                 reasoning_enabled: root_config.runtime.reasoning_enabled,
+                default_model: None,
             },
         )
         .with_parent_tools(parent_tools)

@@ -17,14 +17,20 @@
 //! in [`create_provider_with_url`]. See `AGENTS.md` §7.1 for the full change playbook.
 
 pub mod anthropic;
+pub mod backoff;
 pub mod bedrock;
 pub mod compatible;
 pub mod copilot;
+pub mod error_parser;
 pub mod gemini;
+pub mod health;
 pub mod ollama;
 pub mod openai;
 pub mod openai_codex;
 pub mod openrouter;
+pub mod quota_adapter;
+pub mod quota_cli;
+pub mod quota_types;
 pub mod reliable;
 pub mod router;
 pub mod telnyx;
@@ -766,12 +772,31 @@ pub fn sanitize_api_error(input: &str) -> String {
 }
 
 /// Build a sanitized provider error from a failed HTTP response.
+///
+/// Attempts to extract structured quota information (resets_at, plan_type) from
+/// error response before sanitization. If found, logs the quota info for future
+/// integration with AuthProfiles metadata.
 pub async fn api_error(provider: &str, response: reqwest::Response) -> anyhow::Error {
     let status = response.status();
     let body = response
         .text()
         .await
         .unwrap_or_else(|_| "<failed to read provider error body>".to_string());
+
+    // Try to extract structured quota information before sanitizing
+    if let Some(quota_info) = error_parser::parse_provider_error(provider, &body) {
+        tracing::debug!(
+            provider = provider,
+            error_type = %quota_info.error_type,
+            plan_type = ?quota_info.plan_type,
+            resets_at = ?quota_info.resets_at,
+            "Extracted quota info from error response"
+        );
+
+        // Future: save quota_info to AuthProfiles metadata here
+        // For now, just log it for observability
+    }
+
     let sanitized = sanitize_api_error(&body);
     anyhow::anyhow!("{provider} API error ({status}): {sanitized}")
 }
@@ -1324,11 +1349,7 @@ pub fn create_resilient_provider_with_options(
         };
 
         match create_provider_with_options(provider_name, None, &fallback_options) {
-            Ok(provider) => providers.push((
-                fallback.clone(),
-                provider,
-                provider_default_model,
-            )),
+            Ok(provider) => providers.push((fallback.clone(), provider, provider_default_model)),
             Err(_error) => {
                 tracing::warn!(
                     fallback_provider = fallback,

@@ -331,7 +331,10 @@ impl Provider for ReliableProvider {
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || effective_model != *current_model {
+                            if attempt > 0
+                                || *current_model != model
+                                || effective_model != *current_model
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = effective_model,
@@ -455,7 +458,10 @@ impl Provider for ReliableProvider {
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || effective_model != *current_model {
+                            if attempt > 0
+                                || *current_model != model
+                                || effective_model != *current_model
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = effective_model,
@@ -583,7 +589,10 @@ impl Provider for ReliableProvider {
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || effective_model != *current_model {
+                            if attempt > 0
+                                || *current_model != model
+                                || effective_model != *current_model
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = effective_model,
@@ -698,7 +707,10 @@ impl Provider for ReliableProvider {
                     };
                     match provider.chat(req, effective_model, temperature).await {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || effective_model != *current_model {
+                            if attempt > 0
+                                || *current_model != model
+                                || effective_model != *current_model
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = effective_model,
@@ -799,7 +811,9 @@ impl Provider for ReliableProvider {
     }
 
     fn supports_streaming(&self) -> bool {
-        self.providers.iter().any(|(_, p, _)| p.supports_streaming())
+        self.providers
+            .iter()
+            .any(|(_, p, _)| p.supports_streaming())
     }
 
     fn stream_chat_with_system(
@@ -1329,7 +1343,11 @@ mod tests {
         );
 
         let provider = ReliableProvider::new(
-            vec![("p1".into(), Box::new(mock.clone()) as Box<dyn Provider>, None)],
+            vec![(
+                "p1".into(),
+                Box::new(mock.clone()) as Box<dyn Provider>,
+                None,
+            )],
             0,
             1,
         )
@@ -1729,7 +1747,7 @@ mod tests {
                     tool_calls: vec![tool_call.clone()],
                     error: "boom",
                 }) as Box<dyn Provider>,
-                    None,
+                None,
             )],
             2,
             1,
@@ -1766,7 +1784,7 @@ mod tests {
                     tool_calls: vec![tool_call],
                     error: "temporary failure",
                 }) as Box<dyn Provider>,
-                    None,
+                None,
             )],
             3,
             1,
@@ -1799,7 +1817,7 @@ mod tests {
                     tool_calls: vec![],
                     error: "boom",
                 }) as Box<dyn Provider>,
-                    None,
+                None,
             )],
             2,
             1,

@@ -326,6 +326,27 @@ Examples:
     /// List supported AI providers
     Providers,
 
+    /// Show provider quota and rate limit status
+    #[command(name = "providers-quota", long_about = "\
+Show provider quota and rate limit status.
+
+Displays quota remaining, rate limit resets, circuit breaker state, \
+and per-profile breakdown for all configured providers.
+
+Examples:
+  zeroclaw providers-quota                    # text output, all providers
+  zeroclaw providers-quota --format json      # JSON output
+  zeroclaw providers-quota --provider gemini  # filter by provider")]
+    ProvidersQuota {
+        /// Filter by provider name
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Output format: text or json (default: text)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
     /// Manage channels (telegram, discord, slack)
     #[command(long_about = "\
 Manage communication channels.
@@ -932,6 +953,10 @@ async fn main() -> Result<()> {
             println!("\n  custom:<URL>   Any OpenAI-compatible endpoint");
             println!("  anthropic-custom:<URL>  Any Anthropic-compatible endpoint");
             Ok(())
+        }
+
+        Commands::ProvidersQuota { provider, format } => {
+            providers::quota_cli::run(&config, provider.as_deref(), &format).await
         }
 
         Commands::Service {

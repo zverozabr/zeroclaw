@@ -2215,6 +2215,7 @@ pub fn build_system_prompt(
         bootstrap_max_chars,
         false,
         crate::config::SkillsPromptInjectionMode::Full,
+        None,
     )
 }
 
@@ -2227,6 +2228,7 @@ pub fn build_system_prompt_with_mode(
     bootstrap_max_chars: Option<usize>,
     native_tools: bool,
     skills_prompt_mode: crate::config::SkillsPromptInjectionMode,
+    config: Option<&crate::config::Config>,
 ) -> String {
     use std::fmt::Write;
     let mut prompt = String::with_capacity(8192);
@@ -2365,7 +2367,45 @@ pub fn build_system_prompt_with_mode(
         std::env::consts::OS,
     );
 
-    // ── 8. Channel Capabilities ─────────────────────────────────────
+    // ── 8. Provider & Budget Context ──────────────────────────────
+    if let Some(cfg) = config {
+        prompt.push_str("## Provider & Budget Context\n\n");
+
+        if let Some(ref provider) = cfg.default_provider {
+            let _ = write!(prompt, "Current provider: **{provider}**");
+            if let Some(ref model) = cfg.default_model {
+                let _ = write!(prompt, " (model: {model})");
+            }
+            prompt.push('\n');
+        } else if let Some(ref model) = cfg.default_model {
+            let _ = writeln!(prompt, "Current model: **{model}**");
+        }
+
+        // Show fallback providers from model routes
+        if !cfg.model_routes.is_empty() {
+            let fallbacks: Vec<String> = cfg
+                .model_routes
+                .iter()
+                .map(|r| format!("{}/{}", r.provider, r.model))
+                .collect();
+            let _ = writeln!(prompt, "Fallback routes: {}", fallbacks.join(", "));
+        }
+
+        // Budget limits
+        if cfg.cost.enabled {
+            let _ = writeln!(
+                prompt,
+                "Budget: ${:.2}/day, ${:.2}/month (warn at {}%)",
+                cfg.cost.daily_limit_usd,
+                cfg.cost.monthly_limit_usd,
+                cfg.cost.warn_at_percent,
+            );
+        }
+
+        prompt.push('\n');
+    }
+
+    // ── 9. Channel Capabilities ─────────────────────────────────────
     prompt.push_str("## Channel Capabilities\n\n");
     prompt.push_str("- You are running as a messaging bot. Your response is automatically sent back to the user's channel.\n");
     prompt.push_str("- You do NOT need to ask permission to respond — just respond directly.\n");
@@ -3001,6 +3041,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
         secrets_encrypt: config.secrets.encrypt,
         reasoning_enabled: config.runtime.reasoning_enabled,
+        default_model: None,
     };
     let provider: Arc<dyn Provider> = Arc::from(
         create_resilient_provider_nonblocking(
@@ -3153,6 +3194,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         bootstrap_max_chars,
         native_tools,
         config.skills.prompt_injection_mode,
+        Some(&config),
     );
     if !native_tools {
         system_prompt.push_str(&build_tool_instructions(tools_registry.as_ref()));
@@ -5446,6 +5488,7 @@ BTC is currently around $65,000 based on latest tool output."#
             None,
             false,
             crate::config::SkillsPromptInjectionMode::Compact,
+            None,
         );
 
         assert!(prompt.contains("<available_skills>"), "missing skills XML");
