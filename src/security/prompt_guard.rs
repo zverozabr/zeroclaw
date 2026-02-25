@@ -85,8 +85,6 @@ impl PromptGuard {
         let mut detected_patterns = Vec::new();
         let mut max_score: f64 = 0.0;
 
-        // Check each pattern category and track maximum score
-        // Using max instead of sum because even one high-confidence detection should trigger
         max_score = max_score.max(self.check_system_override(content, &mut detected_patterns));
         max_score = max_score.max(self.check_role_confusion(content, &mut detected_patterns));
         max_score = max_score.max(self.check_tool_injection(content, &mut detected_patterns));
@@ -98,25 +96,19 @@ impl PromptGuard {
         // We use the maximum score across all categories
         let normalized_score = max_score;
 
-        if !detected_patterns.is_empty() {
-            // For Block mode, block any detected pattern strictly above sensitivity threshold
-            // For Warn mode, warn about any detected pattern but only if score is high enough
-            if normalized_score > self.sensitivity {
-                match self.action {
-                    GuardAction::Block => GuardResult::Blocked(format!(
+        if detected_patterns.is_empty() {
+            GuardResult::Safe
+        } else {
+            match self.action {
+                GuardAction::Block if max_score > self.sensitivity => {
+                    GuardResult::Blocked(format!(
                         "Potential prompt injection detected (score: {:.2}): {}",
                         normalized_score,
                         detected_patterns.join(", ")
-                    )),
-                    _ => GuardResult::Suspicious(detected_patterns, normalized_score),
+                    ))
                 }
-            } else {
-                // Score below threshold but patterns detected
-                // Still report as suspicious (could be false positive)
-                GuardResult::Suspicious(detected_patterns, normalized_score)
+                _ => GuardResult::Suspicious(detected_patterns, normalized_score),
             }
-        } else {
-            GuardResult::Safe
         }
     }
 
@@ -125,9 +117,12 @@ impl PromptGuard {
         static SYSTEM_OVERRIDE_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
         let regexes = SYSTEM_OVERRIDE_PATTERNS.get_or_init(|| {
             vec![
-                Regex::new(r"(?i)ignore\s+(\w+\s+)?(previous|all|above|prior)\s+(\w+\s+)?(instructions?|prompts?|commands?)").unwrap(),
-                Regex::new(r"(?i)disregard\s+(\w+\s+)?(previous|all|above|prior)").unwrap(),
-                Regex::new(r"(?i)forget\s+(\w+\s+)?(previous|all|everything|above)").unwrap(),
+                Regex::new(
+                    r"(?i)ignore\s+((all\s+)?(previous|above|prior)|all)\s+(instructions?|prompts?|commands?)",
+                )
+                .unwrap(),
+                Regex::new(r"(?i)disregard\s+(previous|all|above|prior)").unwrap(),
+                Regex::new(r"(?i)forget\s+(previous|all|everything|above)").unwrap(),
                 Regex::new(r"(?i)new\s+(instructions?|rules?|system\s+prompt)").unwrap(),
                 Regex::new(r"(?i)override\s+(system|instructions?|rules?)").unwrap(),
                 Regex::new(r"(?i)reset\s+(instructions?|context|system)").unwrap(),
@@ -193,8 +188,8 @@ impl PromptGuard {
         static SECRET_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
         let regexes = SECRET_PATTERNS.get_or_init(|| {
             vec![
-                Regex::new(r"(?i)(list|show|print|display|reveal|tell\s+me)\s+(\w+\s+)?(all\s+)?(\w+\s+)?(secrets?|credentials?|passwords?|tokens?|api\s+keys?)").unwrap(),
-                Regex::new(r"(?i)(what|show)\s+(\w+\s+)?(are|is|me)\s+(\w+\s+)?(your|the)\s+(\w+\s+)?(api\s+)?(keys?|secrets?|credentials?)").unwrap(),
+                Regex::new(r"(?i)(list|show|print|display|reveal|tell\s+me)\s+(all\s+)?(secrets?|credentials?|passwords?|tokens?|keys?)").unwrap(),
+                Regex::new(r"(?i)(what|show)\s+(are|is|me)\s+(all\s+)?(your|the)\s+(api\s+)?(keys?|secrets?|credentials?)").unwrap(),
                 Regex::new(r"(?i)contents?\s+of\s+(vault|secrets?|credentials?)").unwrap(),
                 Regex::new(r"(?i)(dump|export)\s+(vault|secrets?|credentials?)").unwrap(),
             ]
