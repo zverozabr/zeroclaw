@@ -3,7 +3,6 @@
 //! Simulates a bot workflow where primary provider fails and circuit breaker
 //! ensures fallback to secondary provider.
 
-use std::sync::Arc;
 use std::time::Duration;
 use zeroclaw::providers::health::ProviderHealthTracker;
 
@@ -49,7 +48,7 @@ impl MockProviderScenario {
 
 #[test]
 fn e2e_circuit_breaker_enables_fallback() {
-    let health = Arc::new(ProviderHealthTracker::new(3, Duration::from_secs(60), 100));
+    let health = ProviderHealthTracker::new(3, Duration::from_secs(60), 100);
 
     // Primary provider: will fail 3 times (opens circuit)
     let primary = MockProviderScenario::new("primary", 3);
@@ -92,7 +91,7 @@ fn e2e_circuit_breaker_enables_fallback() {
 
     for (i, result) in results.iter().skip(3).enumerate() {
         assert!(
-            result.1.contains("Success from secondary") || result.1.contains("Circuit open"),
+            result.1.contains("Success from secondary"),
             "Message {} should skip primary (circuit open) and use secondary",
             i + 4
         );

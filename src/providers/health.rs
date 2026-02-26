@@ -60,12 +60,19 @@ impl ProviderHealthTracker {
     /// - `Ok(())` if circuit is closed (provider can be tried)
     /// - `Err((remaining, state))` if circuit is open (provider blocked)
     pub fn should_try(&self, provider: &str) -> Result<(), (Duration, ProviderHealthState)> {
-        // Check circuit breaker
         if let Some((remaining, ())) = self.backoff.get(&provider.to_string()) {
-            // Circuit is open - return remaining time and current state
             let states = self.states.lock();
             let state = states.get(provider).cloned().unwrap_or_default();
             return Err((remaining, state));
+        }
+
+        // Backoff expired — enter half-open state: reset failure count so the
+        // provider gets a fair probe window before the circuit re-opens.
+        let mut states = self.states.lock();
+        if let Some(state) = states.get_mut(provider) {
+            if state.failure_count >= self.failure_threshold {
+                state.failure_count = 0;
+            }
         }
 
         Ok(())
