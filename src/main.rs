@@ -752,9 +752,9 @@ async fn main() -> Result<()> {
             bail!("--channels-only does not accept --force");
         }
         let config = if channels_only {
-            onboard::run_channels_repair_wizard().await
+            Box::pin(onboard::run_channels_repair_wizard()).await
         } else if interactive {
-            onboard::run_wizard(force).await
+            Box::pin(onboard::run_wizard(force)).await
         } else {
             onboard::run_quick_setup(
                 api_key.as_deref(),
@@ -799,7 +799,7 @@ async fn main() -> Result<()> {
             model,
             temperature,
             peripheral,
-        } => agent::run(
+        } => Box::pin(agent::run(
             config,
             message,
             provider,
@@ -807,7 +807,7 @@ async fn main() -> Result<()> {
             temperature,
             peripheral,
             true,
-        )
+        ))
         .await
         .map(|_| ()),
 
