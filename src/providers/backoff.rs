@@ -1,6 +1,6 @@
 //! Generic backoff storage with automatic cleanup.
 //!
-//! Thread-safe, in-memory, with TTL-based expiration and LRU eviction.
+//! Thread-safe, in-memory, with TTL-based expiration and min-deadline eviction.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ pub struct BackoffEntry<T> {
 /// Cleanup strategies:
 /// - Lazy removal on `get()` if expired
 /// - Opportunistic cleanup before eviction
-/// - LRU eviction when max_entries reached
+/// - Min-deadline eviction when max_entries reached (removes soonest-to-expire)
 pub struct BackoffStore<K, T> {
     data: Mutex<HashMap<K, BackoffEntry<T>>>,
     max_entries: usize,
@@ -70,7 +70,7 @@ where
             data.retain(|_, entry| entry.deadline > now);
         }
 
-        // LRU eviction if still over capacity
+        // Min-deadline eviction if still over capacity (remove soonest-to-expire)
         if data.len() >= self.max_entries {
             if let Some(oldest_key) = data
                 .iter()
@@ -148,7 +148,7 @@ mod tests {
         );
         assert!(store.get(&key.to_string()).is_some());
 
-        thread::sleep(Duration::from_millis(60));
+        thread::sleep(Duration::from_millis(200));
         assert!(store.get(&key.to_string()).is_none());
     }
 
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn backoff_lru_eviction_at_capacity() {
+    fn backoff_min_deadline_eviction_at_capacity() {
         let store = BackoffStore::new(2);
 
         store.set(

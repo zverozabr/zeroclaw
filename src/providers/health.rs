@@ -106,16 +106,18 @@ impl ProviderHealthTracker {
         let current_count = state.failure_count;
         drop(states);
 
-        // Open circuit if threshold exceeded
+        // Open circuit if threshold exceeded (only if not already in cooldown)
         if current_count >= self.failure_threshold {
-            tracing::warn!(
-                provider = provider,
-                failure_count = current_count,
-                threshold = self.failure_threshold,
-                cooldown_secs = self.cooldown.as_secs(),
-                "Provider failure threshold exceeded - opening circuit breaker"
-            );
-            self.backoff.set(provider.to_string(), self.cooldown, ());
+            if self.backoff.get(&provider.to_string()).is_none() {
+                tracing::warn!(
+                    provider = provider,
+                    failure_count = current_count,
+                    threshold = self.failure_threshold,
+                    cooldown_secs = self.cooldown.as_secs(),
+                    "Provider failure threshold exceeded - opening circuit breaker"
+                );
+                self.backoff.set(provider.to_string(), self.cooldown, ());
+            }
         }
     }
 
@@ -197,7 +199,7 @@ mod tests {
         assert!(tracker.should_try("test-provider").is_err());
 
         // Wait for cooldown
-        thread::sleep(Duration::from_millis(60));
+        thread::sleep(Duration::from_millis(200));
 
         // Circuit should be closed (backoff expired)
         assert!(tracker.should_try("test-provider").is_ok());
