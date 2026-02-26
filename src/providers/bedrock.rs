@@ -868,6 +868,7 @@ impl BedrockProvider {
             tool_calls,
             usage,
             reasoning_content: None,
+            quota_metadata: None,
         }
     }
 
