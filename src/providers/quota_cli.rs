@@ -3,7 +3,6 @@
 use super::health::ProviderHealthTracker;
 use super::quota_types::{ProfileQuotaInfo, ProviderQuotaInfo, QuotaStatus, QuotaSummary};
 use crate::auth::profiles::{AuthProfilesData, AuthProfilesStore};
-use crate::auth::state_dir_from_config;
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -24,9 +23,8 @@ pub async fn run(config: &Config, provider_filter: Option<&str>, format: &str) -
         100, // max tracked providers
     );
 
-    // 2. Load OAuth profiles (state_dir = config dir parent, where auth-profiles.json lives)
-    let state_dir = state_dir_from_config(config);
-    let auth_store = AuthProfilesStore::new(&state_dir, config.secrets.encrypt);
+    // 2. Load OAuth profiles
+    let auth_store = AuthProfilesStore::new(&config.workspace_dir, config.secrets.encrypt);
     let profiles_data = auth_store
         .load()
         .await
@@ -82,11 +80,6 @@ pub fn build_quota_summary(
             .get("rate_limit_total")
             .and_then(|v| v.parse::<u64>().ok());
 
-        let plan_type = profile.metadata.get("plan_type").cloned();
-
-        // Token expiry from token_set
-        let token_expires_at = profile.token_set.as_ref().and_then(|ts| ts.expires_at);
-
         // Determine profile status
         let profile_status = if let Some(remaining) = rate_limit_remaining {
             if remaining == 0 {
@@ -97,16 +90,8 @@ pub fn build_quota_summary(
                 QuotaStatus::Ok
             }
         } else {
-            // Check if token is expired
-            if let Some(expires) = token_expires_at {
-                if expires < Utc::now() {
-                    QuotaStatus::RateLimited // Token expired → needs refresh
-                } else {
-                    QuotaStatus::Ok
-                }
-            } else {
-                QuotaStatus::Ok
-            }
+            // No quota metadata available - assume OK
+            QuotaStatus::Ok
         };
 
         profiles_by_provider
@@ -118,9 +103,6 @@ pub fn build_quota_summary(
                 rate_limit_remaining,
                 rate_limit_reset_at,
                 rate_limit_total,
-                account_id: profile.account_id.clone(),
-                token_expires_at,
-                plan_type,
             });
     }
 
@@ -210,6 +192,9 @@ pub fn build_quota_summary(
         });
     }
 
+    // Add Qwen OAuth static quota info if configured and not already present
+    add_qwen_oauth_static_quota(&mut providers_info, provider_filter)?;
+
     // Sort by provider name
     providers_info.sort_by(|a, b| a.provider.cmp(&b.provider));
 
@@ -288,16 +273,12 @@ fn print_text(summary: &QuotaSummary) -> Result<()> {
         // Print profile details (if any)
         for profile in &provider_info.profiles {
             let profile_status = format_status(&profile.status);
-            let remaining_str = profile
-                .rate_limit_remaining
-                .map(|r| {
-                    if let Some(total) = profile.rate_limit_total {
-                        format!("{r}/{total}")
-                    } else {
-                        format!("{r}")
-                    }
-                })
-                .unwrap_or_else(|| "-".to_string());
+            let remaining_str = match (profile.rate_limit_remaining, profile.rate_limit_total) {
+                (Some(r), Some(total)) => format!("{r}/{total}"),
+                (Some(r), None) => format!("{r}"),
+                (None, Some(total)) => format!("?/{total}"), // Static quota (total known, remaining unknown)
+                (None, None) => "-".to_string(),
+            };
 
             let reset_str = profile
                 .rate_limit_reset_at
@@ -385,6 +366,61 @@ fn truncate(s: &str, max_len: usize) -> String {
     } else {
         s[..max_len].to_string()
     }
+}
+
+/// Add Qwen OAuth static quota information if ~/.qwen/oauth_creds.json exists.
+///
+/// Qwen OAuth free tier has a known limit of 1000 requests/day, but the API
+/// doesn't return rate limit headers. This function provides static quota info.
+fn add_qwen_oauth_static_quota(
+    providers_info: &mut Vec<ProviderQuotaInfo>,
+    provider_filter: Option<&str>,
+) -> Result<()> {
+    // Check if qwen-code or qwen-oauth is requested
+    let qwen_aliases = ["qwen", "qwen-code", "qwen-oauth", "qwen_oauth", "dashscope"];
+    let should_add_qwen = provider_filter
+        .map(|f| qwen_aliases.contains(&f))
+        .unwrap_or(true); // If no filter, always try to add
+
+    if !should_add_qwen {
+        return Ok(());
+    }
+
+    // Check if Qwen OAuth credentials exist
+    let home_dir = std::env::var("HOME").context("HOME environment variable not set")?;
+    let qwen_creds_path = std::path::Path::new(&home_dir).join(".qwen/oauth_creds.json");
+
+    if !qwen_creds_path.exists() {
+        return Ok(()); // No Qwen OAuth configured
+    }
+
+    // Check if qwen provider already exists in providers_info
+    let qwen_exists = providers_info
+        .iter()
+        .any(|p| qwen_aliases.contains(&p.provider.as_str()));
+
+    if qwen_exists {
+        return Ok(()); // Already added
+    }
+
+    // Add static quota info for Qwen OAuth
+    providers_info.push(ProviderQuotaInfo {
+        provider: "qwen-code".to_string(),
+        status: QuotaStatus::Ok,
+        failure_count: 0,
+        last_error: None,
+        retry_after_seconds: None,
+        circuit_resets_at: None,
+        profiles: vec![ProfileQuotaInfo {
+            profile_name: "OAuth (portal.qwen.ai)".to_string(),
+            status: QuotaStatus::Ok,
+            rate_limit_remaining: None, // Unknown without local tracking
+            rate_limit_reset_at: None,  // Daily reset (exact time unknown)
+            rate_limit_total: Some(1000), // OAuth free tier limit
+        }],
+    });
+
+    Ok(())
 }
 
 #[cfg(test)]

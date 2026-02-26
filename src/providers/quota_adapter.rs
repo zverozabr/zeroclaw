@@ -208,6 +208,41 @@ impl QuotaExtractor for GeminiQuotaExtractor {
     }
 }
 
+/// Qwen OAuth API quota extractor
+///
+/// Qwen OAuth API (portal.qwen.ai) does not return rate limit headers.
+/// OAuth free tier has a known limit of 1000 requests/day.
+/// This extractor provides error parsing for rate limit detection.
+pub struct QwenQuotaExtractor;
+
+impl QuotaExtractor for QwenQuotaExtractor {
+    fn extract_from_headers(&self, _headers: &HeaderMap) -> Option<QuotaMetadata> {
+        // Qwen OAuth API doesn't return rate limit headers
+        // Return None to avoid breaking fallback chain
+        // Static quota info is handled by quota CLI separately
+        None
+    }
+
+    fn extract_from_error(&self, error: &anyhow::Error) -> Option<QuotaMetadata> {
+        let error_str = error.to_string().to_lowercase();
+
+        // Qwen may return rate limit errors with "too many requests" or "rate limit"
+        if error_str.contains("too many requests")
+            || error_str.contains("rate limit")
+            || error_str.contains("quota")
+        {
+            Some(QuotaMetadata {
+                rate_limit_remaining: Some(0),
+                rate_limit_reset_at: None,
+                retry_after_seconds: Some(3600), // 1 hour default backoff
+                rate_limit_total: Some(1000),    // OAuth free tier limit
+            })
+        } else {
+            None
+        }
+    }
+}
+
 /// Universal quota extractor with provider-specific extractors and fallback chain.
 pub struct UniversalQuotaExtractor {
     extractors: HashMap<String, Box<dyn QuotaExtractor>>,
@@ -224,6 +259,10 @@ impl UniversalQuotaExtractor {
         extractors.insert("anthropic".to_string(), Box::new(AnthropicQuotaExtractor));
         extractors.insert("gemini".to_string(), Box::new(GeminiQuotaExtractor));
         extractors.insert("openrouter".to_string(), Box::new(OpenAIQuotaExtractor)); // OpenRouter uses OpenAI format
+        extractors.insert("qwen".to_string(), Box::new(QwenQuotaExtractor));
+        extractors.insert("qwen-code".to_string(), Box::new(QwenQuotaExtractor)); // OAuth alias
+        extractors.insert("qwen-oauth".to_string(), Box::new(QwenQuotaExtractor)); // OAuth alias
+        extractors.insert("dashscope".to_string(), Box::new(QwenQuotaExtractor)); // DashScope API key
 
         Self { extractors }
     }
@@ -406,5 +445,40 @@ mod tests {
 
         let quota = extractor.extract("unknown-provider", &headers, None);
         assert!(quota.is_none());
+    }
+
+    #[test]
+    fn test_qwen_extractor_headers() {
+        let extractor = QwenQuotaExtractor;
+        let headers = HeaderMap::new();
+
+        // Qwen doesn't return rate limit headers
+        let quota = extractor.extract_from_headers(&headers);
+        assert!(quota.is_none());
+    }
+
+    #[test]
+    fn test_qwen_extractor_error() {
+        let extractor = QwenQuotaExtractor;
+        let error = anyhow::anyhow!("qwen API error (429): Too many requests");
+
+        let quota = extractor.extract_from_error(&error).unwrap();
+        assert_eq!(quota.rate_limit_remaining, Some(0));
+        assert_eq!(quota.rate_limit_total, Some(1000));
+        assert!(quota.retry_after_seconds.is_some());
+    }
+
+    #[test]
+    fn test_universal_extractor_qwen_error() {
+        let extractor = UniversalQuotaExtractor::new();
+        let headers = HeaderMap::new();
+        let error = anyhow::anyhow!("qwen rate limit exceeded");
+
+        // Test qwen-code alias with error
+        let quota = extractor
+            .extract("qwen-code", &headers, Some(&error))
+            .unwrap();
+        assert_eq!(quota.rate_limit_remaining, Some(0));
+        assert_eq!(quota.rate_limit_total, Some(1000));
     }
 }
