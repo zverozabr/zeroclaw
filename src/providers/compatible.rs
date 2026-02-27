@@ -15,6 +15,7 @@ use reqwest::{
     Client,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// A provider that speaks the OpenAI-compatible chat completions API.
 /// Used by: Venice, Vercel AI Gateway, Cloudflare AI Gateway, Moonshot,
@@ -545,18 +546,33 @@ struct ResponsesInput {
 #[derive(Debug, Deserialize)]
 struct ResponsesResponse {
     #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
     output: Vec<ResponsesOutput>,
     #[serde(default)]
     output_text: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ResponsesOutput {
     #[serde(default)]
     content: Vec<ResponsesContent>,
+    /// Output item type (e.g. "message", "function_call").
+    #[serde(rename = "type")]
+    #[serde(default)]
+    kind: Option<String>,
+    /// Function name for function_call output items.
+    #[serde(default)]
+    name: Option<String>,
+    /// Function call arguments (JSON string).
+    #[serde(default)]
+    arguments: Option<String>,
+    /// Call ID for tool/function calls.
+    #[serde(default)]
+    call_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ResponsesContent {
     #[serde(rename = "type")]
     kind: Option<String>,
@@ -757,7 +773,7 @@ fn build_responses_prompt(messages: &[ChatMessage]) -> (Option<String>, Vec<Resp
     (instructions, input)
 }
 
-fn extract_responses_text(response: ResponsesResponse) -> Option<String> {
+fn extract_responses_text(response: &ResponsesResponse) -> Option<String> {
     if let Some(text) = first_nonempty(response.output_text.as_deref()) {
         return Some(text);
     }
@@ -781,6 +797,181 @@ fn extract_responses_text(response: ResponsesResponse) -> Option<String> {
     }
 
     None
+}
+
+fn extract_responses_tool_calls(response: &ResponsesResponse) -> Vec<ProviderToolCall> {
+    response
+        .output
+        .iter()
+        .filter(|item| item.kind.as_deref() == Some("function_call"))
+        .filter_map(|item| {
+            let name = item.name.clone()?;
+            let arguments = item.arguments.clone().unwrap_or_else(|| "{}".to_string());
+            Some(ProviderToolCall {
+                id: item
+                    .call_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                name,
+                arguments,
+            })
+        })
+        .collect()
+}
+
+fn parse_responses_chat_response(response: ResponsesResponse) -> ProviderChatResponse {
+    let text = extract_responses_text(&response);
+    let tool_calls = extract_responses_tool_calls(&response);
+    ProviderChatResponse {
+        text,
+        tool_calls,
+        usage: None,
+        reasoning_content: None,
+        quota_metadata: None,
+    }
+}
+
+fn extract_responses_stream_error_message(event: &Value) -> Option<String> {
+    let event_type = event.get("type").and_then(Value::as_str);
+
+    if event_type == Some("error") {
+        return first_nonempty(
+            event
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| event.get("code").and_then(Value::as_str))
+                .or_else(|| {
+                    event
+                        .get("error")
+                        .and_then(|error| error.get("message"))
+                        .and_then(Value::as_str)
+                }),
+        );
+    }
+
+    if event_type == Some("response.failed") {
+        return first_nonempty(
+            event
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str),
+        );
+    }
+
+    None
+}
+
+fn extract_responses_stream_text_event(event: &Value, saw_delta: bool) -> Option<String> {
+    let event_type = event.get("type").and_then(Value::as_str);
+    match event_type {
+        Some("response.output_text.delta") => {
+            first_nonempty(event.get("delta").and_then(Value::as_str))
+        }
+        Some("response.output_text.done") if !saw_delta => {
+            first_nonempty(event.get("text").and_then(Value::as_str))
+        }
+        Some("response.completed" | "response.done") => event
+            .get("response")
+            .and_then(|value| serde_json::from_value::<ResponsesResponse>(value.clone()).ok())
+            .and_then(|response| extract_responses_text(&response)),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default)]
+struct ResponsesWebSocketAccumulator {
+    saw_delta: bool,
+    delta_accumulator: String,
+    fallback_text: Option<String>,
+    latest_response_id: Option<String>,
+    output_items: Vec<ResponsesOutput>,
+}
+
+impl ResponsesWebSocketAccumulator {
+    fn final_text(&self) -> Option<String> {
+        if self.saw_delta {
+            first_nonempty(Some(&self.delta_accumulator))
+        } else {
+            self.fallback_text.clone()
+        }
+    }
+
+    fn fallback_response(&self) -> Option<ResponsesResponse> {
+        let output_text = self.final_text();
+        if output_text.is_none() && self.output_items.is_empty() {
+            return None;
+        }
+
+        Some(ResponsesResponse {
+            id: self.latest_response_id.clone(),
+            output: self.output_items.clone(),
+            output_text,
+        })
+    }
+
+    fn record_output_item(&mut self, event: &Value) {
+        let Some(event_type) = event.get("type").and_then(Value::as_str) else {
+            return;
+        };
+
+        if event_type != "response.output_item.done" {
+            return;
+        }
+
+        let item = event
+            .get("item")
+            .or_else(|| event.get("output_item"))
+            .cloned();
+        if let Some(item) = item {
+            if let Ok(parsed) = serde_json::from_value::<ResponsesOutput>(item) {
+                self.output_items.push(parsed);
+            }
+        }
+    }
+
+    fn apply_event(&mut self, event: &Value) -> anyhow::Result<Option<ResponsesResponse>> {
+        if let Some(message) = extract_responses_stream_error_message(event) {
+            anyhow::bail!("{}", message.trim());
+        }
+
+        self.record_output_item(event);
+
+        let event_type = event.get("type").and_then(Value::as_str);
+        if let Some(id) = event
+            .get("response")
+            .and_then(|response| response.get("id"))
+            .and_then(Value::as_str)
+        {
+            self.latest_response_id = Some(id.to_string());
+        }
+
+        if let Some(text) = extract_responses_stream_text_event(event, self.saw_delta) {
+            if event_type == Some("response.output_text.delta") {
+                self.saw_delta = true;
+                self.delta_accumulator.push_str(&text);
+            } else if self.fallback_text.is_none() {
+                self.fallback_text = Some(text);
+            }
+        }
+
+        if event_type == Some("response.completed") || event_type == Some("response.done") {
+            if let Some(value) = event.get("response").cloned() {
+                if let Ok(mut parsed) = serde_json::from_value::<ResponsesResponse>(value) {
+                    if parsed.output_text.is_none() {
+                        parsed.output_text = self.final_text();
+                    }
+                    if parsed.output.is_empty() && !self.output_items.is_empty() {
+                        parsed.output = self.output_items.clone();
+                    }
+                    return Ok(Some(parsed));
+                }
+            }
+            return Ok(self.fallback_response());
+        }
+
+        Ok(None)
+    }
 }
 
 fn compact_sanitized_body_snippet(body: &str) -> String {
@@ -860,7 +1051,7 @@ impl OpenAiCompatibleProvider {
         let body = response.text().await?;
         let responses = parse_responses_response_body(&self.name, &body)?;
 
-        extract_responses_text(responses)
+        extract_responses_text(&responses)
             .ok_or_else(|| anyhow::anyhow!("No response from {} Responses API", self.name))
     }
 
@@ -1066,6 +1257,7 @@ impl OpenAiCompatibleProvider {
             tool_calls,
             usage: None,
             reasoning_content,
+            quota_metadata: None,
         }
     }
 
@@ -1405,6 +1597,7 @@ impl Provider for OpenAiCompatibleProvider {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    quota_metadata: None,
                 });
             }
         };
@@ -1449,6 +1642,7 @@ impl Provider for OpenAiCompatibleProvider {
             tool_calls,
             usage,
             reasoning_content,
+            quota_metadata: None,
         })
     }
 
@@ -1504,6 +1698,7 @@ impl Provider for OpenAiCompatibleProvider {
                             tool_calls: vec![],
                             usage: None,
                             reasoning_content: None,
+                            quota_metadata: None,
                         })
                         .map_err(|responses_err| {
                             anyhow::anyhow!(
@@ -1533,6 +1728,7 @@ impl Provider for OpenAiCompatibleProvider {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    quota_metadata: None,
                 });
             }
 
@@ -1545,6 +1741,7 @@ impl Provider for OpenAiCompatibleProvider {
                         tool_calls: vec![],
                         usage: None,
                         reasoning_content: None,
+                        quota_metadata: None,
                     })
                     .map_err(|responses_err| {
                         anyhow::anyhow!(

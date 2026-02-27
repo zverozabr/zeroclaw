@@ -103,6 +103,9 @@ pub fn build_quota_summary(
                 rate_limit_remaining,
                 rate_limit_reset_at,
                 rate_limit_total,
+                account_id: None,
+                plan_type: None,
+                token_expires_at: None,
             });
     }
 
@@ -414,9 +417,12 @@ fn add_qwen_oauth_static_quota(
         profiles: vec![ProfileQuotaInfo {
             profile_name: "OAuth (portal.qwen.ai)".to_string(),
             status: QuotaStatus::Ok,
-            rate_limit_remaining: None, // Unknown without local tracking
-            rate_limit_reset_at: None,  // Daily reset (exact time unknown)
+            rate_limit_remaining: None,   // Unknown without local tracking
+            rate_limit_reset_at: None,    // Daily reset (exact time unknown)
             rate_limit_total: Some(1000), // OAuth free tier limit
+            account_id: None,
+            plan_type: None,
+            token_expires_at: None,
         }],
     });
 

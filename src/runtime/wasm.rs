@@ -12,11 +12,99 @@
 //! The default ZeroClaw binary excludes it to maintain the 4.6 MB size target.
 
 use super::traits::RuntimeAdapter;
-use crate::config::{WasmCapabilityEscalationMode, WasmModuleHashPolicy, WasmRuntimeConfig};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+
+/// How the WASM runtime handles capability escalation requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WasmCapabilityEscalationMode {
+    /// Deny any capability request that exceeds the configured limits.
+    Deny,
+    /// Silently clamp requested capabilities to the configured limits.
+    Clamp,
+}
+
+/// Policy for verifying WASM module integrity via SHA-256 hashes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WasmModuleHashPolicy {
+    /// No hash verification.
+    Disabled,
+    /// Log warnings on mismatch but allow execution.
+    Warn,
+    /// Block execution on hash mismatch.
+    Enforce,
+}
+
+/// Security sub-configuration for the WASM runtime.
+#[derive(Debug, Clone)]
+pub struct WasmSecurityConfig {
+    /// Require that the tools directory is a workspace-relative path.
+    pub require_workspace_relative_tools_dir: bool,
+    /// Policy for module hash verification.
+    pub module_hash_policy: WasmModuleHashPolicy,
+    /// SHA-256 pins for known WASM modules (module_name -> hex digest).
+    pub module_sha256: BTreeMap<String, String>,
+    /// Whether to reject invalid host entries instead of ignoring them.
+    pub strict_host_validation: bool,
+    /// How to handle capability escalation requests.
+    pub capability_escalation_mode: WasmCapabilityEscalationMode,
+    /// Reject symlinked tools directories.
+    pub reject_symlink_tools_dir: bool,
+    /// Reject symlinked module files.
+    pub reject_symlink_modules: bool,
+}
+
+impl Default for WasmSecurityConfig {
+    fn default() -> Self {
+        Self {
+            require_workspace_relative_tools_dir: true,
+            module_hash_policy: WasmModuleHashPolicy::Disabled,
+            module_sha256: BTreeMap::new(),
+            strict_host_validation: true,
+            capability_escalation_mode: WasmCapabilityEscalationMode::Deny,
+            reject_symlink_tools_dir: true,
+            reject_symlink_modules: true,
+        }
+    }
+}
+
+/// Configuration for the WASM sandbox runtime.
+#[derive(Debug, Clone)]
+pub struct WasmRuntimeConfig {
+    /// Maximum fuel (instruction budget) per invocation.
+    pub fuel_limit: u64,
+    /// Memory ceiling per module in megabytes.
+    pub memory_limit_mb: u64,
+    /// Maximum module file size in megabytes.
+    pub max_module_size_mb: u64,
+    /// Directory containing WASM tool modules (relative to workspace).
+    pub tools_dir: String,
+    /// Allowed network hosts for WASM modules.
+    pub allowed_hosts: Vec<String>,
+    /// Allow modules to read from the workspace directory.
+    pub allow_workspace_read: bool,
+    /// Allow modules to write to the workspace directory.
+    pub allow_workspace_write: bool,
+    /// Security sub-configuration.
+    pub security: WasmSecurityConfig,
+}
+
+impl Default for WasmRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            fuel_limit: 1_000_000,
+            memory_limit_mb: 64,
+            max_module_size_mb: 10,
+            tools_dir: ".zeroclaw/wasm-tools".to_string(),
+            allowed_hosts: Vec::new(),
+            allow_workspace_read: false,
+            allow_workspace_write: false,
+            security: WasmSecurityConfig::default(),
+        }
+    }
+}
 
 /// WASM sandbox runtime — executes tool modules in an isolated interpreter.
 #[derive(Debug, Clone)]

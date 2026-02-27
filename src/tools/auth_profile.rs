@@ -5,12 +5,12 @@
 //! - Switch active profile for a provider
 //! - Refresh OAuth tokens that are expired or expiring
 
-use crate::auth::AuthService;
+use crate::auth::{normalize_provider, AuthService};
 use crate::config::Config;
 use crate::tools::{Tool, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -23,8 +23,12 @@ impl ManageAuthProfileTool {
         Self { config }
     }
 
+    fn auth_service(&self) -> AuthService {
+        AuthService::from_config(&self.config)
+    }
+
     async fn handle_list(&self, provider_filter: Option<&str>) -> Result<ToolResult> {
-        let auth = AuthService::from_config(&self.config);
+        let auth = self.auth_service();
         let data = auth.load_profiles().await?;
 
         let mut output = String::new();
@@ -34,7 +38,7 @@ impl ManageAuthProfileTool {
         for (id, profile) in &data.profiles {
             if let Some(filter) = provider_filter {
                 let normalized =
-                    crate::auth::normalize_provider(filter).unwrap_or_else(|_| filter.to_string());
+                    normalize_provider(filter).unwrap_or_else(|_| filter.to_string());
                 if profile.provider != normalized {
                     continue;
                 }
@@ -106,19 +110,19 @@ impl ManageAuthProfileTool {
     }
 
     async fn handle_switch(&self, provider: &str, profile_name: &str) -> Result<ToolResult> {
-        let auth = AuthService::from_config(&self.config);
+        let auth = self.auth_service();
         let profile_id = auth.set_active_profile(provider, profile_name).await?;
 
         Ok(ToolResult {
             success: true,
-            output: format!("Switched active profile to: {profile_id}"),
+            output: format!("Switched active profile for {provider} to: {profile_id}"),
             error: None,
         })
     }
 
     async fn handle_refresh(&self, provider: &str) -> Result<ToolResult> {
-        let normalized = crate::auth::normalize_provider(provider)?;
-        let auth = AuthService::from_config(&self.config);
+        let normalized = normalize_provider(provider)?;
+        let auth = self.auth_service();
 
         let result = match normalized.as_str() {
             "openai-codex" => match auth.get_valid_openai_access_token(None).await {
@@ -177,7 +181,7 @@ impl Tool for ManageAuthProfileTool {
          tokens, or when you encounter expired/rate-limited credentials."
     }
 
-    fn parameters_schema(&self) -> serde_json::Value {
+    fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
@@ -199,7 +203,7 @@ impl Tool for ManageAuthProfileTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
         let action = args
             .get("action")
             .and_then(|v| v.as_str())

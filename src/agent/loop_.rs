@@ -3503,6 +3503,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 usage: None,
                 reasoning_content: None,
+                quota_metadata: None,
             })
         }
     }
@@ -3521,6 +3522,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                    quota_metadata: None,
                 })
                 .collect();
             Self {

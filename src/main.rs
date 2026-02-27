@@ -56,6 +56,7 @@ mod rag {
     pub use zeroclaw::rag::*;
 }
 mod config;
+mod coordination;
 mod cost;
 mod cron;
 mod daemon;
@@ -333,7 +334,8 @@ Examples:
 Show provider quota and rate limit status.
 
 Displays quota remaining, rate limit resets, circuit breaker state, \
-and per-profile breakdown for all configured providers.
+and per-profile breakdown for all configured providers. Helps diagnose \
+quota exhaustion and rate limiting issues.
 
 Examples:
   zeroclaw providers-quota                    # text output, all providers
@@ -341,7 +343,7 @@ Examples:
   zeroclaw providers-quota --provider gemini  # filter by provider"
     )]
     ProvidersQuota {
-        /// Filter by provider name
+        /// Filter by provider name (optional, shows all if omitted)
         #[arg(long)]
         provider: Option<String>,
 
@@ -751,9 +753,9 @@ async fn main() -> Result<()> {
             bail!("--channels-only does not accept --force");
         }
         let config = if channels_only {
-            onboard::run_channels_repair_wizard().await
+            Box::pin(onboard::run_channels_repair_wizard()).await
         } else if interactive {
-            onboard::run_wizard(force).await
+            Box::pin(onboard::run_wizard(force)).await
         } else {
             onboard::run_quick_setup(
                 api_key.as_deref(),
@@ -798,7 +800,7 @@ async fn main() -> Result<()> {
             model,
             temperature,
             peripheral,
-        } => agent::run(
+        } => Box::pin(agent::run(
             config,
             message,
             provider,
@@ -806,7 +808,7 @@ async fn main() -> Result<()> {
             temperature,
             peripheral,
             true,
-        )
+        ))
         .await
         .map(|_| ()),
 
@@ -957,6 +959,10 @@ async fn main() -> Result<()> {
             ModelCommands::Status => onboard::run_models_status(&config).await,
         },
 
+        Commands::ProvidersQuota { provider, format } => {
+            providers::quota_cli::run(&config, provider.as_deref(), &format).await
+        }
+
         Commands::Providers => {
             let providers = providers::list_providers();
             let current = config
@@ -988,10 +994,6 @@ async fn main() -> Result<()> {
             println!("\n  custom:<URL>   Any OpenAI-compatible endpoint");
             println!("  anthropic-custom:<URL>  Any Anthropic-compatible endpoint");
             Ok(())
-        }
-
-        Commands::ProvidersQuota { provider, format } => {
-            providers::quota_cli::run(&config, provider.as_deref(), &format).await
         }
 
         Commands::Service {
