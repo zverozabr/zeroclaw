@@ -4,7 +4,7 @@
 //! syscall-related telemetry hints (seccomp/audit lines), and raises alerts
 //! when the observed pattern deviates from the configured baseline.
 
-use crate::config::{AuditConfig, SyscallAnomalyConfig};
+use crate::config::AuditConfig;
 use crate::security::audit::{AuditEvent, AuditEventType, AuditLogger};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
@@ -16,6 +16,85 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+/// Configuration for the syscall anomaly detector.
+#[derive(Debug, Clone)]
+pub struct SyscallAnomalyConfig {
+    /// Whether anomaly detection is enabled.
+    pub enabled: bool,
+    /// Known-good syscall names (baseline). Unknown syscalls trigger alerts.
+    pub baseline_syscalls: Vec<String>,
+    /// Alert when a syscall not in the baseline is observed.
+    pub alert_on_unknown_syscall: bool,
+    /// In strict mode, every denied syscall generates an alert.
+    pub strict_mode: bool,
+    /// Maximum denied events per minute before rate alert.
+    pub max_denied_events_per_minute: u32,
+    /// Maximum total events per minute before rate alert.
+    pub max_total_events_per_minute: u32,
+    /// Maximum alerts emitted per minute (global cap).
+    pub max_alerts_per_minute: u32,
+    /// Cooldown in seconds between alerts of the same kind.
+    pub alert_cooldown_secs: u64,
+    /// Path for the anomaly log file (relative to zeroclaw dir or absolute).
+    pub log_path: String,
+}
+
+impl Default for SyscallAnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            baseline_syscalls: vec![
+                "read".into(),
+                "write".into(),
+                "open".into(),
+                "close".into(),
+                "mmap".into(),
+                "mprotect".into(),
+                "munmap".into(),
+                "brk".into(),
+                "ioctl".into(),
+                "dup".into(),
+                "dup2".into(),
+                "getpid".into(),
+                "socket".into(),
+                "connect".into(),
+                "accept".into(),
+                "sendto".into(),
+                "recvfrom".into(),
+                "recvmsg".into(),
+                "listen".into(),
+                "getsockname".into(),
+                "getpeername".into(),
+                "setsockopt".into(),
+                "getsockopt".into(),
+                "clone".into(),
+                "fork".into(),
+                "execve".into(),
+                "exit".into(),
+                "wait4".into(),
+                "fcntl".into(),
+                "futex".into(),
+                "set_tid_address".into(),
+                "exit_group".into(),
+                "openat".into(),
+                "newfstatat".into(),
+                "set_robust_list".into(),
+                "epoll_create1".into(),
+                "getrandom".into(),
+                "statx".into(),
+                "clone3".into(),
+            ],
+            alert_on_unknown_syscall: true,
+            strict_mode: true,
+            max_denied_events_per_minute: 5,
+            max_total_events_per_minute: 100,
+            max_alerts_per_minute: 10,
+            alert_cooldown_secs: 30,
+            log_path: "logs/syscall-anomalies.jsonl".into(),
+        }
+    }
+}
 
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_ALERT_SAMPLE_CHARS: usize = 240;

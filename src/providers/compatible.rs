@@ -15,6 +15,7 @@ use reqwest::{
     Client,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// A provider that speaks the OpenAI-compatible chat completions API.
 /// Used by: Venice, Vercel AI Gateway, Cloudflare AI Gateway, Moonshot,
@@ -545,18 +546,33 @@ struct ResponsesInput {
 #[derive(Debug, Deserialize)]
 struct ResponsesResponse {
     #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
     output: Vec<ResponsesOutput>,
     #[serde(default)]
     output_text: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ResponsesOutput {
     #[serde(default)]
     content: Vec<ResponsesContent>,
+    /// Output item type (e.g. "message", "function_call").
+    #[serde(rename = "type")]
+    #[serde(default)]
+    kind: Option<String>,
+    /// Function name for function_call output items.
+    #[serde(default)]
+    name: Option<String>,
+    /// Function call arguments (JSON string).
+    #[serde(default)]
+    arguments: Option<String>,
+    /// Call ID for tool/function calls.
+    #[serde(default)]
+    call_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ResponsesContent {
     #[serde(rename = "type")]
     kind: Option<String>,
@@ -757,7 +773,7 @@ fn build_responses_prompt(messages: &[ChatMessage]) -> (Option<String>, Vec<Resp
     (instructions, input)
 }
 
-fn extract_responses_text(response: ResponsesResponse) -> Option<String> {
+fn extract_responses_text(response: &ResponsesResponse) -> Option<String> {
     if let Some(text) = first_nonempty(response.output_text.as_deref()) {
         return Some(text);
     }
@@ -1035,7 +1051,7 @@ impl OpenAiCompatibleProvider {
         let body = response.text().await?;
         let responses = parse_responses_response_body(&self.name, &body)?;
 
-        extract_responses_text(responses)
+        extract_responses_text(&responses)
             .ok_or_else(|| anyhow::anyhow!("No response from {} Responses API", self.name))
     }
 
@@ -1682,6 +1698,7 @@ impl Provider for OpenAiCompatibleProvider {
                             tool_calls: vec![],
                             usage: None,
                             reasoning_content: None,
+                            quota_metadata: None,
                         })
                         .map_err(|responses_err| {
                             anyhow::anyhow!(
@@ -1724,6 +1741,7 @@ impl Provider for OpenAiCompatibleProvider {
                         tool_calls: vec![],
                         usage: None,
                         reasoning_content: None,
+                        quota_metadata: None,
                     })
                     .map_err(|responses_err| {
                         anyhow::anyhow!(

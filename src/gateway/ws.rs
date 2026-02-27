@@ -125,10 +125,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         }));
 
         // Run the agent loop with tool execution
+        // Note: WebSocket chat currently runs without tool execution tools;
+        // tools_registry on AppState contains specs only.
+        let ws_tools: Vec<Box<dyn crate::tools::Tool>> = Vec::new();
+        let ws_multimodal = crate::config::MultimodalConfig::default();
+        let ws_max_tool_iterations = 10;
         let result = run_tool_call_loop(
             state.provider.as_ref(),
             &mut history,
-            state.tools_registry_exec.as_ref(),
+            &ws_tools,
             state.observer.as_ref(),
             &provider_label,
             &state.model,
@@ -136,8 +141,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             true, // silent - no console output
             Some(&approval_manager),
             "webchat",
-            &state.multimodal,
-            state.max_tool_iterations,
+            &ws_multimodal,
+            ws_max_tool_iterations,
             None, // cancellation token
             None, // delta streaming
             None, // hooks
@@ -148,7 +153,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         match result {
             Ok(response) => {
                 let safe_response =
-                    sanitize_ws_response(&response, state.tools_registry_exec.as_ref());
+                    sanitize_ws_response(&response, &ws_tools);
                 // Add assistant response to history
                 history.push(ChatMessage::assistant(&safe_response));
 

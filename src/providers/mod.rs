@@ -1373,8 +1373,14 @@ pub fn create_resilient_provider_with_options(
         }
     }
 
+    // Strip the third element (default_model) for ReliableProvider which expects 2-tuples.
+    let providers_2tuple: Vec<(String, Box<dyn Provider>)> = providers
+        .into_iter()
+        .map(|(name, provider, _default_model)| (name, provider))
+        .collect();
+
     let reliable = ReliableProvider::new(
-        providers,
+        providers_2tuple,
         reliability.provider_retries,
         reliability.provider_backoff_ms,
     )

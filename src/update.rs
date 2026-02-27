@@ -298,18 +298,22 @@ pub async fn self_update(force: bool, check_only: bool) -> Result<()> {
     println!("Downloading: {}", asset.name);
 
     // Create temp directory
-    let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
+    let temp_dir = std::env::temp_dir().join(format!("zeroclaw-update-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
 
     // Download and extract
-    let new_binary = download_binary(asset, temp_dir.path()).await?;
+    let new_binary = download_binary(asset, &temp_dir).await?;
 
     println!("Installing update...");
 
     // Replace the binary
     replace_binary(&new_binary, &current_exe)?;
 
+    // Clean up temp directory
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
     println!();
-    println!("✅ Successfully updated to {}!", release.tag_name);
+    println!("Successfully updated to {}!", release.tag_name);
     println!();
     println!("Restart ZeroClaw to use the new version.");
 

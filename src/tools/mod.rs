@@ -90,7 +90,7 @@ pub use model_routing_config::ModelRoutingConfigTool;
 pub use pdf_read::PdfReadTool;
 pub use proxy_config::ProxyConfigTool;
 pub use pushover::PushoverTool;
-pub use quota_tools::{CheckProviderQuotaTool, SwitchProviderTool};
+pub use quota_tools::{CheckProviderQuotaTool, EstimateQuotaCostTool, SwitchProviderTool};
 pub use schedule::ScheduleTool;
 #[allow(unused_imports)]
 pub use schema::{CleaningStrategy, SchemaCleanr};
@@ -102,9 +102,6 @@ pub use traits::Tool;
 pub use traits::{ToolResult, ToolSpec};
 pub use web_fetch::WebFetchTool;
 pub use web_search_tool::WebSearchTool;
-
-pub use auth_profile::ManageAuthProfileTool;
-pub use quota_tools::{CheckProviderQuotaTool, EstimateQuotaCostTool, SwitchProviderTool};
 
 use crate::config::{Config, DelegateAgentConfig};
 use crate::memory::Memory;
@@ -304,10 +301,13 @@ pub fn all_tools_with_runtime(
     // Web search tool (enabled by default for GLM and other models)
     if root_config.web_search.enabled {
         tool_arcs.push(Arc::new(WebSearchTool::new(
+            security.clone(),
             root_config.web_search.provider.clone(),
             root_config.web_search.brave_api_key.clone(),
+            None, // api_url
             root_config.web_search.max_results,
             root_config.web_search.timeout_secs,
+            "ZeroClaw/0.1".to_string(),
         )));
     }
 

@@ -56,6 +56,7 @@ mod rag {
     pub use zeroclaw::rag::*;
 }
 mod config;
+mod coordination;
 mod cost;
 mod cron;
 mod daemon;
@@ -993,10 +994,6 @@ async fn main() -> Result<()> {
             println!("\n  custom:<URL>   Any OpenAI-compatible endpoint");
             println!("  anthropic-custom:<URL>  Any Anthropic-compatible endpoint");
             Ok(())
-        }
-
-        Commands::ProvidersQuota { provider, format } => {
-            providers::quota_cli::run(&config, provider.as_deref(), &format).await
         }
 
         Commands::Service {
