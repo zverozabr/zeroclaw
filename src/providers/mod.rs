@@ -1358,7 +1358,7 @@ pub fn create_resilient_provider_with_options(
         // TEMPORARY FIX: Hardcode default models for known providers
         // TODO: Extract from Config [[providers.NAME]] sections
         let provider_default_model = match provider_name {
-            "openai" | "openai-codex" | "openai_codex" | "codex" => Some("gpt-5.2".to_string()),
+            "openai" | "openai-codex" | "openai_codex" | "codex" => Some("gpt-5-codex".to_string()),
             _ => fallback_options.default_model.clone(),
         };
 

@@ -45,6 +45,8 @@ mod tests {
             draft_update_interval_ms: 1000,
             interrupt_on_new_message: false,
             mention_only: false,
+            group_reply: None,
+            base_url: None,
         };
 
         let discord = DiscordConfig {

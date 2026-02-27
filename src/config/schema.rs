@@ -2743,6 +2743,12 @@ pub struct TelegramConfig {
     /// Direct messages are always processed.
     #[serde(default)]
     pub mention_only: bool,
+    /// Optional group reply mode (e.g. "reply", "quote").
+    #[serde(default)]
+    pub group_reply: Option<String>,
+    /// Optional custom Telegram Bot API base URL.
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 
 impl ChannelConfig for TelegramConfig {
@@ -2889,6 +2895,9 @@ pub struct MatrixConfig {
     pub room_id: String,
     /// Allowed Matrix user IDs. Empty = deny all.
     pub allowed_users: Vec<String>,
+    /// When true, only respond to messages that @-mention the bot.
+    #[serde(default)]
+    pub mention_only: bool,
 }
 
 impl ChannelConfig for MatrixConfig {
@@ -5101,6 +5110,8 @@ default_temperature = 0.7
                     draft_update_interval_ms: default_draft_update_interval_ms(),
                     interrupt_on_new_message: false,
                     mention_only: false,
+                    group_reply: None,
+                    base_url: None,
                 }),
                 discord: None,
                 slack: None,
@@ -5472,6 +5483,8 @@ tool_dispatcher = "xml"
             draft_update_interval_ms: 500,
             interrupt_on_new_message: true,
             mention_only: false,
+            group_reply: None,
+            base_url: None,
         };
         let json = serde_json::to_string(&tc).unwrap();
         let parsed: TelegramConfig = serde_json::from_str(&json).unwrap();
@@ -5562,6 +5575,7 @@ tool_dispatcher = "xml"
             device_id: Some("DEVICE123".into()),
             room_id: "!room123:matrix.org".into(),
             allowed_users: vec!["@user:matrix.org".into()],
+            mention_only: false,
         };
         let json = serde_json::to_string(&mc).unwrap();
         let parsed: MatrixConfig = serde_json::from_str(&json).unwrap();
@@ -5582,6 +5596,7 @@ tool_dispatcher = "xml"
             device_id: None,
             room_id: "!abc:synapse.local".into(),
             allowed_users: vec!["@admin:synapse.local".into(), "*".into()],
+            mention_only: false,
         };
         let toml_str = toml::to_string(&mc).unwrap();
         let parsed: MatrixConfig = toml::from_str(&toml_str).unwrap();
@@ -5671,6 +5686,7 @@ allowed_users = ["@ops:matrix.org"]
                 device_id: None,
                 room_id: "!r:m".into(),
                 allowed_users: vec!["@u:m".into()],
+                mention_only: false,
             }),
             signal: None,
             whatsapp: None,

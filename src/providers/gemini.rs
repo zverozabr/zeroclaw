@@ -9,7 +9,6 @@ use crate::providers::traits::{
     ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage,
 };
 use async_trait::async_trait;
-use base64::Engine;
 use directories::UserDirs;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -378,31 +377,7 @@ fn build_oauth_refresh_form(
     form
 }
 
-fn extract_client_id_from_id_token(id_token: &str) -> Option<String> {
-    let payload = id_token.split('.').nth(1)?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
-        .ok()?;
-
-    #[derive(Deserialize)]
-    struct IdTokenClaims {
-        aud: Option<String>,
-        azp: Option<String>,
-    }
-
-    let claims: IdTokenClaims = serde_json::from_slice(&decoded).ok()?;
-    claims
-        .aud
-        .as_deref()
-        .and_then(GeminiProvider::normalize_non_empty)
-        .or_else(|| {
-            claims
-                .azp
-                .as_deref()
-                .and_then(GeminiProvider::normalize_non_empty)
-        })
-}
+use crate::auth::gemini_oauth::extract_client_id_from_id_token;
 
 /// Async version of token refresh for use during runtime (inside tokio context).
 async fn refresh_gemini_cli_token_async(
@@ -1337,6 +1312,7 @@ impl Provider for GeminiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use reqwest::{header::AUTHORIZATION, StatusCode};
 
     /// Helper to create a test OAuth auth variant.
@@ -1387,43 +1363,6 @@ mod tests {
         let map: std::collections::HashMap<_, _> = form.into_iter().collect();
         assert!(!map.contains_key("client_id"));
         assert!(!map.contains_key("client_secret"));
-    }
-
-    #[test]
-    fn extract_client_id_from_id_token_prefers_aud_claim() {
-        let payload = serde_json::json!({
-            "aud": "aud-client-id",
-            "azp": "azp-client-id"
-        });
-        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&payload).unwrap());
-        let token = format!("header.{payload_b64}.sig");
-
-        assert_eq!(
-            extract_client_id_from_id_token(&token),
-            Some("aud-client-id".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_client_id_from_id_token_uses_azp_when_aud_missing() {
-        let payload = serde_json::json!({
-            "azp": "azp-client-id"
-        });
-        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&payload).unwrap());
-        let token = format!("header.{payload_b64}.sig");
-
-        assert_eq!(
-            extract_client_id_from_id_token(&token),
-            Some("azp-client-id".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_client_id_from_id_token_returns_none_for_invalid_tokens() {
-        assert_eq!(extract_client_id_from_id_token("invalid"), None);
-        assert_eq!(extract_client_id_from_id_token("a.b.c"), None);
     }
 
     #[test]

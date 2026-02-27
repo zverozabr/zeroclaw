@@ -820,10 +820,6 @@ allowed_users = ["user1"]
         assert_eq!(config.app_id, "12345");
         assert_eq!(config.app_secret, "secret_abc");
         assert_eq!(config.allowed_users, vec!["user1"]);
-        assert_eq!(
-            config.receive_mode,
-            crate::config::schema::QQReceiveMode::Webhook
-        );
     }
 
     #[test]

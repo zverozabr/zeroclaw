@@ -1,3 +1,4 @@
+#![allow(unexpected_cfgs)]
 //! WASM sandbox runtime — in-process tool isolation via `wasmi`.
 //!
 //! Provides capability-based sandboxing without Docker or external runtimes.
@@ -38,6 +39,7 @@ pub enum WasmModuleHashPolicy {
 }
 
 /// Security sub-configuration for the WASM runtime.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct WasmSecurityConfig {
     /// Require that the tools directory is a workspace-relative path.
