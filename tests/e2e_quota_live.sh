@@ -74,7 +74,9 @@ run_agent_test() {
   local output="" rc=0
   # Pipe 'yes' to stdin to auto-approve any remaining tool prompts.
   # Redirect stderr to stdout so we capture log lines too.
-  output=$(yes 2>/dev/null | timeout "${TIMEOUT}" ${ZEROCLAW_BIN} agent -m "$message" $agent_flags 2>&1) || rc=$?
+  # Disable pipefail for this pipeline: yes always exits 141 (SIGPIPE) when
+  # the agent finishes, and pipefail would propagate that to set -e.
+  output=$(set +o pipefail; yes 2>/dev/null | timeout "${TIMEOUT}" ${ZEROCLAW_BIN} agent -m "$message" $agent_flags 2>&1) || rc=$?
 
   # Log full output
   printf '%s\n' "$output" >> "$LOG_FILE"
@@ -104,7 +106,7 @@ run_agent_test() {
     fi
     test_pass=$((test_pass + 1))
     # Show relevant excerpt
-    echo "$output" | grep -iE "provider|quota|available|limit|model|remaining|rate|reset" | head -8 >> "$LOG_FILE"
+    echo "$output" | grep -iE "provider|quota|available|limit|model|remaining|rate|reset" | head -8 >> "$LOG_FILE" || true
   else
     if [ $rc -eq 124 ]; then
       logc "  ${RED}FAIL${NC} (timeout after ${TIMEOUT}s, 0 keywords matched)\n"
@@ -300,6 +302,83 @@ run_cli_test \
   "CLI: providers-quota --provider openai-codex" \
   "${ZEROCLAW_BIN} providers-quota --provider openai-codex" \
   "openai-codex|codex"
+
+# ======================================================================
+#  SECTION 3: Multi-subscription quota checks
+# ======================================================================
+
+banner "Multi-subscription quota checks"
+
+# Helper: switch active profile via jq
+switch_active_profile() {
+  local provider="$1" profile_name="$2"
+  local profile_id="${provider}:${profile_name}"
+  local ap_file="${ZEROCLAW_CONFIG_DIR}/auth-profiles.json"
+  jq --arg p "$provider" --arg id "$profile_id" \
+    '.active_profiles[$p] = $id' "$ap_file" > "${ap_file}.tmp" \
+    && mv "${ap_file}.tmp" "$ap_file"
+  log "  Switched ${provider} active profile -> ${profile_id}"
+}
+
+# Save original active profiles for restore
+AP_FILE="${ZEROCLAW_CONFIG_DIR}/auth-profiles.json"
+ORIG_ACTIVE_GEMINI=""
+ORIG_ACTIVE_CODEX=""
+if [ -f "$AP_FILE" ]; then
+  ORIG_ACTIVE_GEMINI=$(jq -r '.active_profiles.gemini // empty' "$AP_FILE" 2>/dev/null || true)
+  ORIG_ACTIVE_CODEX=$(jq -r '.active_profiles["openai-codex"] // empty' "$AP_FILE" 2>/dev/null || true)
+  log "Original active gemini: ${ORIG_ACTIVE_GEMINI:-<none>}"
+  log "Original active codex:  ${ORIG_ACTIVE_CODEX:-<none>}"
+fi
+
+if [ "$CLI_ONLY" = false ]; then
+
+# gemini-1 quota
+switch_active_profile "gemini" "gemini-1"
+run_agent_test \
+  "Quota: gemini-1" \
+  "Check my quota. Use check_provider_quota provider gemini" \
+  "-p openai-codex" \
+  "quota|limit|available|provider|gemini|rate"
+
+# gemini-2 quota
+switch_active_profile "gemini" "gemini-2"
+run_agent_test \
+  "Quota: gemini-2" \
+  "Check my quota. Use check_provider_quota provider gemini" \
+  "-p openai-codex" \
+  "quota|limit|available|provider|gemini|rate"
+
+# codex-1 quota
+switch_active_profile "openai-codex" "codex-1"
+run_agent_test \
+  "Quota: codex-1" \
+  "Check my quota. Use check_provider_quota provider openai-codex" \
+  "-p openai-codex" \
+  "quota|limit|available|provider|codex|rate"
+
+# codex-2 quota
+switch_active_profile "openai-codex" "codex-2"
+run_agent_test \
+  "Quota: codex-2" \
+  "Check my quota. Use check_provider_quota provider openai-codex" \
+  "-p openai-codex" \
+  "quota|limit|available|provider|codex|rate"
+
+fi  # CLI_ONLY
+
+# Restore original active profiles
+log ""
+log "Restoring original active profiles..."
+if [ -f "$AP_FILE" ]; then
+  if [ -n "$ORIG_ACTIVE_GEMINI" ]; then
+    switch_active_profile "gemini" "$(echo "$ORIG_ACTIVE_GEMINI" | sed 's/^gemini://')"
+  fi
+  if [ -n "$ORIG_ACTIVE_CODEX" ]; then
+    switch_active_profile "openai-codex" "$(echo "$ORIG_ACTIVE_CODEX" | sed 's/^openai-codex://')"
+  fi
+  log "Active profiles restored."
+fi
 
 # ======================================================================
 #  Summary

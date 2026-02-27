@@ -66,7 +66,9 @@ run_agent_test() {
   log "  expect keywords: $keywords"
 
   local output="" rc=0
-  output=$(yes 2>/dev/null | timeout "${TIMEOUT}" ${ZEROCLAW_BIN} agent -m "$message" $agent_flags 2>&1) || rc=$?
+  # Disable pipefail for this pipeline: yes always exits 141 (SIGPIPE) when
+  # the agent finishes, and pipefail would propagate that to set -e.
+  output=$(set +o pipefail; yes 2>/dev/null | timeout "${TIMEOUT}" ${ZEROCLAW_BIN} agent -m "$message" $agent_flags 2>&1) || rc=$?
 
   printf '%s\n' "$output" >> "$LOG_FILE"
 
@@ -92,7 +94,7 @@ run_agent_test() {
       logc "  ${GREEN}PASS${NC} (matched %d/%d keywords)\n" "$found" "$total_kw"
     fi
     test_pass=$((test_pass + 1))
-    echo "$output" | grep -iE "profile|provider|token|switch|refresh|account|active|expired|valid|budget|cost" | head -10 >> "$LOG_FILE"
+    echo "$output" | grep -iE "profile|provider|token|switch|refresh|account|active|expired|valid|budget|cost" | head -10 >> "$LOG_FILE" || true
   else
     if [ $rc -eq 124 ]; then
       logc "  ${RED}FAIL${NC} (timeout after ${TIMEOUT}s, 0 keywords matched)\n"
@@ -334,15 +336,149 @@ run_agent_test \
   "${AGENT_PROVIDER_FLAGS}" \
   "budget|limit|cost|daily|monthly|usd|\$"
 
+# ======================================================================
+#  SECTION 5: manage_auth_profile — multi-provider multi-subscription
+# ======================================================================
+
+banner "Multi-provider multi-subscription e2e"
+
+# Helper: switch active profile via jq (fast, no agent call needed)
+switch_active_profile() {
+  local provider="$1" profile_name="$2"
+  local profile_id="${provider}:${profile_name}"
+  local ap_file="${ZEROCLAW_CONFIG_DIR}/auth-profiles.json"
+  jq --arg p "$provider" --arg id "$profile_id" \
+    '.active_profiles[$p] = $id' "$ap_file" > "${ap_file}.tmp" \
+    && mv "${ap_file}.tmp" "$ap_file"
+  log "  Switched ${provider} active profile -> ${profile_id}"
+}
+
+# Save original active profiles for restore
+AP_FILE="${ZEROCLAW_CONFIG_DIR}/auth-profiles.json"
+ORIG_ACTIVE_GEMINI=""
+ORIG_ACTIVE_CODEX=""
+if [ -f "$AP_FILE" ]; then
+  ORIG_ACTIVE_GEMINI=$(jq -r '.active_profiles.gemini // empty' "$AP_FILE" 2>/dev/null || true)
+  ORIG_ACTIVE_CODEX=$(jq -r '.active_profiles["openai-codex"] // empty' "$AP_FILE" 2>/dev/null || true)
+  log "Original active gemini: ${ORIG_ACTIVE_GEMINI:-<none>}"
+  log "Original active codex:  ${ORIG_ACTIVE_CODEX:-<none>}"
+fi
+
+# ── 5a: OAuth refresh for all 4 profiles ──────────────────────────────
+
+banner "5a: OAuth refresh — all profiles"
+
+# gemini-1
+switch_active_profile "gemini" "gemini-1"
+run_agent_test \
+  "Refresh gemini-1 token" \
+  "Refresh my token. Use manage_auth_profile action refresh provider gemini" \
+  "${AGENT_PROVIDER_FLAGS}" \
+  "refresh|token|success|backoff|expired"
+
+# gemini-2
+switch_active_profile "gemini" "gemini-2"
+run_agent_test \
+  "Refresh gemini-2 token" \
+  "Refresh my token. Use manage_auth_profile action refresh provider gemini" \
+  "${AGENT_PROVIDER_FLAGS}" \
+  "refresh|token|success|backoff|expired"
+
+# codex-1
+switch_active_profile "openai-codex" "codex-1"
+run_agent_test \
+  "Refresh codex-1 token" \
+  "Refresh my token. Use manage_auth_profile action refresh provider openai-codex" \
+  "${AGENT_PROVIDER_FLAGS}" \
+  "refresh|token|success|backoff|expired"
+
+# codex-2
+switch_active_profile "openai-codex" "codex-2"
+run_agent_test \
+  "Refresh codex-2 token" \
+  "Refresh my token. Use manage_auth_profile action refresh provider openai-codex" \
+  "${AGENT_PROVIDER_FLAGS}" \
+  "refresh|token|success|backoff|expired"
+
+# ── 5b: Gemini multi-model tests (2 models x 2 subscriptions) ────────
+
+banner "5b: Gemini — 2 models x 2 subscriptions"
+
+# gemini-1 + gemini-2.5-pro
+switch_active_profile "gemini" "gemini-1"
+run_agent_test \
+  "gemini-1 / gemini-2.5-pro" \
+  "Respond with just OK" \
+  "-p gemini --model gemini-2.5-pro" \
+  "OK|ok|rate.limit|429|quota"
+
+# gemini-1 + gemini-2.5-flash
+switch_active_profile "gemini" "gemini-1"
+run_agent_test \
+  "gemini-1 / gemini-2.5-flash" \
+  "Respond with just OK" \
+  "-p gemini --model gemini-2.5-flash" \
+  "OK|ok|rate.limit|429|quota"
+
+# gemini-2 + gemini-2.5-pro
+switch_active_profile "gemini" "gemini-2"
+run_agent_test \
+  "gemini-2 / gemini-2.5-pro" \
+  "Respond with just OK" \
+  "-p gemini --model gemini-2.5-pro" \
+  "OK|ok|rate.limit|429|quota"
+
+# gemini-2 + gemini-2.5-flash
+switch_active_profile "gemini" "gemini-2"
+run_agent_test \
+  "gemini-2 / gemini-2.5-flash" \
+  "Respond with just OK" \
+  "-p gemini --model gemini-2.5-flash" \
+  "OK|ok|rate.limit|429|quota"
+
+# ── 5c: OpenAI Codex multi-subscription tests ────────────────────────
+
+banner "5c: OpenAI Codex — 2 subscriptions"
+
+# codex-1
+switch_active_profile "openai-codex" "codex-1"
+run_agent_test \
+  "codex-1 / openai-codex" \
+  "Respond with just OK" \
+  "-p openai-codex" \
+  "OK|ok|rate.limit|429|usage.limit"
+
+# codex-2
+switch_active_profile "openai-codex" "codex-2"
+run_agent_test \
+  "codex-2 / openai-codex" \
+  "Respond with just OK" \
+  "-p openai-codex" \
+  "OK|ok|rate.limit|429|usage.limit"
+
+# ── 5d: Restore original active profiles ─────────────────────────────
+
+log ""
+log "Restoring original active profiles..."
+if [ -f "$AP_FILE" ]; then
+  if [ -n "$ORIG_ACTIVE_GEMINI" ]; then
+    switch_active_profile "gemini" "$(echo "$ORIG_ACTIVE_GEMINI" | sed 's/^gemini://')"
+  fi
+  if [ -n "$ORIG_ACTIVE_CODEX" ]; then
+    switch_active_profile "openai-codex" "$(echo "$ORIG_ACTIVE_CODEX" | sed 's/^openai-codex://')"
+  fi
+  log "Active profiles restored."
+fi
+
 fi  # CLI_ONLY
 
 # ======================================================================
-#  SECTION 5: Unit-level CLI tests (no model calls)
+#  SECTION 6: Unit-level CLI tests (no model calls)
 # ======================================================================
 
 banner "CLI tests: providers-quota (sanity)"
 
-# Test 10: CLI providers-quota still works
+# CLI providers-quota still works
 run_cli_test \
   "CLI: providers-quota --format json" \
   "${ZEROCLAW_BIN} providers-quota --format json" \
