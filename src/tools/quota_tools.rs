@@ -88,6 +88,7 @@ impl Tool for CheckProviderQuotaTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
+        use std::fmt::Write;
         let provider_filter = args.get("provider").and_then(|v| v.as_str());
 
         let summary = self.build_quota_summary(provider_filter).await?;
@@ -100,31 +101,23 @@ impl Tool for CheckProviderQuotaTool {
         let mut output = String::new();
         let _ = write!(
             output,
-            "📊 Quota Status ({})\n\n",
+            "Quota Status ({})\n\n",
             summary.timestamp.format("%Y-%m-%d %H:%M UTC")
         );
 
         if !available.is_empty() {
-            let _ = writeln!(output, "✅ Available providers: {}", available.join(", "));
+            let _ = writeln!(output, "Available providers: {}", available.join(", "));
         }
         if !rate_limited.is_empty() {
-            let _ = writeln!(
-                output,
-                "⚠️  Rate-limited providers: {}",
-                rate_limited.join(", ")
-            );
+            let _ = writeln!(output, "Rate-limited providers: {}", rate_limited.join(", "));
         }
         if !circuit_open.is_empty() {
-            let _ = writeln!(
-                output,
-                "❌ Circuit-open providers: {}",
-                circuit_open.join(", ")
-            );
+            let _ = writeln!(output, "Circuit-open providers: {}", circuit_open.join(", "));
         }
 
         if available.is_empty() && rate_limited.is_empty() && circuit_open.is_empty() {
             output.push_str(
-                "ℹ️  No quota information available. Quota is populated after API calls.\n",
+                "No quota information available. Quota is populated after API calls.\n",
             );
         }
 
@@ -138,7 +131,7 @@ impl Tool for CheckProviderQuotaTool {
             };
             let _ = write!(
                 output,
-                "\n📍 {} (status: {})\n",
+                "\n{} (status: {})\n",
                 provider_info.provider, status_label
             );
 
@@ -198,7 +191,7 @@ impl Tool for CheckProviderQuotaTool {
         // Add cost tracking information if available
         if let Some(tracker) = &self.cost_tracker {
             if let Ok(cost_summary) = tracker.get_summary() {
-                let _ = writeln!(output, "\n💰 Cost & Usage Summary:");
+                let _ = writeln!(output, "\nCost & Usage Summary:");
                 let _ = writeln!(
                     output,
                     "   Session:  ${:.4} ({} tokens, {} requests)",
@@ -241,7 +234,7 @@ impl Tool for CheckProviderQuotaTool {
     }
 }
 
-/// Tool for switching providers mid-conversation.
+/// Tool for switching the default provider/model in config.toml.
 ///
 /// Writes `default_provider` and `default_model` to config.toml so the
 /// change persists across requests. Uses the same Config::save() pattern
@@ -438,10 +431,10 @@ impl Tool for EstimateQuotaCostTool {
         let estimated_cost_usd = (total_tokens as f64 / 1000.0) * cost_per_1k_tokens;
 
         let output = format!(
-            "📊 Estimated cost for {operation}:\n\
-             • Requests: {total_requests}\n\
-             • Tokens: {total_tokens}\n\
-             • Cost: ${estimated_cost_usd:.4} USD (estimate)\n\
+            "Estimated cost for {operation}:\n\
+             - Requests: {total_requests}\n\
+             - Tokens: {total_tokens}\n\
+             - Cost: ${estimated_cost_usd:.4} USD (estimate)\n\
              \n\
              Note: Actual cost may vary by provider and model."
         );
