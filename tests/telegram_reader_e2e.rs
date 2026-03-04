@@ -326,6 +326,75 @@ async fn e2e_search_messages_with_query() {
     assert!(result["messages"].is_array(), "messages should be an array");
 }
 
+/// `search_channels` finds channels by name keyword
+#[tokio::test]
+#[ignore = "requires network + Telegram credentials"]
+async fn e2e_search_channels_returns_matching_channels() {
+    let result = run_telegram_reader(&[
+        "search_channels",
+        "--channel-query",
+        "python",
+        "--limit",
+        "5",
+    ])
+    .await;
+
+    assert_eq!(
+        result["success"], true,
+        "search_channels should succeed, got: {result}"
+    );
+
+    assert!(result["count"].is_number(), "count should be a number");
+    assert!(result["channels"].is_array(), "channels should be an array");
+    assert_eq!(result["query"], "python", "query should be preserved");
+
+    // If we found any channels, validate structure
+    if let Some(channels) = result["channels"].as_array() {
+        if !channels.is_empty() {
+            let first = &channels[0];
+            assert!(first["id"].is_number(), "channel.id should be a number");
+            assert!(
+                first["name"].is_string() || first["name"].is_null(),
+                "channel.name should be string or null"
+            );
+            assert!(first["type"].is_string(), "channel.type should be a string");
+        }
+    }
+}
+
+/// `search_global` with channel_filter performs two-step search
+#[tokio::test]
+#[ignore = "requires network + Telegram credentials"]
+async fn e2e_search_global_with_channel_filter() {
+    let result = run_telegram_reader(&[
+        "search_global",
+        "--query",
+        "привет",
+        "--channel-filter",
+        "python",
+        "--limit",
+        "10",
+    ])
+    .await;
+
+    assert_eq!(
+        result["success"], true,
+        "search_global with channel_filter should succeed, got: {result}"
+    );
+
+    assert!(result["count"].is_number(), "count should be a number");
+    assert!(result["results"].is_array(), "results should be an array");
+    assert_eq!(result["query"], "привет", "message query should be preserved");
+    assert_eq!(
+        result["channel_filter"], "python",
+        "channel_filter should be preserved"
+    );
+    assert!(
+        result["dialogs_scanned"].is_number(),
+        "dialogs_scanned should be a number"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires network + Telegram credentials"]
 async fn e2e_search_global_returns_results_from_multiple_chats() {
