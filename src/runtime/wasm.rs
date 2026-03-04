@@ -1196,7 +1196,7 @@ mod tests {
     fn tools_dir_resolves_relative_to_workspace() {
         let rt = WasmRuntime::new(default_config());
         let dir = rt.tools_dir(Path::new("/home/user/project"));
-        assert_eq!(dir, PathBuf::from("/home/user/project/tools/wasm"));
+        assert_eq!(dir, PathBuf::from("/home/user/project/.zeroclaw/wasm-tools"));
     }
 
     #[test]
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn list_modules_finds_wasm_files() {
         let dir = tempfile::tempdir().unwrap();
-        let tools_dir = dir.path().join("tools/wasm");
+        let tools_dir = dir.path().join(".zeroclaw/wasm-tools");
         std::fs::create_dir_all(&tools_dir).unwrap();
 
         // Create dummy .wasm files

@@ -242,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn list_action_returns_modules() {
         let dir = tempfile::tempdir().unwrap();
-        let tools_dir = dir.path().join("tools/wasm");
+        let tools_dir = dir.path().join(".zeroclaw/wasm-tools");
         std::fs::create_dir_all(&tools_dir).unwrap();
         std::fs::write(tools_dir.join("alpha.wasm"), b"\0asm").unwrap();
         std::fs::write(tools_dir.join("beta.wasm"), b"\0asm").unwrap();
@@ -280,7 +280,7 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let tools_dir = dir.path().join("tools/wasm");
+        let tools_dir = dir.path().join(".zeroclaw/wasm-tools");
         std::fs::create_dir_all(&tools_dir).unwrap();
         std::fs::write(tools_dir.join("hello.wasm"), b"\0asm\x01\0\0\0").unwrap();
 
