@@ -100,7 +100,7 @@ impl QuotaSummary {
 }
 
 /// Provider usage metrics (tracked per request).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderUsageMetrics {
     pub provider: String,
     pub requests_today: u64,
@@ -116,11 +116,29 @@ pub struct ProviderUsageMetrics {
     pub last_reset_at: DateTime<Utc>,
 }
 
+impl Default for ProviderUsageMetrics {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            requests_today: 0,
+            requests_session: 0,
+            tokens_input_today: 0,
+            tokens_output_today: 0,
+            tokens_input_session: 0,
+            tokens_output_session: 0,
+            cost_usd_today: 0.0,
+            cost_usd_session: 0.0,
+            daily_request_limit: 0,
+            daily_token_limit: 0,
+            last_reset_at: Utc::now(),
+        }
+    }
+}
+
 impl ProviderUsageMetrics {
     pub fn new(provider: &str) -> Self {
         Self {
             provider: provider.to_string(),
-            last_reset_at: Utc::now(),
             ..Default::default()
         }
     }

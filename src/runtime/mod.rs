@@ -6,7 +6,7 @@ pub mod wasm;
 pub use docker::DockerRuntime;
 pub use native::NativeRuntime;
 pub use traits::RuntimeAdapter;
-pub use wasm::{WasmRuntime, WasmRuntimeConfig};
+pub use wasm::{WasmCapabilities, WasmRuntime, WasmRuntimeConfig};
 
 use crate::config::RuntimeConfig;
 

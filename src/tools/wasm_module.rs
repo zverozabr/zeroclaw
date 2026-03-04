@@ -218,7 +218,6 @@ impl Tool for WasmModuleTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WasmRuntimeConfig;
     use crate::runtime::NativeRuntime;
     use crate::security::{AutonomyLevel, SecurityPolicy};
 
@@ -235,7 +234,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let security = test_security(dir.path().to_path_buf());
         let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(WasmRuntimeConfig::default()));
+            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
         let tool = WasmModuleTool::new(security, runtime);
         assert_eq!(tool.name(), "wasm_module");
     }
@@ -251,7 +250,7 @@ mod tests {
 
         let security = test_security(dir.path().to_path_buf());
         let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(WasmRuntimeConfig::default()));
+            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
         let tool = WasmModuleTool::new(security, runtime);
 
         let result = tool.execute(json!({"action": "list"})).await.unwrap();
@@ -266,7 +265,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let security = test_security(dir.path().to_path_buf());
         let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(WasmRuntimeConfig::default()));
+            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
         let tool = WasmModuleTool::new(security, runtime);
 
         let result = tool.execute(json!({"action": "run"})).await;
@@ -287,7 +286,7 @@ mod tests {
 
         let security = test_security(dir.path().to_path_buf());
         let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(WasmRuntimeConfig::default()));
+            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
         let tool = WasmModuleTool::new(security, runtime);
 
         let result = tool

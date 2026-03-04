@@ -51,6 +51,20 @@ impl Default for ResearchPhaseConfig {
     }
 }
 
+impl From<crate::config::schema::ResearchPhaseConfig> for ResearchPhaseConfig {
+    fn from(cfg: crate::config::schema::ResearchPhaseConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            trigger: cfg.trigger.into(),
+            keywords: cfg.keywords,
+            min_message_length: cfg.min_message_length,
+            max_iterations: cfg.max_iterations,
+            show_progress: cfg.show_progress,
+            system_prompt_prefix: cfg.system_prompt_prefix,
+        }
+    }
+}
+
 /// What triggers the research phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResearchTrigger {
@@ -64,6 +78,19 @@ pub enum ResearchTrigger {
     Length,
     /// Trigger when message contains a question mark.
     Question,
+}
+
+impl From<crate::config::schema::ResearchTrigger> for ResearchTrigger {
+    fn from(trigger: crate::config::schema::ResearchTrigger) -> Self {
+        use crate::config::schema::ResearchTrigger as ConfigTrigger;
+        match trigger {
+            ConfigTrigger::Never => Self::Never,
+            ConfigTrigger::Always => Self::Always,
+            ConfigTrigger::Keywords => Self::Keywords,
+            ConfigTrigger::Length => Self::Length,
+            ConfigTrigger::Question => Self::Question,
+        }
+    }
 }
 
 /// Result of the research phase.
