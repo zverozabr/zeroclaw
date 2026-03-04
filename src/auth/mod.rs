@@ -27,7 +27,7 @@ static REFRESH_BACKOFFS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::n
 
 #[derive(Clone)]
 pub struct AuthService {
-    store: AuthProfilesStore,
+    pub(crate) store: AuthProfilesStore,
     client: reqwest::Client,
 }
 
