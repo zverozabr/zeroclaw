@@ -60,8 +60,14 @@ fn load_credentials() -> (String, String, String) {
         }
     }
 
-    assert!(!api_id.is_empty(), "TELEGRAM_API_ID not found in env or .env");
-    assert!(!api_hash.is_empty(), "TELEGRAM_API_HASH not found in env or .env");
+    assert!(
+        !api_id.is_empty(),
+        "TELEGRAM_API_ID not found in env or .env"
+    );
+    assert!(
+        !api_hash.is_empty(),
+        "TELEGRAM_API_HASH not found in env or .env"
+    );
     assert!(!phone.is_empty(), "TELEGRAM_PHONE not found in env or .env");
 
     (api_id, api_hash, phone)
@@ -123,12 +129,12 @@ async fn run_telegram_reader_no_creds(args: &[&str]) -> (Option<i32>, String, St
     }
     // Preserve the real user site-packages by pointing Python to actual home
     let real_home = std::env::var("HOME").unwrap_or_default();
-    cmd.env(
-        "PYTHONUSERBASE",
-        format!("{real_home}/.local"),
-    );
+    cmd.env("PYTHONUSERBASE", format!("{real_home}/.local"));
 
-    let output = cmd.output().await.expect("Failed to execute telegram_reader.py");
+    let output = cmd
+        .output()
+        .await
+        .expect("Failed to execute telegram_reader.py");
 
     (
         output.status.code(),
@@ -157,7 +163,9 @@ async fn e2e_list_dialogs_returns_valid_json() {
         result["count"]
     );
 
-    let dialogs = result["dialogs"].as_array().expect("dialogs should be an array");
+    let dialogs = result["dialogs"]
+        .as_array()
+        .expect("dialogs should be an array");
     assert!(!dialogs.is_empty(), "dialogs array should not be empty");
 
     // Validate dialog structure
@@ -283,7 +291,11 @@ async fn e2e_missing_credentials_returns_error() {
         }
         Err(_) => {
             // If not valid JSON, at least verify non-zero exit
-            assert_ne!(exit_code, Some(0), "Should exit non-zero without credentials");
+            assert_ne!(
+                exit_code,
+                Some(0),
+                "Should exit non-zero without credentials"
+            );
         }
     }
 }
@@ -310,14 +322,8 @@ async fn e2e_search_messages_with_query() {
     );
 
     // count may be 0 if no messages match, but structure should be valid
-    assert!(
-        result["count"].is_number(),
-        "count should be a number"
-    );
-    assert!(
-        result["messages"].is_array(),
-        "messages should be an array"
-    );
+    assert!(result["count"].is_number(), "count should be a number");
+    assert!(result["messages"].is_array(), "messages should be an array");
 }
 
 #[tokio::test]
@@ -325,24 +331,22 @@ async fn e2e_search_messages_with_query() {
 async fn e2e_search_global_returns_results_from_multiple_chats() {
     let result = run_telegram_reader(&[
         "search_global",
-        "--query", "привет",
-        "--limit", "10",
-        "--dialogs-limit", "10"
-    ]).await;
+        "--query",
+        "привет",
+        "--limit",
+        "10",
+        "--dialogs-limit",
+        "10",
+    ])
+    .await;
 
     // Validate JSON structure
     assert_eq!(
         result["success"], true,
         "search_global should succeed, got: {result}"
     );
-    assert!(
-        result["count"].is_number(),
-        "count should be a number"
-    );
-    assert!(
-        result["results"].is_array(),
-        "results should be an array"
-    );
+    assert!(result["count"].is_number(), "count should be a number");
+    assert!(result["results"].is_array(), "results should be an array");
     assert!(
         result["dialogs_scanned"].is_number(),
         "dialogs_scanned should be a number"
@@ -387,17 +391,22 @@ async fn e2e_search_global_returns_results_from_multiple_chats() {
 async fn e2e_search_global_with_no_results_returns_empty() {
     let result = run_telegram_reader(&[
         "search_global",
-        "--query", "xyzqwertynonexistent12345",
-        "--limit", "5",
-        "--dialogs-limit", "5"
-    ]).await;
+        "--query",
+        "xyzqwertynonexistent12345",
+        "--limit",
+        "5",
+        "--dialogs-limit",
+        "5",
+    ])
+    .await;
 
     assert_eq!(
         result["success"], true,
         "search_global with no results should still succeed, got: {result}"
     );
     assert_eq!(
-        result["count"].as_u64().unwrap(), 0,
+        result["count"].as_u64().unwrap(),
+        0,
         "count should be 0 when no results found"
     );
     assert!(

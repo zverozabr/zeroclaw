@@ -233,8 +233,9 @@ mod tests {
     fn wasm_module_tool_name() {
         let dir = tempfile::tempdir().unwrap();
         let security = test_security(dir.path().to_path_buf());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
+        let runtime: Arc<dyn RuntimeAdapter> = Arc::new(WasmRuntime::new(
+            crate::runtime::WasmRuntimeConfig::default(),
+        ));
         let tool = WasmModuleTool::new(security, runtime);
         assert_eq!(tool.name(), "wasm_module");
     }
@@ -249,8 +250,9 @@ mod tests {
         std::fs::write(tools_dir.join("bad$name.wasm"), b"\0asm").unwrap();
 
         let security = test_security(dir.path().to_path_buf());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
+        let runtime: Arc<dyn RuntimeAdapter> = Arc::new(WasmRuntime::new(
+            crate::runtime::WasmRuntimeConfig::default(),
+        ));
         let tool = WasmModuleTool::new(security, runtime);
 
         let result = tool.execute(json!({"action": "list"})).await.unwrap();
@@ -264,8 +266,9 @@ mod tests {
     async fn run_action_requires_module() {
         let dir = tempfile::tempdir().unwrap();
         let security = test_security(dir.path().to_path_buf());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
+        let runtime: Arc<dyn RuntimeAdapter> = Arc::new(WasmRuntime::new(
+            crate::runtime::WasmRuntimeConfig::default(),
+        ));
         let tool = WasmModuleTool::new(security, runtime);
 
         let result = tool.execute(json!({"action": "run"})).await;
@@ -285,8 +288,9 @@ mod tests {
         std::fs::write(tools_dir.join("hello.wasm"), b"\0asm\x01\0\0\0").unwrap();
 
         let security = test_security(dir.path().to_path_buf());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
+        let runtime: Arc<dyn RuntimeAdapter> = Arc::new(WasmRuntime::new(
+            crate::runtime::WasmRuntimeConfig::default(),
+        ));
         let tool = WasmModuleTool::new(security, runtime);
 
         let result = tool

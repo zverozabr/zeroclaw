@@ -1196,7 +1196,10 @@ mod tests {
     fn tools_dir_resolves_relative_to_workspace() {
         let rt = WasmRuntime::new(default_config());
         let dir = rt.tools_dir(Path::new("/home/user/project"));
-        assert_eq!(dir, PathBuf::from("/home/user/project/.zeroclaw/wasm-tools"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/user/project/.zeroclaw/wasm-tools")
+        );
     }
 
     #[test]

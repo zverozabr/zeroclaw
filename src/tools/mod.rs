@@ -905,8 +905,9 @@ mod tests {
     #[test]
     fn default_tools_with_runtime_includes_wasm_module_for_wasm_runtime() {
         let security = Arc::new(SecurityPolicy::default());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
+        let runtime: Arc<dyn RuntimeAdapter> = Arc::new(WasmRuntime::new(
+            crate::runtime::WasmRuntimeConfig::default(),
+        ));
         let tools = default_tools_with_runtime(security, runtime);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"wasm_module"));
@@ -915,8 +916,9 @@ mod tests {
     #[test]
     fn default_tools_with_runtime_excludes_shell_and_fs_for_wasm_runtime() {
         let security = Arc::new(SecurityPolicy::default());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
+        let runtime: Arc<dyn RuntimeAdapter> = Arc::new(WasmRuntime::new(
+            crate::runtime::WasmRuntimeConfig::default(),
+        ));
         let tools = default_tools_with_runtime(security, runtime);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"shell"));
@@ -1065,8 +1067,9 @@ mod tests {
         };
         let mem: Arc<dyn Memory> =
             Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(crate::runtime::WasmRuntimeConfig::default()));
+        let runtime: Arc<dyn RuntimeAdapter> = Arc::new(WasmRuntime::new(
+            crate::runtime::WasmRuntimeConfig::default(),
+        ));
 
         let browser = BrowserConfig::default();
         let http = crate::config::HttpRequestConfig::default();
