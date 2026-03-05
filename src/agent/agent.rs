@@ -326,6 +326,8 @@ impl Agent {
         }
 
         let (tools, _bg_job_store) = tools::add_bg_tools(tools);
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        tracing::info!(count = tools.len(), "Agent tools after add_bg_tools: {:?}", tool_names);
         let (tools, tool_filter_report) = tools::filter_primary_agent_tools(
             tools,
             &config.agent.allowed_tools,
