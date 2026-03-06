@@ -2578,7 +2578,7 @@ async fn handle_runtime_command_if_needed(
                 let curated = onboard::curated_models_for_provider(provider_base);
                 curated
                     .get(idx.saturating_sub(1))
-                    .map(|(id, _)| id.clone())
+                    .map(|(id, _): &(String, String)| id.clone())
                     .unwrap_or(raw_model)
             } else {
                 raw_model
