@@ -7605,6 +7605,93 @@ Let me check the result."#;
         assert!(parsed.get("reasoning_content").is_none());
     }
 
+    /// Provider that never returns from chat() — simulates a stalled HTTP connection.
+    struct StallingProvider;
+
+    #[async_trait]
+    impl Provider for StallingProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            tokio::time::sleep(Duration::MAX).await;
+            anyhow::bail!("unreachable")
+        }
+
+        async fn chat(
+            &self,
+            _request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            tokio::time::sleep(Duration::MAX).await;
+            anyhow::bail!("unreachable")
+        }
+    }
+
+    /// Verify that a stalled provider.chat() does not block the loop indefinitely.
+    ///
+    /// The per-LLM-call timeout (TOOL_LOOP_LLM_CALL_TIMEOUT_SECS) must fire and
+    /// return an error well within the channel message budget.
+    #[tokio::test(start_paused = true)]
+    async fn llm_call_timeout_fires_within_budget() {
+        let provider = StallingProvider;
+        let mut history = vec![
+            ChatMessage::system("zeroclaw test system"),
+            ChatMessage::user("trigger stall".to_string()),
+        ];
+        let tools_registry: Vec<Box<dyn Tool>> = Vec::new();
+        let observer = crate::observability::NoopObserver;
+
+        let handle = tokio::spawn(async move {
+            run_tool_call_loop(
+                &provider,
+                &mut history,
+                &tools_registry,
+                &observer,
+                "stalling-provider",
+                "stalling-model",
+                0.0,
+                true,
+                None,
+                "cli",
+                &crate::config::MultimodalConfig::default(),
+                1,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .await
+        });
+
+        // Advance virtual time past the per-call timeout (TOOL_LOOP_LLM_CALL_TIMEOUT_SECS = 90s).
+        tokio::time::advance(Duration::from_secs(91)).await;
+        // Yield so tokio can wake the timed-out futures.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            handle.is_finished(),
+            "tool loop must complete after 91s time advance (per-call timeout did not fire)"
+        );
+
+        let result = handle.await.expect("task must not panic");
+        assert!(
+            result.is_err(),
+            "stalled LLM call must produce an Err, got: {:?}",
+            result
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("timed out") || err_msg.contains("LLM call"),
+            "expected timeout error message, got: {err_msg}"
+        );
+    }
+
     #[test]
     fn progress_mode_gates_work_as_expected() {
         assert!(should_emit_verbose_progress(ProgressMode::Verbose));
