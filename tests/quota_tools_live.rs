@@ -301,19 +301,22 @@ async fn output_contains_valid_metadata_json() {
     let result = tool.execute(json!({})).await.unwrap();
 
     // Extract metadata JSON from output
-    if let Some(start) = result.output.find("<!-- metadata: ") {
-        let json_start = start + "<!-- metadata: ".len();
-        if let Some(end) = result.output[json_start..].find(" -->") {
-            let json_str = &result.output[json_start..json_start + end];
-            let parsed: serde_json::Value =
-                serde_json::from_str(json_str).expect("Metadata JSON should be valid");
+    let start = result
+        .output
+        .find("<!-- metadata: ")
+        .expect("Expected metadata marker in output");
+    let json_start = start + "<!-- metadata: ".len();
+    let end = result.output[json_start..]
+        .find(" -->")
+        .expect("Expected closing --> for metadata marker");
+    let json_str = &result.output[json_start..json_start + end];
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).expect("Metadata JSON should be valid");
 
-            println!("\n=== Metadata JSON ===");
-            println!("{}", serde_json::to_string_pretty(&parsed).unwrap());
+    println!("\n=== Metadata JSON ===");
+    println!("{}", serde_json::to_string_pretty(&parsed).unwrap());
 
-            assert!(parsed["available_providers"].is_array());
-            assert!(parsed["rate_limited_providers"].is_array());
-            assert!(parsed["circuit_open_providers"].is_array());
-        }
-    }
+    assert!(parsed["available_providers"].is_array());
+    assert!(parsed["rate_limited_providers"].is_array());
+    assert!(parsed["circuit_open_providers"].is_array());
 }

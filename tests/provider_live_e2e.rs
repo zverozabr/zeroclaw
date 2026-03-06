@@ -50,11 +50,7 @@ fn assert_four(response: &str) {
 
 /// Create a provider with optional profile, send a simple "2+2" prompt,
 /// assert the answer, and return the response text.
-async fn chat_assert_four(
-    provider_name: &str,
-    profile: Option<&str>,
-    model: &str,
-) -> Result<()> {
+async fn chat_assert_four(provider_name: &str, profile: Option<&str>, model: &str) -> Result<()> {
     ensure_crypto();
     let provider =
         zeroclaw::providers::create_provider_with_options(provider_name, None, &opts(profile))?;
@@ -77,11 +73,7 @@ async fn chat_assert_four(
 }
 
 /// Multi-turn: set a secret word, then ask the model to recall it.
-async fn multi_turn_recall(
-    provider_name: &str,
-    profile: Option<&str>,
-    model: &str,
-) -> Result<()> {
+async fn multi_turn_recall(provider_name: &str, profile: Option<&str>, model: &str) -> Result<()> {
     ensure_crypto();
     let provider =
         zeroclaw::providers::create_provider_with_options(provider_name, None, &opts(profile))?;
@@ -356,7 +348,10 @@ async fn e2e_provider_switch_all_profiles_sequential() -> Result<()> {
                 let wait = std::time::Duration::from_secs(65);
                 if elapsed < wait {
                     let remaining = wait - elapsed;
-                    println!("  rate-limit guard: sleeping {}s before next Gemini call", remaining.as_secs());
+                    println!(
+                        "  rate-limit guard: sleeping {}s before next Gemini call",
+                        remaining.as_secs()
+                    );
                     tokio::time::sleep(remaining).await;
                 }
             }
@@ -386,18 +381,16 @@ async fn switch_provider_and_check_model(
     provider_name: &str,
     profile: Option<&str>,
     model: &str,
-    expected_family: &str,
 ) -> Result<()> {
     ensure_crypto();
     let provider =
         zeroclaw::providers::create_provider_with_options(provider_name, None, &opts(profile))?;
 
     println!(
-        "  model-check: provider={} profile={} model={} expected_family={}",
+        "  model-check: provider={} profile={} model={}",
         provider_name,
         profile.unwrap_or("(default)"),
         model,
-        expected_family
     );
 
     // Ask model to confirm it can respond (simple math)
@@ -408,38 +401,32 @@ async fn switch_provider_and_check_model(
     println!("  response: {}", response);
     assert!(!response.trim().is_empty(), "response must not be empty");
     assert_four(&response);
-    println!("  model {model} responded correctly (family: {expected_family})");
+    println!("  model {model} responded correctly");
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "requires live OpenAI Codex OAuth credentials"]
 async fn e2e_model_switch_codex_gpt_5_2_responds() -> Result<()> {
-    switch_provider_and_check_model("openai-codex", None, "gpt-5.2", "openai").await
+    switch_provider_and_check_model("openai-codex", None, "gpt-5.2").await
 }
 
 #[tokio::test]
 #[ignore = "requires live OpenAI Codex OAuth credentials"]
 async fn e2e_model_switch_codex_gpt_5_1_mini_responds() -> Result<()> {
-    switch_provider_and_check_model("openai-codex", None, "gpt-5.1-codex-mini", "openai").await
+    switch_provider_and_check_model("openai-codex", None, "gpt-5.1-codex-mini").await
 }
 
 #[tokio::test]
 #[ignore = "requires live Gemini OAuth credentials"]
 async fn e2e_model_switch_gemini_flash_responds() -> Result<()> {
-    switch_provider_and_check_model("gemini", Some("gemini-1"), "gemini-2.5-flash", "gemini").await
+    switch_provider_and_check_model("gemini", Some("gemini-1"), "gemini-2.5-flash").await
 }
 
 #[tokio::test]
 #[ignore = "requires live Gemini OAuth credentials"]
 async fn e2e_model_switch_gemini_flash_lite_responds() -> Result<()> {
-    switch_provider_and_check_model(
-        "gemini",
-        Some("gemini-1"),
-        "gemini-2.5-flash-lite",
-        "gemini",
-    )
-    .await
+    switch_provider_and_check_model("gemini", Some("gemini-1"), "gemini-2.5-flash-lite").await
 }
 
 /// Sequential: switch provider then switch model, verify inference works.
@@ -460,7 +447,7 @@ async fn e2e_model_switch_after_provider_switch() -> Result<()> {
             provider,
             profile.map(|p| format!(":{p}")).unwrap_or_default()
         );
-        match switch_provider_and_check_model(provider, *profile, model, provider).await {
+        match switch_provider_and_check_model(provider, *profile, model).await {
             Ok(()) => println!("  {label}: OK"),
             Err(e) => failures.push(format!("{label}: {e}")),
         }
