@@ -100,7 +100,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 use tokio_util::sync::CancellationToken;
 
@@ -260,6 +260,7 @@ struct ChannelRuntimeDefaults {
     multimodal: crate::config::MultimodalConfig,
     query_classification: crate::config::QueryClassificationConfig,
     model_routes: Vec<crate::config::ModelRouteConfig>,
+    configured_providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,7 +343,7 @@ struct ChannelRuntimeContext {
     session_config: crate::config::AgentSessionConfig,
     session_manager: Option<Arc<dyn SessionManager + Send + Sync>>,
     provider_cache: ProviderCacheMap,
-    configured_providers: Arc<Vec<String>>,
+    configured_providers: Arc<RwLock<Vec<String>>>,
     route_overrides: RouteSelectionMap,
     api_key: Option<String>,
     api_url: Option<String>,
@@ -1165,6 +1166,7 @@ fn runtime_defaults_from_config(config: &Config) -> ChannelRuntimeDefaults {
         multimodal: config.multimodal.clone(),
         query_classification: config.query_classification.clone(),
         model_routes: config.model_routes.clone(),
+        configured_providers: build_configured_providers(config),
     }
 }
 
@@ -1231,6 +1233,11 @@ fn runtime_defaults_snapshot(ctx: &ChannelRuntimeContext) -> ChannelRuntimeDefau
         multimodal: ctx.multimodal.clone(),
         query_classification: ctx.query_classification.clone(),
         model_routes: ctx.model_routes.clone(),
+        configured_providers: ctx
+            .configured_providers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
     }
 }
 
@@ -1898,6 +1905,13 @@ async fn maybe_apply_runtime_config_update(ctx: &ChannelRuntimeContext) -> Resul
             .unwrap_or_else(|e| e.into_inner());
         *excluded = next_autonomy_policy.non_cli_excluded_tools.clone();
     }
+    {
+        let mut providers = ctx
+            .configured_providers
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *providers = next_defaults.configured_providers.clone();
+    }
 
     tracing::info!(
         path = %config_path.display(),
@@ -2532,14 +2546,23 @@ async fn handle_runtime_command_if_needed(
                 .keys()
                 .cloned()
                 .collect();
-            build_providers_help_response(&current, &opened, &ctx.configured_providers)
+            let configured = ctx
+                .configured_providers
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            build_providers_help_response(&current, &opened, &configured)
         }
         ChannelRuntimeCommand::SetProvider(raw_provider) => {
             // Resolve numeric index (e.g. "2") to provider name.
             // Index 0 and out-of-range are treated as literal provider names.
             let raw_provider = if let Ok(idx) = raw_provider.trim().parse::<usize>() {
-                if idx > 0 && idx <= ctx.configured_providers.len() {
-                    ctx.configured_providers[idx - 1].clone()
+                let configured = ctx
+                    .configured_providers
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner());
+                if idx > 0 && idx <= configured.len() {
+                    configured[idx - 1].clone()
                 } else {
                     raw_provider
                 }
@@ -6149,7 +6172,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         session_config: config.agent.session.clone(),
         session_manager,
         provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-        configured_providers: Arc::new(build_configured_providers(&config)),
+        configured_providers: Arc::new(RwLock::new(build_configured_providers(&config))),
         route_overrides: Arc::new(Mutex::new(HashMap::new())),
         api_key: config.api_key.clone(),
         api_url: config.api_url.clone(),
@@ -6510,7 +6533,7 @@ mod tests {
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -6568,7 +6591,7 @@ mod tests {
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -6629,7 +6652,7 @@ mod tests {
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7313,7 +7336,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7401,7 +7424,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7476,7 +7499,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7565,7 +7588,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7653,7 +7676,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7726,7 +7749,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7801,7 +7824,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7878,7 +7901,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7983,7 +8006,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8125,7 +8148,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8215,7 +8238,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8294,7 +8317,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8456,7 +8479,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8572,7 +8595,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8683,7 +8706,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8777,7 +8800,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8880,7 +8903,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8981,7 +9004,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9133,7 +9156,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9231,7 +9254,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9382,7 +9405,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9503,7 +9526,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9604,7 +9627,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9727,7 +9750,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9848,7 +9871,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(route_overrides)),
             api_key: None,
             api_url: None,
@@ -9928,7 +9951,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10005,6 +10028,7 @@ BTC is currently around $65,000 based on latest tool output."#
                         multimodal: crate::config::MultimodalConfig::default(),
                         query_classification: crate::config::QueryClassificationConfig::default(),
                         model_routes: Vec::new(),
+                        configured_providers: Vec::new(),
                     },
                     perplexity_filter: crate::config::PerplexityFilterConfig::default(),
                     outbound_leak_guard: crate::config::OutboundLeakGuardConfig::default(),
@@ -10034,7 +10058,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10233,7 +10257,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: Some("http://127.0.0.1:11434".to_string()),
             api_url: None,
@@ -10444,7 +10468,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10513,7 +10537,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10694,7 +10718,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10785,7 +10809,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10888,7 +10912,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10973,7 +10997,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11043,7 +11067,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11723,7 +11747,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11820,7 +11844,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11916,7 +11940,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -12016,7 +12040,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -12845,7 +12869,7 @@ BTC is currently around $65,000 based on latest tool output."#;
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -12922,7 +12946,7 @@ BTC is currently around $65,000 based on latest tool output."#;
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
-            configured_providers: Arc::new(vec![]),
+            configured_providers: Arc::new(RwLock::new(vec![])),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
