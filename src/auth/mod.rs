@@ -306,7 +306,7 @@ impl AuthService {
             .id_token
             .as_deref()
             .and_then(gemini_oauth::extract_client_id_from_id_token);
-        let refresh_client_id = gemini_oauth::gemini_oauth_client_id().or(id_token_client_id);
+        let refresh_client_id = id_token_client_id.or_else(gemini_oauth::gemini_oauth_client_id);
         let refresh_client_secret = gemini_oauth::gemini_oauth_client_secret()
             .or_else(|| Some(gemini_oauth::GEMINI_CLI_DEFAULT_CLIENT_SECRET.to_string()));
 

@@ -2535,12 +2535,14 @@ async fn handle_runtime_command_if_needed(
             build_providers_help_response(&current, &opened, &ctx.configured_providers)
         }
         ChannelRuntimeCommand::SetProvider(raw_provider) => {
-            // Resolve numeric index (e.g. "2") to provider name
+            // Resolve numeric index (e.g. "2") to provider name.
+            // Index 0 and out-of-range are treated as literal provider names.
             let raw_provider = if let Ok(idx) = raw_provider.trim().parse::<usize>() {
-                ctx.configured_providers
-                    .get(idx.saturating_sub(1))
-                    .cloned()
-                    .unwrap_or(raw_provider)
+                if idx > 0 && idx <= ctx.configured_providers.len() {
+                    ctx.configured_providers[idx - 1].clone()
+                } else {
+                    raw_provider
+                }
             } else {
                 raw_provider
             };
@@ -2572,14 +2574,16 @@ async fn handle_runtime_command_if_needed(
         }
         ChannelRuntimeCommand::ShowModel => build_models_help_response(&current),
         ChannelRuntimeCommand::SetModel(raw_model) => {
-            // Resolve numeric index (e.g. "3") to model id from curated list
+            // Resolve numeric index (e.g. "3") to model id from curated list.
+            // Index 0 and out-of-range are treated as literal model names.
             let raw_model = if let Ok(idx) = raw_model.trim().parse::<usize>() {
                 let provider_base = current.provider.split(':').next().unwrap_or(&current.provider);
                 let curated = onboard::curated_models_for_provider(provider_base);
-                curated
-                    .get(idx.saturating_sub(1))
-                    .map(|(id, _): &(String, String)| id.clone())
-                    .unwrap_or(raw_model)
+                if idx > 0 && idx <= curated.len() {
+                    curated[idx - 1].0.clone()
+                } else {
+                    raw_model
+                }
             } else {
                 raw_model
             };

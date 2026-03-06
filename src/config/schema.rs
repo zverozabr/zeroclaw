@@ -4025,7 +4025,8 @@ pub struct ReliabilityConfig {
     /// Base backoff (ms) for provider retry delay.
     #[serde(default = "default_provider_backoff_ms")]
     pub provider_backoff_ms: u64,
-    /// Fallback provider chain (e.g. `["anthropic", "openai"]`).
+    /// Primary provider fallback chain. When the active provider fails, ZeroClaw
+    /// tries these in order. Distinct from `model_fallbacks` (per-model substitution).
     #[serde(default)]
     pub fallback_providers: Vec<String>,
     /// Optional per-fallback provider API keys keyed by fallback entry name.
