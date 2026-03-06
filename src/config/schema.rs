@@ -4518,7 +4518,8 @@ pub struct ChannelsConfig {
     /// Runtime uses this as a per-turn budget that scales with tool-loop depth
     /// (up to 4x, capped) so one slow/retried model call does not consume the
     /// entire conversation budget.
-    /// Default: 300s for on-device LLMs (Ollama) which are slower than cloud APIs.
+    /// Default: 120s. With the 4x scale cap the worst-case budget is 480s (8 min).
+    /// The per-LLM-call timeout (90s) ensures stalled calls surface within that window.
     #[serde(default = "default_channel_message_timeout_secs")]
     pub message_timeout_secs: u64,
 }
@@ -4636,7 +4637,7 @@ impl ChannelsConfig {
 }
 
 fn default_channel_message_timeout_secs() -> u64 {
-    300
+    120
 }
 
 impl Default for ChannelsConfig {
