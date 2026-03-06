@@ -53,7 +53,7 @@ pub fn parse_openai_codex_error(body: &str) -> Option<ErrorQuotaInfo> {
 /// Generic error parser that tries multiple provider formats.
 pub fn parse_provider_error(provider: &str, body: &str) -> Option<ErrorQuotaInfo> {
     // Try OpenAI Codex format
-    if provider.contains("codex") || provider.contains("openai") {
+    if provider == "openai-codex" || provider.contains("codex") {
         if let Some(info) = parse_openai_codex_error(body) {
             return Some(info);
         }

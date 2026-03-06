@@ -131,7 +131,9 @@ fn convert_schema_to_gemini_format(schema: &serde_json::Value) -> serde_json::Va
                             }
                         }
                     }
-                    if let Some(alt) = chosen_alt {
+                    // Fall back to first available alternative if none matched a preferred type.
+                    let effective = chosen_alt.or_else(|| alternatives.first());
+                    if let Some(alt) = effective {
                         return convert_schema_to_gemini_format(alt);
                     } else {
                         return serde_json::Value::Object(serde_json::Map::new());
@@ -166,7 +168,7 @@ fn convert_schema_to_gemini_format(schema: &serde_json::Value) -> serde_json::Va
             serde_json::Value::Object(new_map)
         }
         serde_json::Value::Array(arr) => serde_json::Value::Array(
-            arr.iter().map(|v| convert_schema_to_gemini_format(v)).collect(),
+            arr.iter().map(convert_schema_to_gemini_format).collect(),
         ),
         other => other.clone(),
     }
@@ -1389,7 +1391,7 @@ impl Provider for GeminiProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             native_tool_calling: true,
-            vision: false,
+            vision: true,
         }
     }
 
