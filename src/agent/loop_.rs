@@ -62,6 +62,13 @@ const STREAM_CHUNK_MIN_CHARS: usize = 80;
 /// Used as a safe fallback when `max_tool_iterations` is unset or configured as zero.
 const DEFAULT_MAX_TOOL_ITERATIONS: usize = 20;
 
+/// Stop the loop after this many total tool errors (across all iterations and tool names)
+/// to prevent runaway retry spirals where the LLM keeps calling a broken tool with
+/// varying arguments.  Intentionally higher than `LoopDetector.failure_streak_threshold`
+/// (which is per-tool-name) so two different tools can each fail a couple of times
+/// before the global budget fires.
+const MAX_TOTAL_TOOL_ERRORS: usize = 5;
+
 /// Maximum continuation retries when a provider reports max-token truncation.
 const MAX_TOKENS_CONTINUATION_MAX_ATTEMPTS: usize = 3;
 /// Absolute safety cap for merged continuation output.
@@ -1208,6 +1215,7 @@ pub async fn run_tool_call_loop(
         .unwrap_or_default();
     let mut loop_detector = LoopDetector::new(ld_config);
     let mut loop_detection_prompt: Option<String> = None;
+    let mut total_tool_errors: usize = 0;
     let heartbeat_config = SAFETY_HEARTBEAT_CONFIG
         .try_with(Clone::clone)
         .ok()
@@ -2406,6 +2414,20 @@ pub async fn run_tool_call_loop(
         }
 
         for (tool_name, tool_call_id, outcome) in ordered_results.into_iter().flatten() {
+            // ── Global tool-error budget ─────────────────────────
+            // Covers all failure sources: execution errors, dedup skips, approval
+            // denials, and hook cancellations — not just per-tool-name streaks.
+            if !outcome.success {
+                total_tool_errors += 1;
+                if total_tool_errors >= MAX_TOTAL_TOOL_ERRORS {
+                    anyhow::bail!(
+                        "Tool loop stopped after {} total tool errors (last tool: {}, reason: {})",
+                        total_tool_errors,
+                        tool_name,
+                        outcome.error_reason.as_deref().unwrap_or("unknown")
+                    );
+                }
+            }
             individual_results.push((tool_call_id, outcome.output.clone()));
             let _ = writeln!(
                 tool_results,
