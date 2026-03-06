@@ -812,6 +812,8 @@ impl OpenAiCodexProvider {
             "parallel_tool_calls": request.parallel_tool_calls,
         });
 
+        // TODO: WebSocket responses do not expose HTTP headers post-upgrade;
+        // quota metadata cannot be extracted on this transport path.
         let (mut ws_stream, _) = timeout(CODEX_WS_CONNECT_TIMEOUT, connect_async(ws_request))
             .await
             .map_err(|_| {
@@ -982,19 +984,18 @@ impl OpenAiCodexProvider {
 
         let result = decode_responses_body(response).await?;
 
-        // Extract and persist quota metadata if auth profile is active
-        if let Some(profile_override) = &self.auth_profile_override {
-            if let Err(err) = self
-                .extract_and_persist_quota(&headers, profile_override)
-                .await
-            {
-                tracing::warn!(
-                    error = %err,
-                    provider = "openai-codex",
-                    profile = profile_override,
-                    "Failed to persist quota metadata"
-                );
-            }
+        // Extract and persist quota metadata; fall back to sentinel key for the default profile
+        let profile_key = self
+            .auth_profile_override
+            .as_deref()
+            .unwrap_or("openai-codex:default");
+        if let Err(err) = self.extract_and_persist_quota(&headers, profile_key).await {
+            tracing::warn!(
+                error = %err,
+                provider = "openai-codex",
+                profile = profile_key,
+                "Failed to persist quota metadata"
+            );
         }
 
         Ok(result)
