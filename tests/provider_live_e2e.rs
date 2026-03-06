@@ -337,15 +337,32 @@ async fn e2e_provider_switch_openai_codex_codex_2() -> Result<()> {
 #[tokio::test]
 #[ignore = "requires live OAuth credentials for all configured profiles"]
 async fn e2e_provider_switch_all_profiles_sequential() -> Result<()> {
+    // Interleave Gemini and Codex to avoid per-minute rate limits on Gemini accounts.
     let profiles: &[(&str, &str)] = &[
-        ("gemini:gemini-1", "gemini-2.5-flash"),
         ("openai-codex:codex-1", "gpt-5.1-codex-mini"),
-        ("gemini:gemini-2", "gemini-2.5-flash"),
+        ("gemini:gemini-1", "gemini-2.5-flash"),
         ("openai-codex:codex-2", "gpt-5.1-codex-mini"),
+        ("gemini:gemini-2", "gemini-2.5-flash"),
     ];
 
     let mut failures = Vec::new();
+    let mut last_gemini_call: Option<std::time::Instant> = None;
+
     for (profile_str, model) in profiles {
+        // Gemini accounts have tight per-minute quotas — wait 65s between calls.
+        if profile_str.starts_with("gemini:") {
+            if let Some(last) = last_gemini_call {
+                let elapsed = last.elapsed();
+                let wait = std::time::Duration::from_secs(65);
+                if elapsed < wait {
+                    let remaining = wait - elapsed;
+                    println!("  rate-limit guard: sleeping {}s before next Gemini call", remaining.as_secs());
+                    tokio::time::sleep(remaining).await;
+                }
+            }
+            last_gemini_call = Some(std::time::Instant::now());
+        }
+
         match switch_and_chat(profile_str, model).await {
             Ok(()) => {}
             Err(e) => failures.push(format!("{profile_str}: {e}")),
