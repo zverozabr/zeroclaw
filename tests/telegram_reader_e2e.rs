@@ -23,9 +23,14 @@ fn script_path() -> PathBuf {
 }
 
 /// Path to the .env file used as credential fallback.
+/// Resolved from `ZEROCLAW_DOTENV` env var, or repo root relative to this file.
 fn dotenv_path() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME env var required");
-    PathBuf::from(home).join("work/erp/zeroclaws/.env")
+    if let Ok(explicit) = std::env::var("ZEROCLAW_DOTENV") {
+        return PathBuf::from(explicit);
+    }
+    // Walk up from tests/ to repo root and look for .env
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest.join(".env")
 }
 
 /// Load Telegram credentials from environment or .env file.

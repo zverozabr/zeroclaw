@@ -18,7 +18,7 @@ set -eo pipefail
 
 # ── Config ─────────────────────────────────────────────────────────────
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export ZEROCLAW_CONFIG_DIR="${ZEROCLAW_CONFIG_DIR:-/home/spex/.zeroclaw}"
+export ZEROCLAW_CONFIG_DIR="${ZEROCLAW_CONFIG_DIR:-${HOME}/.zeroclaw}"
 ZEROCLAW_BIN="${ZEROCLAW_BIN:-${REPO_ROOT}/target/release/zeroclaw}"
 TIMEOUT="${TIMEOUT:-120}"
 LOG_FILE="/tmp/e2e_quota_live_$(date +%Y%m%d_%H%M%S).log"

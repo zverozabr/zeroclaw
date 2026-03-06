@@ -115,15 +115,15 @@ api_keys = [
     "sk-key-for-project-c"
 ]
 
+# Provider fallback if all Gemini quota exhausted
+fallback_providers = ["anthropic", "openai"]
+
 # Model fallback within Gemini
 [reliability.model_fallbacks]
 "gemini-2.0-flash-exp" = [
     "gemini-1.5-pro-latest",
     "gemini-1.5-flash-8b"
 ]
-
-# Provider fallback if all Gemini quota exhausted
-fallback_providers = ["anthropic", "openai"]
 ```
 
 **What happens when quota runs out:**

@@ -238,22 +238,35 @@ impl SkillToolHandler {
             .as_object()
             .context("Tool arguments must be a JSON object")?;
 
-        // Build a map of parameter types for proper quoting
+        // Build lookup maps for parameter types and required-ness
         let param_types: HashMap<String, ParameterType> = self
             .parameters
             .iter()
             .map(|p| (p.name.clone(), p.param_type.clone()))
             .collect();
+        let required_params: std::collections::HashSet<&str> = self
+            .parameters
+            .iter()
+            .filter(|p| p.required)
+            .map(|p| p.name.as_str())
+            .collect();
 
-        // Build a map of available arguments (skip nulls so placeholder removal handles them)
+        // Build a map of available arguments; error on null/empty required params
         let mut arg_values = HashMap::new();
         for (key, value) in args_obj {
+            let is_required = required_params.contains(key.as_str());
             if value.is_null() {
+                if is_required {
+                    bail!("Required parameter '{}' must not be null", key);
+                }
                 continue;
             }
             let value_str = self.format_argument_value(value)?;
             if value_str.is_empty() {
-                continue; // skip empty strings — treat same as null for optional params
+                if is_required {
+                    bail!("Required parameter '{}' must not be empty", key);
+                }
+                continue; // skip empty strings for optional params
             }
             arg_values.insert(key.clone(), value_str);
         }
@@ -381,7 +394,7 @@ impl Tool for SkillToolHandler {
                 skill = %self.skill_name,
                 tool = %self.tool_def.name,
                 reason = %e,
-                command = %command.chars().take(200).collect::<String>(),
+                command_template = %self.tool_def.command.chars().take(200).collect::<String>(),
                 "Skill tool blocked by security policy"
             );
             return Ok(ToolResult {
@@ -434,7 +447,7 @@ impl Tool for SkillToolHandler {
                 tool = %self.tool_def.name,
                 exit_code = ?output.status.code(),
                 stderr = %scrubbed_stderr.chars().take(500).collect::<String>(),
-                command = %command.chars().take(200).collect::<String>(),
+                command_template = %self.tool_def.command.chars().take(200).collect::<String>(),
                 "Skill tool execution failed"
             );
         }

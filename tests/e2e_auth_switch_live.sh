@@ -292,10 +292,9 @@ if [ -f "$CFG" ]; then
     logc "  ${GREEN}PASS${NC} (config.toml contains default_provider = gemini)\n"
     test_pass=$((test_pass + 1))
   else
-    logc "  ${YELLOW}WARN${NC} (config.toml may not have been updated — checking content)\n"
+    logc "  ${RED}FAIL${NC} (config.toml was not updated — default_provider not set to gemini)\n"
     grep -E 'default_provider|default_model' "$CFG" 2>/dev/null | tee -a "$LOG_FILE" || true
-    # Still count as pass if the agent responded correctly
-    test_pass=$((test_pass + 1))
+    test_fail=$((test_fail + 1))
   fi
 fi
 
