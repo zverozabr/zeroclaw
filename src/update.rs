@@ -424,20 +424,20 @@ pub async fn self_update(force: bool, check_only: bool) -> Result<()> {
     let asset = find_asset_for_platform(&release)?;
     println!("Downloading: {}", asset.name);
 
-    // Create temp directory
-    let temp_dir = std::env::temp_dir().join(format!("zeroclaw-update-{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
+    // Create OS-managed unique temp directory; RAII guarantees cleanup on all exit paths.
+    let temp_dir_guard = tempfile::Builder::new()
+        .prefix("zeroclaw-update-")
+        .tempdir()
+        .context("Failed to create temp directory")?;
+    let temp_dir = temp_dir_guard.path();
 
     // Download and extract
-    let new_binary = download_binary(asset, &temp_dir).await?;
+    let new_binary = download_binary(asset, temp_dir).await?;
 
     println!("Installing update...");
 
     // Replace the binary
     replace_binary(&new_binary, &current_exe)?;
-
-    // Clean up temp directory
-    let _ = std::fs::remove_dir_all(&temp_dir);
 
     println!();
     println!("Successfully updated to {}!", release.tag_name);
