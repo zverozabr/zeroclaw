@@ -346,10 +346,14 @@ switch_active_profile() {
   local provider="$1" profile_name="$2"
   local profile_id="${provider}:${profile_name}"
   local ap_file="${ZEROCLAW_CONFIG_DIR}/auth-profiles.json"
-  jq --arg p "$provider" --arg id "$profile_id" \
+  if jq --arg p "$provider" --arg id "$profile_id" \
     '.active_profiles[$p] = $id' "$ap_file" > "${ap_file}.tmp" \
-    && mv "${ap_file}.tmp" "$ap_file"
-  log "  Switched ${provider} active profile -> ${profile_id}"
+    && mv "${ap_file}.tmp" "$ap_file"; then
+    log "  Switched ${provider} active profile -> ${profile_id}"
+  else
+    log "  ERROR: Failed to switch ${provider} active profile"
+    return 1
+  fi
 }
 
 # Save original active profiles for restore
