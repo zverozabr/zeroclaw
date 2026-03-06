@@ -87,6 +87,7 @@ use crate::config::{Config, NonCliNaturalLanguageApprovalMode, ProgressMode};
 use crate::identity;
 use crate::memory::{self, Memory};
 use crate::observability::{self, runtime_trace, Observer};
+use crate::onboard;
 use crate::providers::{self, ChatMessage, Provider};
 use crate::runtime;
 use crate::security::{LeakDetector, LeakResult, SecurityPolicy};
@@ -268,11 +269,30 @@ struct ConfigFileStamp {
 }
 
 #[derive(Debug, Clone)]
+struct RuntimeSemanticGuardState {
+    enabled: bool,
+    collection: String,
+    threshold: f64,
+}
+
+impl Default for RuntimeSemanticGuardState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            collection: "semantic_guard".to_string(),
+            threshold: 0.82,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct RuntimeConfigState {
     defaults: ChannelRuntimeDefaults,
     perplexity_filter: crate::config::PerplexityFilterConfig,
     outbound_leak_guard: crate::config::OutboundLeakGuardConfig,
     canary_tokens: bool,
+    semantic_guard: RuntimeSemanticGuardState,
+    memory_config: crate::config::MemoryConfig,
     last_applied_stamp: Option<ConfigFileStamp>,
 }
 
@@ -289,6 +309,8 @@ struct RuntimeAutonomyPolicy {
     perplexity_filter: crate::config::PerplexityFilterConfig,
     outbound_leak_guard: crate::config::OutboundLeakGuardConfig,
     canary_tokens: bool,
+    semantic_guard: RuntimeSemanticGuardState,
+    memory_config: crate::config::MemoryConfig,
 }
 
 fn runtime_config_store() -> &'static Mutex<HashMap<PathBuf, RuntimeConfigState>> {
@@ -320,6 +342,7 @@ struct ChannelRuntimeContext {
     session_config: crate::config::AgentSessionConfig,
     session_manager: Option<Arc<dyn SessionManager + Send + Sync>>,
     provider_cache: ProviderCacheMap,
+    configured_providers: Arc<Vec<String>>,
     route_overrides: RouteSelectionMap,
     api_key: Option<String>,
     api_url: Option<String>,
@@ -401,6 +424,38 @@ fn conversation_history_key(msg: &traits::ChannelMessage) -> String {
 
 fn interruption_scope_key(msg: &traits::ChannelMessage) -> String {
     format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender)
+}
+
+fn should_prefix_sender_identity(msg: &traits::ChannelMessage) -> bool {
+    if msg.channel != "telegram" {
+        return false;
+    }
+
+    let chat_id = msg
+        .reply_target
+        .split_once(':')
+        .map_or(msg.reply_target.as_str(), |(chat_id, _)| chat_id);
+
+    // Telegram supergroups/groups use negative chat IDs.
+    chat_id.starts_with('-')
+}
+
+fn llm_user_content_with_sender_identity(msg: &traits::ChannelMessage, content: &str) -> String {
+    if !should_prefix_sender_identity(msg) {
+        return content.to_string();
+    }
+
+    let sender = msg.sender.trim();
+    if sender.is_empty() {
+        return content.to_string();
+    }
+
+    let prefix = format!("[sender: {sender}]");
+    if content.trim_start().starts_with(prefix.as_str()) {
+        return content.to_string();
+    }
+
+    format!("{prefix} {content}")
 }
 
 /// Strip tool-call XML tags from outgoing messages.
@@ -891,13 +946,20 @@ fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRun
         "/unapprove" => Some(ChannelRuntimeCommand::UnapproveTool(tail)),
         "/approvals" => Some(ChannelRuntimeCommand::ListApprovals),
         // Provider/model switching remains limited to channels with session routing.
-        "/models" if supports_runtime_model_switch(channel_name) => {
+        "/providers" if supports_runtime_model_switch(channel_name) => {
             if let Some(provider) = args.first() {
                 Some(ChannelRuntimeCommand::SetProvider(
                     provider.trim().to_string(),
                 ))
             } else {
                 Some(ChannelRuntimeCommand::ShowProviders)
+            }
+        }
+        "/models" if supports_runtime_model_switch(channel_name) => {
+            if let Some(model) = args.first() {
+                Some(ChannelRuntimeCommand::SetModel(model.trim().to_string()))
+            } else {
+                Some(ChannelRuntimeCommand::ShowModel)
             }
         }
         "/model" if supports_runtime_model_switch(channel_name) => {
@@ -1060,7 +1122,8 @@ fn resolve_provider_alias(name: &str) -> Option<String> {
         }
     }
 
-    None
+    // Accept named profiles (e.g. "gemini:gemini-1") that are not in the static registry
+    Some(candidate.to_string())
 }
 
 fn resolved_default_provider(config: &Config) -> String {
@@ -1105,6 +1168,14 @@ fn runtime_defaults_from_config(config: &Config) -> ChannelRuntimeDefaults {
     }
 }
 
+fn runtime_semantic_guard_from_config(config: &Config) -> RuntimeSemanticGuardState {
+    RuntimeSemanticGuardState {
+        enabled: config.security.semantic_guard,
+        collection: config.security.semantic_guard_collection.clone(),
+        threshold: config.security.semantic_guard_threshold,
+    }
+}
+
 fn runtime_autonomy_policy_from_config(config: &Config) -> RuntimeAutonomyPolicy {
     RuntimeAutonomyPolicy {
         auto_approve: config.autonomy.auto_approve.clone(),
@@ -1122,6 +1193,8 @@ fn runtime_autonomy_policy_from_config(config: &Config) -> RuntimeAutonomyPolicy
         perplexity_filter: config.security.perplexity_filter.clone(),
         outbound_leak_guard: config.security.outbound_leak_guard.clone(),
         canary_tokens: config.security.canary_tokens,
+        semantic_guard: runtime_semantic_guard_from_config(config),
+        memory_config: config.memory.clone(),
     }
 }
 
@@ -1203,6 +1276,69 @@ fn runtime_canary_tokens_snapshot(ctx: &ChannelRuntimeContext) -> bool {
         }
     }
     false
+}
+
+fn runtime_semantic_guard_snapshot(ctx: &ChannelRuntimeContext) -> RuntimeSemanticGuardState {
+    if let Some(config_path) = runtime_config_path(ctx) {
+        let store = runtime_config_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = store.get(&config_path) {
+            return state.semantic_guard.clone();
+        }
+    }
+    RuntimeSemanticGuardState::default()
+}
+
+fn runtime_memory_config_snapshot(ctx: &ChannelRuntimeContext) -> crate::config::MemoryConfig {
+    if let Some(config_path) = runtime_config_path(ctx) {
+        let store = runtime_config_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = store.get(&config_path) {
+            return state.memory_config.clone();
+        }
+    }
+    crate::config::MemoryConfig::default()
+}
+
+fn maybe_log_semantic_guard_startup_status(
+    source: &str,
+    memory: &crate::config::MemoryConfig,
+    semantic_guard: &RuntimeSemanticGuardState,
+    embedding_api_key: Option<&str>,
+) {
+    let guard = crate::security::SemanticGuard::from_config(
+        memory,
+        semantic_guard.enabled,
+        semantic_guard.collection.as_str(),
+        semantic_guard.threshold,
+        embedding_api_key,
+    );
+    let status = guard.startup_status();
+
+    if !semantic_guard.enabled {
+        tracing::debug!(source, "Semantic guard is disabled in config");
+        return;
+    }
+
+    if status.active {
+        tracing::info!(
+            source,
+            collection = %semantic_guard.collection,
+            threshold = semantic_guard.threshold,
+            "Semantic prompt-injection guard is active"
+        );
+        return;
+    }
+
+    tracing::info!(
+        source,
+        collection = %semantic_guard.collection,
+        threshold = semantic_guard.threshold,
+        reason = %status.reason.as_deref().unwrap_or("unknown"),
+        "Semantic prompt-injection guard configured but inactive; running lexical-only prompt guard"
+    );
 }
 
 fn snapshot_non_cli_excluded_tools(ctx: &ChannelRuntimeContext) -> Vec<String> {
@@ -1480,6 +1616,7 @@ async fn clear_non_cli_exclusion_after_approval(
     }
 }
 
+#[allow(dead_code)]
 async fn describe_non_cli_approvals(
     ctx: &ChannelRuntimeContext,
     sender: &str,
@@ -1732,10 +1869,19 @@ async fn maybe_apply_runtime_config_update(ctx: &ChannelRuntimeContext) -> Resul
                 perplexity_filter: next_autonomy_policy.perplexity_filter.clone(),
                 outbound_leak_guard: next_autonomy_policy.outbound_leak_guard.clone(),
                 canary_tokens: next_autonomy_policy.canary_tokens,
+                semantic_guard: next_autonomy_policy.semantic_guard.clone(),
+                memory_config: next_autonomy_policy.memory_config.clone(),
                 last_applied_stamp: Some(stamp),
             },
         );
     }
+
+    maybe_log_semantic_guard_startup_status(
+        "runtime-reload",
+        &next_autonomy_policy.memory_config,
+        &next_autonomy_policy.semantic_guard,
+        next_defaults.api_key.as_deref(),
+    );
 
     ctx.approval_manager.replace_runtime_non_cli_policy(
         &next_autonomy_policy.auto_approve,
@@ -1768,6 +1914,10 @@ async fn maybe_apply_runtime_config_update(ctx: &ChannelRuntimeContext) -> Resul
         outbound_leak_guard_action = ?next_autonomy_policy.outbound_leak_guard.action,
         outbound_leak_guard_sensitivity = next_autonomy_policy.outbound_leak_guard.sensitivity,
         canary_tokens = next_autonomy_policy.canary_tokens,
+        semantic_guard_enabled = next_autonomy_policy.semantic_guard.enabled,
+        semantic_guard_collection = %next_autonomy_policy.semantic_guard.collection,
+        semantic_guard_threshold = next_autonomy_policy.semantic_guard.threshold,
+        memory_backend = %next_autonomy_policy.memory_config.backend,
         "Applied updated channel runtime config from disk"
     );
 
@@ -1978,6 +2128,7 @@ fn is_tool_iteration_limit_error(err: &anyhow::Error) -> bool {
     crate::agent::loop_::is_tool_iteration_limit_error(err)
 }
 
+#[allow(dead_code)]
 fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<String> {
     let cache_path = workspace_dir.join("state").join(MODEL_CACHE_FILE);
     let Ok(raw) = std::fs::read_to_string(cache_path) else {
@@ -2093,84 +2244,93 @@ async fn create_routed_provider_nonblocking(
     .context("failed to join routed provider initialization task")?
 }
 
-fn build_models_help_response(current: &ChannelRouteSelection, workspace_dir: &Path) -> String {
+fn build_models_help_response(current: &ChannelRouteSelection) -> String {
     let mut response = String::new();
     let _ = writeln!(
         response,
-        "Current provider: `{}`\nCurrent model: `{}`",
+        "Provider: `{}` | Model: `{}`",
         current.provider, current.model
     );
-    response.push_str("\nSwitch model with `/model <model-id>`.\n");
-    response.push_str("Request supervised tool approval with `/approve-request <tool-name>`.\n");
-    response.push_str("Request one-time all-tools approval with `/approve-all-once`.\n");
-    response.push_str("Confirm approval with `/approve-confirm <request-id>`.\n");
-    response.push_str("Deny approval with `/approve-deny <request-id>`.\n");
-    response.push_str("List pending requests with `/approve-pending`.\n");
-    response.push_str("Approve supervised tools with `/approve <tool-name>`.\n");
-    response.push_str("Revoke approval with `/unapprove <tool-name>`.\n");
-    response.push_str("List approval state with `/approvals`.\n");
-    response.push_str(
-        "Natural language also works (policy controlled).\n\
-         - `direct` mode (default): `授权工具 shell` grants immediately.\n\
-         - `request_confirm` mode: `授权工具 shell` then `确认授权 apr-xxxxxx`.\n",
-    );
+    response.push_str("\n`/model <model-id or index>` — switch model\nExample: `/model 1` or `/model gpt-5.4`\n");
 
-    let cached_models = load_cached_model_preview(workspace_dir, &current.provider);
-    if cached_models.is_empty() {
+    // For profiles like "gemini:gemini-1", look up curated models by base name "gemini"
+    let provider_base = current.provider.split(':').next().unwrap_or(&current.provider);
+    let curated = onboard::curated_models_for_provider(provider_base);
+    if curated.is_empty() {
         let _ = writeln!(
             response,
-            "\nNo cached model list found for `{}`. Ask the operator to run `zeroclaw models refresh --provider {}`.",
-            current.provider, current.provider
+            "\nNo curated models for `{}`.\nSet model directly: /model <model-id>",
+            current.provider
         );
     } else {
-        let _ = writeln!(
-            response,
-            "\nCached model IDs (top {}):",
-            cached_models.len()
-        );
-        for model in cached_models {
-            let _ = writeln!(response, "- `{model}`");
+        response.push_str("\nAvailable models:\n");
+        for (i, (id, label)) in curated.iter().enumerate() {
+            let marker = if id == &current.model { "*" } else { " " };
+            let _ = writeln!(response, "{marker} {}. `{id}`  {label}", i + 1);
         }
     }
 
     response
 }
 
-fn build_providers_help_response(current: &ChannelRouteSelection) -> String {
+fn build_configured_providers(config: &crate::config::Config) -> Vec<String> {
+    // Only include explicitly configured profiles: model_providers keys and fallback_providers.
+    // default_provider is a bare type name, not a configured profile with credentials.
+    let mut result: Vec<String> = config.model_providers.keys().cloned().collect();
+    for name in &config.reliability.fallback_providers {
+        if !name.is_empty() && !result.iter().any(|r: &String| r == name) {
+            result.push(name.clone());
+        }
+    }
+    result.sort();
+    result
+}
+
+fn build_providers_help_response(
+    current: &ChannelRouteSelection,
+    opened: &[String],
+    configured: &[String],
+) -> String {
     let mut response = String::new();
     let _ = writeln!(
         response,
-        "Current provider: `{}`\nCurrent model: `{}`",
+        "Provider: `{}` | Model: `{}`",
         current.provider, current.model
     );
-    response.push_str("\nSwitch provider with `/models <provider>`.\n");
-    response.push_str("Switch model with `/model <model-id>`.\n\n");
-    response.push_str("Request supervised tool approval with `/approve-request <tool-name>`.\n");
-    response.push_str("Request one-time all-tools approval with `/approve-all-once`.\n");
-    response.push_str("Confirm approval with `/approve-confirm <request-id>`.\n");
-    response.push_str("Deny approval with `/approve-deny <request-id>`.\n");
-    response.push_str("List pending requests with `/approve-pending`.\n");
-    response.push_str("Approve supervised tools with `/approve <tool-name>`.\n");
-    response.push_str("Revoke approval with `/unapprove <tool-name>`.\n");
-    response.push_str("List approval state with `/approvals`.\n");
-    response.push_str(
-        "Natural language also works (policy controlled).\n\
-         - `direct` mode (default): `授权工具 shell` grants immediately.\n\
-         - `request_confirm` mode: `授权工具 shell` then `确认授权 apr-xxxxxx`.\n\n",
-    );
-    response.push_str("Available providers:\n");
-    for provider in providers::list_providers() {
-        if provider.aliases.is_empty() {
-            let _ = writeln!(response, "- {}", provider.name);
+    response.push_str("\n`/providers <name or index>` — switch provider\nExample: `/providers 1` or `/providers gemini:gemini-1`\n\nAvailable providers:\n");
+    let static_providers = providers::list_providers();
+    for (i, name) in configured.iter().enumerate() {
+        let is_active = name == &current.provider;
+        let was_opened = opened.iter().any(|o| o == name);
+        let marker = if is_active {
+            "*"
+        } else if was_opened {
+            "~"
         } else {
-            let _ = writeln!(
-                response,
-                "- {} (aliases: {})",
-                provider.name,
-                provider.aliases.join(", ")
-            );
-        }
+            " "
+        };
+        let base = name.split(':').next().unwrap_or(name);
+        let is_local = static_providers.iter().any(|p| p.name == base && p.local);
+        let local_suffix = if is_local { " (local)" } else { "" };
+        let _ = writeln!(response, "{marker} {}. {}{}", i + 1, name, local_suffix);
     }
+    response
+}
+
+fn build_approvals_help_response() -> String {
+    let mut response = String::new();
+    response.push_str("Tool approval commands:\n");
+    response.push_str("`/approve <tool>`          — grant permanent approval\n");
+    response.push_str("`/unapprove <tool>`        — revoke approval\n");
+    response.push_str("`/approve-request <tool>`  — request supervised approval\n");
+    response.push_str("`/approve-all-once`        — one-time all-tools bypass\n");
+    response.push_str("`/approve-confirm <id>`    — confirm pending request\n");
+    response.push_str("`/approve-deny <id>`       — deny pending request\n");
+    response.push_str("`/approve-pending`         — list pending requests\n");
+    response.push_str("\nNatural language (policy controlled):\n");
+    response.push_str("- direct mode: \"allow shell\" grants immediately\n");
+    response
+        .push_str("- request_confirm mode: \"allow shell\" then \"confirm apr-xxxxxx\"\n");
     response
 }
 
@@ -2364,8 +2524,26 @@ async fn handle_runtime_command_if_needed(
     }
 
     let response = match command {
-        ChannelRuntimeCommand::ShowProviders => build_providers_help_response(&current),
+        ChannelRuntimeCommand::ShowProviders => {
+            let opened: Vec<String> = ctx
+                .provider_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned()
+                .collect();
+            build_providers_help_response(&current, &opened, &ctx.configured_providers)
+        }
         ChannelRuntimeCommand::SetProvider(raw_provider) => {
+            // Resolve numeric index (e.g. "2") to provider name
+            let raw_provider = if let Ok(idx) = raw_provider.trim().parse::<usize>() {
+                ctx.configured_providers
+                    .get(idx.saturating_sub(1))
+                    .cloned()
+                    .unwrap_or(raw_provider)
+            } else {
+                raw_provider
+            };
             match resolve_provider_alias(&raw_provider) {
                 Some(provider_name) => match get_or_create_provider(ctx, &provider_name).await {
                     Ok(_) => {
@@ -2388,14 +2566,23 @@ async fn handle_runtime_command_if_needed(
                     }
                 },
                 None => format!(
-                    "Unknown provider `{raw_provider}`. Use `/models` to list valid providers."
+                    "Unknown provider `{raw_provider}`. Use `/providers` to list valid providers."
                 ),
             }
         }
-        ChannelRuntimeCommand::ShowModel => {
-            build_models_help_response(&current, ctx.workspace_dir.as_path())
-        }
+        ChannelRuntimeCommand::ShowModel => build_models_help_response(&current),
         ChannelRuntimeCommand::SetModel(raw_model) => {
+            // Resolve numeric index (e.g. "3") to model id from curated list
+            let raw_model = if let Ok(idx) = raw_model.trim().parse::<usize>() {
+                let provider_base = current.provider.split(':').next().unwrap_or(&current.provider);
+                let curated = onboard::curated_models_for_provider(provider_base);
+                curated
+                    .get(idx.saturating_sub(1))
+                    .map(|(id, _)| id.clone())
+                    .unwrap_or(raw_model)
+            } else {
+                raw_model
+            };
             let model = raw_model.trim().trim_matches('`').to_string();
             if model.is_empty() {
                 "Model ID cannot be empty. Use `/model <model-id>`.".to_string()
@@ -2806,12 +2993,7 @@ async fn handle_runtime_command_if_needed(
                 }
             }
         }
-        ChannelRuntimeCommand::ListApprovals => {
-            match describe_non_cli_approvals(ctx, sender, source_channel, reply_target).await {
-                Ok(summary) => summary,
-                Err(err) => format!("Failed to read approval state: {err}"),
-            }
-        }
+        ChannelRuntimeCommand::ListApprovals => build_approvals_help_response(),
         ChannelRuntimeCommand::ApprovePendingRequest(request_id) => {
             let request_id = request_id.trim().to_string();
             if request_id.is_empty() {
@@ -3441,7 +3623,42 @@ async fn process_channel_message(
     if handle_runtime_command_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await {
         return;
     }
+    let runtime_defaults = runtime_defaults_snapshot(ctx.as_ref());
     if !msg.content.trim_start().starts_with('/') {
+        let prompt_guard =
+            crate::security::PromptGuard::with_config(crate::security::GuardAction::Block, 0.8);
+        if let crate::security::GuardResult::Blocked(reason) = prompt_guard.scan(&msg.content) {
+            runtime_trace::record_event(
+                "channel_message_blocked_prompt_guard",
+                Some(msg.channel.as_str()),
+                None,
+                None,
+                None,
+                Some(false),
+                Some("blocked by lexical prompt-injection guard"),
+                serde_json::json!({
+                    "sender": msg.sender,
+                    "message_id": msg.id,
+                    "mode": "lexical",
+                    "reason": reason.as_str(),
+                }),
+            );
+            if let Some(channel) = target_channel.as_ref() {
+                let warning = format!(
+                    "Request blocked by `security.prompt_guard` before provider execution.\n\
+reason: {reason}\n\
+If this input is legitimate, rephrase without instruction-overrides, system-prompt extraction, or credential exfiltration requests."
+                );
+                let _ = channel
+                    .send(
+                        &SendMessage::new(warning, &msg.reply_target)
+                            .in_thread(msg.thread_ts.clone()),
+                    )
+                    .await;
+            }
+            return;
+        }
+
         let perplexity_cfg = runtime_perplexity_filter_snapshot(ctx.as_ref());
         if let Some(assessment) =
             crate::security::detect_adversarial_suffix(&msg.content, &perplexity_cfg)
@@ -3475,6 +3692,77 @@ or tune thresholds in config.",
                     assessment.symbol_ratio,
                     perplexity_cfg.symbol_ratio_threshold,
                     assessment.suspicious_token_count
+                );
+                let _ = channel
+                    .send(
+                        &SendMessage::new(warning, &msg.reply_target)
+                            .in_thread(msg.thread_ts.clone()),
+                    )
+                    .await;
+            }
+            return;
+        }
+
+        let semantic_cfg = runtime_semantic_guard_snapshot(ctx.as_ref());
+        let semantic_match = if semantic_cfg.enabled {
+            let memory_cfg = runtime_memory_config_snapshot(ctx.as_ref());
+            let semantic_guard = crate::security::SemanticGuard::from_config(
+                &memory_cfg,
+                semantic_cfg.enabled,
+                semantic_cfg.collection.as_str(),
+                semantic_cfg.threshold,
+                runtime_defaults.api_key.as_deref(),
+            );
+            semantic_guard.detect(&msg.content).await
+        } else {
+            None
+        };
+        let guard_result = prompt_guard.scan_with_semantic_signal(
+            &msg.content,
+            semantic_match
+                .as_ref()
+                .map(|detection| ("semantic_similarity_prompt_injection", detection.score)),
+        );
+        if let crate::security::GuardResult::Blocked(reason) = guard_result {
+            runtime_trace::record_event(
+                "channel_message_blocked_prompt_guard",
+                Some(msg.channel.as_str()),
+                None,
+                None,
+                None,
+                Some(false),
+                Some("blocked by prompt-injection guard with semantic signal"),
+                serde_json::json!({
+                    "sender": msg.sender,
+                    "message_id": msg.id,
+                    "mode": if semantic_match.is_some() { "semantic" } else { "lexical" },
+                    "reason": reason.as_str(),
+                    "semantic": semantic_match.as_ref().map(|detection| serde_json::json!({
+                        "score": detection.score,
+                        "threshold": semantic_cfg.threshold,
+                        "collection": semantic_cfg.collection.as_str(),
+                        "category": detection.category.as_str(),
+                        "key": detection.key.as_str(),
+                    })),
+                }),
+            );
+            if let Some(channel) = target_channel.as_ref() {
+                let semantic_suffix = semantic_match
+                    .as_ref()
+                    .map(|detection| {
+                        format!(
+                            "\nsemantic_match={:.2} (threshold {:.2}), category={}, collection={}.",
+                            detection.score,
+                            semantic_cfg.threshold,
+                            detection.category,
+                            semantic_cfg.collection
+                        )
+                    })
+                    .unwrap_or_default();
+                let warning = format!(
+                    "Request blocked by `security.prompt_guard` before provider execution.\n\
+reason: {reason}{semantic_suffix}\n\
+If this input is legitimate, rephrase the request and avoid instruction-override framing."
                 );
                 let _ = channel
                     .send(
@@ -3543,7 +3831,6 @@ or tune thresholds in config.",
             }
         }
     }
-    let runtime_defaults = runtime_defaults_snapshot(ctx.as_ref());
     // Try classification first, fall back to sender/default route.
     let route = classify_message_route(
         &runtime_defaults.query_classification,
@@ -3556,7 +3843,7 @@ or tune thresholds in config.",
         Err(err) => {
             let safe_err = providers::sanitize_api_error(&err.to_string());
             let message = format!(
-                "⚠️ Failed to initialize provider `{}`. Please run `/models` to choose another provider.\nDetails: {safe_err}",
+                "⚠️ Failed to initialize provider `{}`. Please run `/providers` to choose another provider.\nDetails: {safe_err}",
                 route.provider
             );
             if let Some(channel) = target_channel.as_ref() {
@@ -3598,7 +3885,8 @@ or tune thresholds in config.",
     // Inject per-message timestamp so the LLM always knows the current time,
     // even in multi-turn conversations where the system prompt may be stale.
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
-    let timestamped_content = format!("[{now}] {}", msg.content);
+    let llm_user_content = llm_user_content_with_sender_identity(&msg, &msg.content);
+    let timestamped_content = format!("[{now}] {llm_user_content}");
     let persisted_user_content = msg.content.clone();
 
     // Preserve user turn before the LLM call so interrupted requests keep context.
@@ -4513,25 +4801,72 @@ pub fn build_system_prompt_with_mode(
         prompt.push('\n');
     }
 
-    // ── 1b. Hardware (when gpio/arduino tools present) ───────────
-    let has_hardware = tools.iter().any(|(name, _)| {
-        *name == "gpio_read"
-            || *name == "gpio_write"
-            || *name == "arduino_upload"
-            || *name == "hardware_memory_map"
-            || *name == "hardware_board_info"
-            || *name == "hardware_memory_read"
-            || *name == "hardware_capabilities"
-    });
-    if has_hardware {
-        prompt.push_str(
+    // ── 1b. Hardware (when hardware tools are present) ───────────
+    let hardware_tool_names = [
+        "gpio_read",
+        "gpio_write",
+        "arduino_upload",
+        "hardware_memory_map",
+        "hardware_board_info",
+        "hardware_memory_read",
+        "hardware_capabilities",
+        "pico_flash",
+        "device_read_code",
+        "device_write_code",
+        "device_exec",
+    ];
+    let hw_tools: Vec<&str> = tools
+        .iter()
+        .filter_map(|(name, _)| {
+            if hardware_tool_names.contains(name) {
+                Some(*name)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !hw_tools.is_empty() {
+        let hw_names = hw_tools.join(", ");
+        let _ = writeln!(
+            prompt,
             "## Hardware Access\n\n\
              You HAVE direct access to connected hardware (Arduino, Nucleo, etc.). The user owns this system and has configured it.\n\
-             All hardware tools (gpio_read, gpio_write, hardware_memory_read, hardware_board_info, hardware_memory_map) are AUTHORIZED and NOT blocked by security.\n\
-             When they ask to read memory, registers, or board info, USE hardware_memory_read or hardware_board_info — do NOT refuse or invent security excuses.\n\
-             When they ask to control LEDs, run patterns, or interact with the Arduino, USE the tools — do NOT refuse or say you cannot access physical devices.\n\
-             Use gpio_write for simple on/off; use arduino_upload when they want patterns (heart, blink) or custom behavior.\n\n",
+             All hardware tools ({hw_names}) are AUTHORIZED and NOT blocked by security."
         );
+
+        if hw_tools
+            .iter()
+            .any(|name| *name == "hardware_memory_read" || *name == "hardware_board_info")
+        {
+            prompt.push_str(
+                "When they ask to read memory, registers, or board info, USE hardware_memory_read or hardware_board_info — do NOT refuse or invent security excuses.\n",
+            );
+        }
+
+        if hw_tools
+            .iter()
+            .any(|name| *name == "gpio_read" || *name == "gpio_write" || *name == "arduino_upload")
+        {
+            prompt.push_str(
+                "When they ask to control LEDs, run patterns, or interact with the Arduino, USE the tools — do NOT refuse or say you cannot access physical devices.\n",
+            );
+        }
+
+        if hw_tools.contains(&"gpio_write") && hw_tools.contains(&"arduino_upload") {
+            prompt.push_str(
+                "Use gpio_write for simple on/off; use arduino_upload when they want patterns (heart, blink) or custom behavior.\n",
+            );
+        }
+
+        if hw_tools.contains(&"gpio_write") {
+            prompt.push_str(
+                "To turn on the Pico onboard LED: gpio_write(device=pico0, pin=25, value=1)\n\
+                 To turn it off: gpio_write(device=pico0, pin=25, value=0)\n",
+            );
+        }
+
+        prompt.push('\n');
     }
 
     // ── 1c. Action instruction (avoid meta-summary) ───────────────
@@ -4990,6 +5325,7 @@ fn collect_configured_channels(
                 )
                 .with_group_reply_allowed_senders(dc.group_reply_allowed_sender_ids())
                 .with_ack_reaction(config.channels_config.ack_reaction.discord.clone())
+                .with_transcription(config.transcription.clone())
                 .with_workspace_dir(config.workspace_dir.clone()),
             ),
         });
@@ -5445,6 +5781,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
     }
 
     let initial_stamp = config_file_stamp(&config.config_path).await;
+    let startup_semantic_guard = runtime_semantic_guard_from_config(&config);
     {
         let mut store = runtime_config_store()
             .lock()
@@ -5456,10 +5793,18 @@ pub async fn start_channels(config: Config) -> Result<()> {
                 perplexity_filter: config.security.perplexity_filter.clone(),
                 outbound_leak_guard: config.security.outbound_leak_guard.clone(),
                 canary_tokens: config.security.canary_tokens,
+                semantic_guard: startup_semantic_guard.clone(),
+                memory_config: config.memory.clone(),
                 last_applied_stamp: initial_stamp,
             },
         );
     }
+    maybe_log_semantic_guard_startup_status(
+        "startup",
+        &config.memory,
+        &startup_semantic_guard,
+        config.api_key.as_deref(),
+    );
 
     let base_observer: Arc<dyn Observer> =
         Arc::from(observability::create_observer(&config.observability));
@@ -5800,6 +6145,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         session_config: config.agent.session.clone(),
         session_manager,
         provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+        configured_providers: Arc::new(build_configured_providers(&config)),
         route_overrides: Arc::new(Mutex::new(HashMap::new())),
         api_key: config.api_key.clone(),
         api_url: config.api_url.clone(),
@@ -6160,6 +6506,7 @@ mod tests {
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -6217,6 +6564,7 @@ mod tests {
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -6277,6 +6625,7 @@ mod tests {
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -6960,6 +7309,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7047,6 +7397,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7121,6 +7472,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7209,6 +7561,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7296,6 +7649,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7368,6 +7722,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7442,6 +7797,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7484,7 +7840,7 @@ BTC is currently around $65,000 based on latest tool output."#
     }
 
     #[tokio::test]
-    async fn process_channel_message_handles_models_command_without_llm_call() {
+    async fn process_channel_message_handles_providers_command_without_llm_call() {
         let channel_impl = Arc::new(TelegramRecordingChannel::default());
         let channel: Arc<dyn Channel> = channel_impl.clone();
 
@@ -7518,6 +7874,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7542,7 +7899,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 id: "msg-cmd-1".to_string(),
                 sender: "alice".to_string(),
                 reply_target: "chat-1".to_string(),
-                content: "/models openrouter".to_string(),
+                content: "/providers openrouter".to_string(),
                 channel: "telegram".to_string(),
                 timestamp: 1,
                 thread_ts: None,
@@ -7622,6 +7979,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7763,6 +8121,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7852,6 +8211,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -7930,6 +8290,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8091,6 +8452,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8206,6 +8568,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8316,6 +8679,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8354,15 +8718,13 @@ BTC is currently around $65,000 based on latest tool output."#
 
         let sent = channel_impl.sent_messages.lock().await;
         assert_eq!(sent.len(), 1);
-        assert!(sent[0].contains("Supervised non-CLI tool approvals:"));
-        assert!(sent[0].contains("Runtime session grants: shell"));
-        assert!(sent[0].contains("Runtime one-time all-tools bypass tokens: 1"));
-        assert!(sent[0].contains("Runtime non_cli_approval_approvers:"));
-        assert!(sent[0].contains("Runtime non_cli_natural_language_approval_mode:"));
-        assert!(sent[0].contains("Runtime non_cli_natural_language_approval_mode_by_channel:"));
-        assert!(sent[0].contains("Runtime non_cli_excluded_tools: shell"));
-        assert!(sent[0].contains("Persisted autonomy.auto_approve: mock_price"));
-        assert!(sent[0].contains("Persisted autonomy.always_ask: shell"));
+        assert!(sent[0].contains("Tool approval commands:"));
+        assert!(sent[0].contains("/approve "));
+        assert!(sent[0].contains("/unapprove "));
+        assert!(sent[0].contains("/approve-request "));
+        assert!(sent[0].contains("/approve-all-once"));
+        assert!(sent[0].contains("/approve-confirm "));
+        assert!(sent[0].contains("/approve-deny "));
         assert_eq!(provider_impl.call_count.load(Ordering::SeqCst), 0);
     }
 
@@ -8411,6 +8773,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8513,6 +8876,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8613,6 +8977,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8764,6 +9129,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -8861,6 +9227,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9011,6 +9378,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9131,6 +9499,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9231,6 +9600,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9353,6 +9723,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9473,6 +9844,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(route_overrides)),
             api_key: None,
             api_url: None,
@@ -9552,6 +9924,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9632,6 +10005,8 @@ BTC is currently around $65,000 based on latest tool output."#
                     perplexity_filter: crate::config::PerplexityFilterConfig::default(),
                     outbound_leak_guard: crate::config::OutboundLeakGuardConfig::default(),
                     canary_tokens: true,
+                    semantic_guard: RuntimeSemanticGuardState::default(),
+                    memory_config: crate::config::MemoryConfig::default(),
                     last_applied_stamp: None,
                 },
             );
@@ -9655,6 +10030,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -9740,6 +10116,10 @@ BTC is currently around $65,000 based on latest tool output."#
         cfg.security.outbound_leak_guard.enabled = true;
         cfg.security.outbound_leak_guard.action = crate::config::OutboundLeakGuardAction::Block;
         cfg.security.outbound_leak_guard.sensitivity = 0.95;
+        cfg.security.semantic_guard = true;
+        cfg.security.semantic_guard_collection = "semantic_guard_test".to_string();
+        cfg.security.semantic_guard_threshold = 0.9;
+        cfg.memory.qdrant.url = Some("http://127.0.0.1:6333".to_string());
         cfg.save().await.expect("save config");
 
         let (_defaults, policy) = load_runtime_defaults_from_config_file(&config_path)
@@ -9775,6 +10155,13 @@ BTC is currently around $65,000 based on latest tool output."#
             crate::config::OutboundLeakGuardAction::Block
         );
         assert_eq!(policy.outbound_leak_guard.sensitivity, 0.95);
+        assert!(policy.semantic_guard.enabled);
+        assert_eq!(policy.semantic_guard.collection, "semantic_guard_test");
+        assert_eq!(policy.semantic_guard.threshold, 0.9);
+        assert_eq!(
+            policy.memory_config.qdrant.url.as_deref(),
+            Some("http://127.0.0.1:6333")
+        );
     }
 
     #[tokio::test]
@@ -9842,6 +10229,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: Some("http://127.0.0.1:11434".to_string()),
             api_url: None,
@@ -9884,6 +10272,7 @@ BTC is currently around $65,000 based on latest tool output."#
             runtime_outbound_leak_guard_snapshot(runtime_ctx.as_ref()).action,
             crate::config::OutboundLeakGuardAction::Redact
         );
+        assert!(!runtime_semantic_guard_snapshot(runtime_ctx.as_ref()).enabled);
         let defaults = runtime_defaults_snapshot(runtime_ctx.as_ref());
         assert!(!defaults.auto_save_memory);
         assert_eq!(defaults.min_relevance_score, 0.15);
@@ -9907,6 +10296,10 @@ BTC is currently around $65,000 based on latest tool output."#
         cfg.security.perplexity_filter.perplexity_threshold = 12.5;
         cfg.security.outbound_leak_guard.action = crate::config::OutboundLeakGuardAction::Block;
         cfg.security.outbound_leak_guard.sensitivity = 0.92;
+        cfg.security.semantic_guard = true;
+        cfg.security.semantic_guard_collection = "semantic_guard_reload".to_string();
+        cfg.security.semantic_guard_threshold = 0.88;
+        cfg.memory.qdrant.url = Some("http://127.0.0.1:6333".to_string());
         cfg.memory.auto_save = true;
         cfg.memory.min_relevance_score = 0.65;
         cfg.agent.max_tool_iterations = 11;
@@ -9960,6 +10353,15 @@ BTC is currently around $65,000 based on latest tool output."#
             crate::config::OutboundLeakGuardAction::Block
         );
         assert_eq!(leak_guard_cfg.sensitivity, 0.92);
+        let semantic_guard_cfg = runtime_semantic_guard_snapshot(runtime_ctx.as_ref());
+        assert!(semantic_guard_cfg.enabled);
+        assert_eq!(semantic_guard_cfg.collection, "semantic_guard_reload");
+        assert_eq!(semantic_guard_cfg.threshold, 0.88);
+        let memory_cfg = runtime_memory_config_snapshot(runtime_ctx.as_ref());
+        assert_eq!(
+            memory_cfg.qdrant.url.as_deref(),
+            Some("http://127.0.0.1:6333")
+        );
         let defaults = runtime_defaults_snapshot(runtime_ctx.as_ref());
         assert!(defaults.auto_save_memory);
         assert_eq!(defaults.min_relevance_score, 0.65);
@@ -10038,6 +10440,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10106,6 +10509,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10286,6 +10690,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10376,6 +10781,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10478,6 +10884,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10562,6 +10969,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -10631,6 +11039,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11148,6 +11557,54 @@ BTC is currently around $65,000 based on latest tool output."#
         );
     }
 
+    #[test]
+    fn telegram_group_messages_prefix_sender_identity_for_llm() {
+        let msg = traits::ChannelMessage {
+            id: "msg_1".into(),
+            sender: "Kozimum".into(),
+            reply_target: "-100200300".into(),
+            content: "who am i?".into(),
+            channel: "telegram".into(),
+            timestamp: 1,
+            thread_ts: None,
+        };
+
+        let enriched = llm_user_content_with_sender_identity(&msg, &msg.content);
+        assert_eq!(enriched, "[sender: Kozimum] who am i?");
+    }
+
+    #[test]
+    fn telegram_dm_messages_do_not_prefix_sender_identity() {
+        let msg = traits::ChannelMessage {
+            id: "msg_1".into(),
+            sender: "Kozimum".into(),
+            reply_target: "12345".into(),
+            content: "who am i?".into(),
+            channel: "telegram".into(),
+            timestamp: 1,
+            thread_ts: None,
+        };
+
+        let enriched = llm_user_content_with_sender_identity(&msg, &msg.content);
+        assert_eq!(enriched, "who am i?");
+    }
+
+    #[test]
+    fn telegram_group_thread_messages_prefix_sender_identity_for_llm() {
+        let msg = traits::ChannelMessage {
+            id: "msg_1".into(),
+            sender: "Kozimum".into(),
+            reply_target: "-100200300:789".into(),
+            content: "who am i?".into(),
+            channel: "telegram".into(),
+            timestamp: 1,
+            thread_ts: Some("789".into()),
+        };
+
+        let enriched = llm_user_content_with_sender_identity(&msg, &msg.content);
+        assert_eq!(enriched, "[sender: Kozimum] who am i?");
+    }
+
     #[tokio::test]
     async fn autosave_keys_preserve_multiple_conversation_facts() {
         let tmp = TempDir::new().unwrap();
@@ -11262,6 +11719,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11358,6 +11816,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11453,6 +11912,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -11552,6 +12012,7 @@ BTC is currently around $65,000 based on latest tool output."#
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -12380,6 +12841,7 @@ BTC is currently around $65,000 based on latest tool output."#;
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -12456,6 +12918,7 @@ BTC is currently around $65,000 based on latest tool output."#;
             session_config: crate::config::AgentSessionConfig::default(),
             session_manager: None,
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            configured_providers: Arc::new(vec![]),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
@@ -12540,5 +13003,143 @@ BTC is currently around $65,000 based on latest tool output."#;
             turns.iter().all(|turn| !turn.content.contains("[IMAGE:")),
             "failed vision turn must not persist image marker content"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // /providers — configured provider list and response formatting
+    // -----------------------------------------------------------------------
+
+    fn make_config_with_providers(
+        default_provider: &str,
+        fallback_providers: Vec<&str>,
+    ) -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config.default_provider = Some(default_provider.to_string());
+        config.reliability.fallback_providers =
+            fallback_providers.into_iter().map(String::from).collect();
+        config
+    }
+
+    #[test]
+    fn build_configured_providers_includes_default_and_fallbacks() {
+        let config = make_config_with_providers(
+            "openai-codex",
+            vec!["gemini:gemini-1", "gemini:gemini-2", "openai-codex:codex-1", "openai-codex:codex-2"],
+        );
+        let list = build_configured_providers(&config);
+
+        // default_provider (bare type) must NOT appear — only real configured profiles
+        assert!(!list.contains(&"openai-codex".to_string()), "bare default_provider must not appear in list");
+        assert!(list.contains(&"gemini:gemini-1".to_string()), "must include gemini:gemini-1");
+        assert!(list.contains(&"gemini:gemini-2".to_string()), "must include gemini:gemini-2");
+        assert!(list.contains(&"openai-codex:codex-1".to_string()), "must include openai-codex:codex-1");
+        assert!(list.contains(&"openai-codex:codex-2".to_string()), "must include openai-codex:codex-2");
+        assert_eq!(list.len(), 4, "exactly 4 configured profiles");
+    }
+
+    #[test]
+    fn build_configured_providers_no_duplicates() {
+        // default_provider appears in fallback_providers too — must not duplicate
+        let config = make_config_with_providers(
+            "openai-codex",
+            vec!["openai-codex", "gemini:gemini-1"],
+        );
+        let list = build_configured_providers(&config);
+        let count = list.iter().filter(|s| s.as_str() == "openai-codex").count();
+        assert_eq!(count, 1, "openai-codex must appear exactly once, got: {list:?}");
+    }
+
+    #[test]
+    fn build_configured_providers_is_sorted() {
+        let config = make_config_with_providers(
+            "openai-codex",
+            vec!["gemini:gemini-2", "gemini:gemini-1", "openai-codex:codex-2", "openai-codex:codex-1"],
+        );
+        let list = build_configured_providers(&config);
+        let mut sorted = list.clone();
+        sorted.sort();
+        assert_eq!(list, sorted, "list must be sorted alphabetically");
+    }
+
+    #[test]
+    fn build_providers_help_response_marks_active_with_star() {
+        let current = ChannelRouteSelection {
+            provider: "gemini:gemini-1".to_string(),
+            model: "gemini-2.5-flash".to_string(),
+        };
+        let configured = vec![
+            "gemini:gemini-1".to_string(),
+            "gemini:gemini-2".to_string(),
+            "openai-codex".to_string(),
+        ];
+        let response = build_providers_help_response(&current, &[], &configured);
+
+        assert!(response.contains("* 1. gemini:gemini-1"), "active provider must be marked with *; got:\n{response}");
+        assert!(response.contains("  2. gemini:gemini-2"), "inactive must have space; got:\n{response}");
+        assert!(response.contains("  3. openai-codex"), "inactive must have space; got:\n{response}");
+    }
+
+    #[test]
+    fn build_providers_help_response_marks_opened_with_tilde() {
+        let current = ChannelRouteSelection {
+            provider: "openai-codex".to_string(),
+            model: "gpt-5.2".to_string(),
+        };
+        let configured = vec![
+            "gemini:gemini-1".to_string(),
+            "openai-codex".to_string(),
+        ];
+        let opened = vec!["gemini:gemini-1".to_string()];
+        let response = build_providers_help_response(&current, &opened, &configured);
+
+        assert!(response.contains("~ 1. gemini:gemini-1"), "opened provider must be marked with ~; got:\n{response}");
+        assert!(response.contains("* 2. openai-codex"), "active must be marked with *; got:\n{response}");
+    }
+
+    #[test]
+    fn build_providers_help_response_all_configured_appear() {
+        let current = ChannelRouteSelection {
+            provider: "openai-codex".to_string(),
+            model: "gpt-5.2".to_string(),
+        };
+        let configured = vec![
+            "gemini:gemini-1".to_string(),
+            "gemini:gemini-2".to_string(),
+            "openai-codex".to_string(),
+            "openai-codex:codex-1".to_string(),
+            "openai-codex:codex-2".to_string(),
+        ];
+        let response = build_providers_help_response(&current, &[], &configured);
+
+        for name in &configured {
+            assert!(response.contains(name.as_str()), "response must contain {name}; got:\n{response}");
+        }
+    }
+
+    #[test]
+    fn resolve_provider_alias_accepts_profile_names() {
+        // Profile names like "gemini:gemini-1" are not in the static registry
+        // but must be accepted as valid (passed through as-is)
+        let result = resolve_provider_alias("gemini:gemini-1");
+        assert_eq!(result, Some("gemini:gemini-1".to_string()));
+
+        let result = resolve_provider_alias("openai-codex:codex-2");
+        assert_eq!(result, Some("openai-codex:codex-2".to_string()));
+    }
+
+    #[test]
+    fn resolve_provider_alias_rejects_empty() {
+        assert_eq!(resolve_provider_alias(""), None);
+        assert_eq!(resolve_provider_alias("   "), None);
+    }
+
+    #[test]
+    fn resolve_provider_alias_accepts_known_base_providers() {
+        // Base providers from the static registry must still resolve
+        let result = resolve_provider_alias("gemini");
+        assert_eq!(result, Some("gemini".to_string()));
+
+        let result = resolve_provider_alias("openai-codex");
+        assert_eq!(result, Some("openai-codex".to_string()));
     }
 }

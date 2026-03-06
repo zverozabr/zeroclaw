@@ -377,6 +377,13 @@ impl Tool for SkillToolHandler {
             .context("Failed to render skill tool command")?;
 
         if let Err(e) = self.security.validate_command_execution(&command, false) {
+            tracing::warn!(
+                skill = %self.skill_name,
+                tool = %self.tool_def.name,
+                reason = %e,
+                command = %command.chars().take(200).collect::<String>(),
+                "Skill tool blocked by security policy"
+            );
             return Ok(ToolResult {
                 output: format!("Blocked by security policy: {e}"),
                 success: false,
@@ -414,13 +421,23 @@ impl Tool for SkillToolHandler {
         let scrubbed_stdout = crate::agent::loop_::scrub_credentials(&stdout);
         let scrubbed_stderr = crate::agent::loop_::scrub_credentials(&stderr);
 
-        tracing::debug!(
-            skill = %self.skill_name,
-            tool = %self.tool_def.name,
-            success = success,
-            exit_code = ?output.status.code(),
-            "Skill tool execution completed"
-        );
+        if success {
+            tracing::debug!(
+                skill = %self.skill_name,
+                tool = %self.tool_def.name,
+                exit_code = ?output.status.code(),
+                "Skill tool execution completed"
+            );
+        } else {
+            tracing::warn!(
+                skill = %self.skill_name,
+                tool = %self.tool_def.name,
+                exit_code = ?output.status.code(),
+                stderr = %scrubbed_stderr.chars().take(500).collect::<String>(),
+                command = %command.chars().take(200).collect::<String>(),
+                "Skill tool execution failed"
+            );
+        }
 
         Ok(ToolResult {
             success,
