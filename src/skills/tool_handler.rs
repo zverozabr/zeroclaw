@@ -385,9 +385,25 @@ impl Tool for SkillToolHandler {
             });
         }
 
-        let command = self
-            .render_command(&args)
-            .context("Failed to render skill tool command")?;
+        let command = match self.render_command(&args) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    skill = %self.skill_name,
+                    tool = %self.tool_def.name,
+                    args = %args,
+                    error = %e,
+                    "Skill tool render failed — returning soft error to LLM"
+                );
+                return Ok(ToolResult {
+                    output: format!(
+                        "Invalid tool arguments: {e}. Please retry with corrected parameters."
+                    ),
+                    success: false,
+                    error: None,
+                });
+            }
+        };
 
         if let Err(e) = self.security.validate_command_execution(&command, false) {
             tracing::warn!(
@@ -819,6 +835,52 @@ mod tests {
         assert!(
             !by_name["limit"].required,
             "limit with default should be optional"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_fail_returns_soft_error_not_err() {
+        let tool_def = SkillTool {
+            name: "telegram_search_global".to_string(),
+            description: "Search Telegram globally".to_string(),
+            kind: "shell".to_string(),
+            command: "python3 script.py --query {query} --date-from {date_from}".to_string(),
+            args: [
+                ("query".to_string(), "Search query".to_string()),
+                ("date_from".to_string(), "Start date (optional)".to_string()),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
+        };
+
+        let security = Arc::new(SecurityPolicy::default());
+        let handler =
+            SkillToolHandler::new("zeroclaw_skill".to_string(), tool_def, security).unwrap();
+
+        // LLM sends an Array instead of a String for date_from — must not propagate Err
+        let args = serde_json::json!({
+            "query": "x",
+            "date_from": [1, 2, 3]
+        });
+
+        let result = handler.execute(args).await;
+        assert!(
+            result.is_ok(),
+            "execute must return Ok, not Err on render fail"
+        );
+        let tool_result = result.unwrap();
+        assert!(
+            !tool_result.success,
+            "ToolResult.success must be false for render error"
+        );
+        assert!(
+            tool_result
+                .output
+                .to_lowercase()
+                .contains("invalid tool arguments"),
+            "output must explain the argument error, got: {}",
+            tool_result.output
         );
     }
 }
