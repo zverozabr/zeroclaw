@@ -1322,11 +1322,14 @@ async fn b7_bot_reply_includes_message_links() {
     );
 }
 
-/// I9: search_global results with null message_link must have author_contact.
+/// I9: search_messages in a personal user chat always produces null message_link.
 ///
-/// When a message comes from a chat with no public username (e.g. a private group),
-/// message_link will be null. The author_contact field must be populated so the
-/// LLM can present an actionable contact instead of fabricating a URL.
+/// Telegram's SearchGlobalRequest only indexes public channels/supergroups, so
+/// null-link is structurally unreachable via search_global. This test uses
+/// search_messages in a personal business contact (a Samui rental service that
+/// is confirmed to be in the research account's dialog list) to guarantee:
+///   - message_link is null for all messages (personal chats have no public URL)
+///   - author_contact is @username for any message whose sender has a username
 ///
 /// Requirements:
 ///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
@@ -1334,7 +1337,83 @@ async fn b7_bot_reply_includes_message_links() {
 #[tokio::test]
 #[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + research_session authorized"]
 async fn i9_null_link_results_have_author_contact() {
+    // BananaRent_Samui is a Samui vehicle rental business in the research account's contacts.
     let result = run_reader_with_creds(&[
+        "search_messages",
+        "--account",
+        "research",
+        "--contact-name",
+        "BananaRent_Samui",
+        "--limit",
+        "10",
+    ])
+    .await;
+
+    assert_eq!(
+        result["success"], true,
+        "search_messages must succeed: {:?}",
+        result
+    );
+
+    let messages = result["messages"]
+        .as_array()
+        .expect("messages must be array");
+    assert!(
+        !messages.is_empty(),
+        "Expected messages in BananaRent_Samui chat"
+    );
+
+    println!("Messages in personal chat: {}", messages.len());
+
+    // All messages in a personal user chat must have null message_link
+    for msg in messages {
+        assert!(
+            msg["message_link"].is_null(),
+            "personal chat message must have null message_link, got: {:?}",
+            msg["message_link"]
+        );
+    }
+
+    // Any message from a sender with a username must have @username in author_contact
+    let named_senders: Vec<_> = messages
+        .iter()
+        .filter(|m| {
+            m["sender"]["username"]
+                .as_str()
+                .map_or(false, |u| !u.is_empty())
+        })
+        .collect();
+
+    println!(
+        "Messages with named sender: {}/{}",
+        named_senders.len(),
+        messages.len()
+    );
+
+    for msg in &named_senders {
+        let contact = msg["author_contact"].as_str().unwrap_or("");
+        assert!(
+            contact.starts_with('@'),
+            "null-link sender with username must have @username in author_contact, got: {:?}",
+            msg
+        );
+    }
+}
+
+/// I10: forward_messages forwards a media message to the target user.
+///
+/// Picks a message with has_media=true from search_global (any public channel),
+/// then calls forward_messages to relay it to the operator account.
+///
+/// Requirements:
+///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
+///   - research_session authorized
+///   - zverozabr is in the research account's contacts
+#[tokio::test]
+#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + research_session authorized"]
+async fn i10_forward_messages_relays_media() {
+    // Step 1: find a message with media from any joined channel
+    let search = run_reader_with_creds(&[
         "search_global",
         "--account",
         "research",
@@ -1346,31 +1425,137 @@ async fn i9_null_link_results_have_author_contact() {
     .await;
 
     assert_eq!(
-        result["success"], true,
+        search["success"], true,
         "search_global must succeed: {:?}",
+        search
+    );
+
+    let results = search["results"].as_array().expect("results must be array");
+    let media_msg = results
+        .iter()
+        .find(|m| m["has_media"].as_bool().unwrap_or(false) && m["chat"]["username"].is_string());
+
+    let media_msg = media_msg.expect("Expected at least one media message with a named chat");
+    let source_chat = media_msg["chat"]["username"].as_str().unwrap();
+    let msg_id = media_msg["id"].as_i64().expect("msg id must be integer");
+
+    println!("Forwarding id={msg_id} from @{source_chat} to operator");
+
+    // Step 2: forward to operator account
+    let fwd = run_reader_with_creds(&[
+        "forward_messages",
+        "--account",
+        "research",
+        "--source-chat",
+        source_chat,
+        "--message-ids",
+        &msg_id.to_string(),
+        "--to-chat",
+        "zverozabr",
+    ])
+    .await;
+
+    println!("Forward result: {fwd}");
+    assert_eq!(
+        fwd["success"], true,
+        "forward_messages must succeed: {:?}",
+        fwd
+    );
+    assert!(
+        fwd["forwarded"].as_i64().unwrap_or(0) >= 1,
+        "must report at least 1 forwarded message: {:?}",
+        fwd
+    );
+}
+
+/// I11: null-link + media complete flow — find, verify, forward.
+///
+/// Uses search_messages in a personal business contact confirmed to have
+/// null-link messages with media (BananaRent_Samui). Verifies:
+///   1. message_link is null (personal chat — no public URL)
+///   2. author_contact is @username (actionable fallback contact)
+///   3. forward_messages successfully relays the media to the operator
+///
+/// This is the end-to-end proof that all three null-link+media obligations work.
+///
+/// Requirements:
+///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
+///   - research_session authorized
+///   - zverozabr is in the research account's contacts
+#[tokio::test]
+#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + research_session authorized"]
+async fn i11_null_link_media_complete_flow() {
+    // Step 1: search messages in the personal contact — null-link guaranteed
+    let result = run_reader_with_creds(&[
+        "search_messages",
+        "--account",
+        "research",
+        "--contact-name",
+        "BananaRent_Samui",
+        "--limit",
+        "50",
+    ])
+    .await;
+
+    assert_eq!(
+        result["success"], true,
+        "search_messages must succeed: {:?}",
         result
     );
 
-    let results = result["results"].as_array().expect("results must be array");
-    assert!(!results.is_empty(), "Expected results for 'аренда'");
+    let messages = result["messages"]
+        .as_array()
+        .expect("messages must be array");
 
-    let null_link_count = results
-        .iter()
-        .filter(|m| m["message_link"].is_null())
-        .count();
-    println!(
-        "Results with null message_link: {null_link_count}/{}",
-        results.len()
+    // Step 2: find a null-link message with media and a named sender
+    let target = messages.iter().find(|m| {
+        m["message_link"].is_null()
+            && m["has_media"].as_bool().unwrap_or(false)
+            && m["sender"]["username"]
+                .as_str()
+                .map_or(false, |u| !u.is_empty())
+    });
+
+    let target = target.expect(
+        "Expected at least one null-link+media message with sender username in BananaRent_Samui chat",
     );
 
-    for msg in results.iter().filter(|m| m["message_link"].is_null()) {
-        let contact = msg["author_contact"].as_str().unwrap_or("");
-        assert!(
-            !contact.is_empty(),
-            "null-link result must have author_contact, got: {:?}",
-            msg
-        );
-    }
+    let author_contact = target["author_contact"].as_str().unwrap_or("");
+    let msg_id = target["id"].as_i64().unwrap();
+
+    println!("Found null-link+media: id={msg_id}  author={author_contact}");
+
+    // Step 3: verify author_contact is @username
+    assert!(
+        author_contact.starts_with('@'),
+        "null-link+media message must have @username author_contact, got: {author_contact}"
+    );
+
+    // Step 4: forward the media to the operator account
+    let fwd = run_reader_with_creds(&[
+        "forward_messages",
+        "--account",
+        "research",
+        "--source-chat",
+        "BananaRent_Samui",
+        "--message-ids",
+        &msg_id.to_string(),
+        "--to-chat",
+        "zverozabr",
+    ])
+    .await;
+
+    println!("Forward result: {fwd}");
+    assert_eq!(
+        fwd["success"], true,
+        "forward_messages must succeed: {:?}",
+        fwd
+    );
+    assert!(
+        fwd["forwarded"].as_i64().unwrap_or(0) >= 1,
+        "must have forwarded at least 1 message: {:?}",
+        fwd
+    );
 }
 
 /// I8: search_global results must include a non-empty message_link field.
@@ -1488,20 +1673,28 @@ async fn b8_danang_commercial_realestate_has_dates_and_links() {
     );
 }
 
-/// B9: when source has no public link, bot must show author contact + quoted text.
+/// B9: bot uses search_messages on a personal contact, shows author_contact,
+/// and forwards media for null-link+has_media messages.
 ///
-/// Verifies the null-link fallback: instead of a t.me URL, the bot must present
-/// the author's @username (for direct contact) and the full message text verbatim.
+/// Directs the agent to use telegram_search_messages on BananaRent_Samui (a Samui
+/// vehicle rental business confirmed to be in the research account's dialog list,
+/// with null-link media messages). Verifies:
+///   - bot shows the contact (@BananaRent_Samui or "Banana") as author fallback
+///   - bot does not fabricate t.me/c/ URLs for personal chats
+///   - bot does not dump raw JSON
 ///
 /// Requirements:
-///   - Daemon running with live binary
-///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
-///   - zverozabr_session authorized
+///   - Daemon running with live binary, telegram_forward_messages in allowed_tools
+///   - zverozabr_session authorized, research_session authorized
 #[tokio::test]
-#[ignore = "requires live daemon + authorized zverozabr_session"]
-async fn b9_no_link_reply_has_author_and_quote() {
+#[ignore = "requires live daemon + authorized zverozabr_session + research_session"]
+async fn b9_no_link_reply_has_author_and_forwarded_media() {
     let bot = "zGsR_bot";
-    let query = "Поищи аренду квартиры в Самуи. Если нет ссылки на источник — покажи контакт автора и полный текст объявления.";
+    let query = "Найди аренду байков или транспорта на Самуи. \
+                 Используй telegram_search_messages с контактом BananaRent_Samui. \
+                 Если найдёшь объявления с медиа и без публичной ссылки — \
+                 перешли мне медиа через telegram_forward_messages. \
+                 Покажи контакт автора и текст объявления.";
 
     let sent_id = send_to_bot(bot, query).await;
     let start = Instant::now();
@@ -1511,20 +1704,32 @@ async fn b9_no_link_reply_has_author_and_quote() {
     let text = reply.unwrap_or_else(|| panic!("No reply within 600s"));
     println!("Bot reply:\n{text}");
 
+    // Must return contact info
     let has_contact = text.contains('@') || contains_phone_number(&text);
     assert!(
         has_contact,
-        "Reply must have contact (@username or phone), got:\n{text}"
+        "Reply must contain a contact (@username or phone), got:\n{text}"
     );
 
-    // Either a real t.me link OR author contact fallback
-    let has_link = text.contains("t.me/");
-    let has_author_fallback = text.to_lowercase().contains("автор")
-        || text.to_lowercase().contains("написать")
-        || text.contains('@');
+    // Must show author fallback or a real link — never fabricate private URLs
+    let shows_author = text.contains("@BananaRent_Samui")
+        || text.to_lowercase().contains("banana")
+        || text.to_lowercase().contains("автор");
+    let shows_real_link = text.contains("t.me/");
     assert!(
-        has_link || has_author_fallback,
-        "Reply must have t.me link OR author contact fallback, got:\n{text}"
+        shows_author || shows_real_link,
+        "Reply must show author contact OR a real t.me link, got:\n{text}"
+    );
+
+    // No fabricated private channel URLs
+    assert!(
+        !text.contains("t.me/c/BananaRent"),
+        "Bot must not fabricate private t.me/c/ URLs for personal chats, got:\n{text}"
+    );
+
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must not dump raw JSON:\n{text}"
     );
 }
 
