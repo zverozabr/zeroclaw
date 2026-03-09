@@ -21,6 +21,11 @@ async fn execute_one_tool(
     observer.record_event(&ObserverEvent::ToolCallStart {
         tool: call_name.to_string(),
     });
+    let args_preview = {
+        let s = call_arguments.to_string();
+        if s.len() > 400 { format!("{}…", &s[..400]) } else { s }
+    };
+    tracing::info!(tool = %call_name, args = %args_preview, "tool.invoke");
     let start = Instant::now();
 
     let Some(tool) = find_tool(tools_registry, call_name) else {
@@ -62,6 +67,8 @@ async fn execute_one_tool(
                 duration,
                 success: r.success,
             });
+            let out_preview: String = scrub_credentials(&r.output).chars().take(400).collect();
+            tracing::info!(tool = %call_name, ok = r.success, ms = %duration.as_millis(), out = %out_preview, "tool.done");
             if r.success {
                 let scrubbed_output = scrub_credentials(&r.output);
                 if let Some(rec) = session_recorder {
@@ -106,6 +113,7 @@ async fn execute_one_tool(
                 duration,
                 success: false,
             });
+            tracing::info!(tool = %call_name, ok = false, ms = %duration.as_millis(), "tool.err");
             let reason = format!("Error executing {call_name}: {e}");
             let scrubbed_reason = scrub_credentials(&reason);
             if let Some(rec) = session_recorder {
