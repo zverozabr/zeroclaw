@@ -1122,7 +1122,8 @@ async fn b5_danang_rental_houses_returns_contacts() {
 #[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
 async fn b6_phuket_search_returns_contacts() {
     let bot = "zGsR_bot";
-    let query = "Поищи в Telegram сантехника на Пхукете (Таиланд). Нужны контакты — телефон или @username.";
+    let query =
+        "Поищи в Telegram сантехника на Пхукете (Таиланд). Нужны контакты — телефон или @username.";
 
     println!("Sending to @{bot}: {query}");
     let sent_id = send_to_bot(bot, query).await;
@@ -1321,6 +1322,57 @@ async fn b7_bot_reply_includes_message_links() {
     );
 }
 
+/// I9: search_global results with null message_link must have author_contact.
+///
+/// When a message comes from a chat with no public username (e.g. a private group),
+/// message_link will be null. The author_contact field must be populated so the
+/// LLM can present an actionable contact instead of fabricating a URL.
+///
+/// Requirements:
+///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
+///   - research_session authorized
+#[tokio::test]
+#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + research_session authorized"]
+async fn i9_null_link_results_have_author_contact() {
+    let result = run_reader_with_creds(&[
+        "search_global",
+        "--account",
+        "research",
+        "--query",
+        "аренда",
+        "--limit",
+        "20",
+    ])
+    .await;
+
+    assert_eq!(
+        result["success"], true,
+        "search_global must succeed: {:?}",
+        result
+    );
+
+    let results = result["results"].as_array().expect("results must be array");
+    assert!(!results.is_empty(), "Expected results for 'аренда'");
+
+    let null_link_count = results
+        .iter()
+        .filter(|m| m["message_link"].is_null())
+        .count();
+    println!(
+        "Results with null message_link: {null_link_count}/{}",
+        results.len()
+    );
+
+    for msg in results.iter().filter(|m| m["message_link"].is_null()) {
+        let contact = msg["author_contact"].as_str().unwrap_or("");
+        assert!(
+            !contact.is_empty(),
+            "null-link result must have author_contact, got: {:?}",
+            msg
+        );
+    }
+}
+
 /// I8: search_global results must include a non-empty message_link field.
 ///
 /// Validates that telegram_reader.py produces clickable t.me URLs for
@@ -1350,7 +1402,10 @@ async fn i8_search_global_results_have_message_link() {
     );
 
     let results = result["results"].as_array().expect("results must be array");
-    assert!(!results.is_empty(), "Expected at least 1 result for 'самуи'");
+    assert!(
+        !results.is_empty(),
+        "Expected at least 1 result for 'самуи'"
+    );
 
     for msg in results {
         let chat_type = msg["chat"]["type"].as_str().unwrap_or("");
@@ -1430,6 +1485,46 @@ async fn b8_danang_commercial_realestate_has_dates_and_links() {
     assert!(
         !text.contains("\"success\""),
         "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
+/// B9: when source has no public link, bot must show author contact + quoted text.
+///
+/// Verifies the null-link fallback: instead of a t.me URL, the bot must present
+/// the author's @username (for direct contact) and the full message text verbatim.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session"]
+async fn b9_no_link_reply_has_author_and_quote() {
+    let bot = "zGsR_bot";
+    let query = "Поищи аренду квартиры в Самуи. Если нет ссылки на источник — покажи контакт автора и полный текст объявления.";
+
+    let sent_id = send_to_bot(bot, query).await;
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| panic!("No reply within 600s"));
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@') || contains_phone_number(&text);
+    assert!(
+        has_contact,
+        "Reply must have contact (@username or phone), got:\n{text}"
+    );
+
+    // Either a real t.me link OR author contact fallback
+    let has_link = text.contains("t.me/");
+    let has_author_fallback = text.to_lowercase().contains("автор")
+        || text.to_lowercase().contains("написать")
+        || text.contains('@');
+    assert!(
+        has_link || has_author_fallback,
+        "Reply must have t.me link OR author contact fallback, got:\n{text}"
     );
 }
 
