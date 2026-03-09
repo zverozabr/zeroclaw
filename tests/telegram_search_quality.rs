@@ -973,6 +973,46 @@ async fn b2_iterative_search_makes_multiple_tool_calls() {
     println!("telegram_search_* calls: {search_calls}");
 }
 
+/// B5 — Da Nang rental houses: full pipeline (discover → join → search → contacts)
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b5_danang_rental_houses_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query = "Поищи в Telegram дома в аренду в Дананге (Вьетнам). Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Approximate ISO8601 date string from UNIX timestamp (no chrono dependency).
