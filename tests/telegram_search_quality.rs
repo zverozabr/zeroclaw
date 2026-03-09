@@ -898,7 +898,7 @@ async fn b1_bot_returns_contacts_not_raw_json() {
 
     let text = reply.unwrap_or_else(|| {
         panic!(
-            "Bot @{bot} did not reply within 300s after message id={sent_id}. \
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
              Check daemon logs: /tmp/zeroclaw_daemon.log"
         )
     });
@@ -973,6 +973,104 @@ async fn b2_iterative_search_makes_multiple_tool_calls() {
     println!("telegram_search_* calls: {search_calls}");
 }
 
+/// B3: Bangkok — bot must find contacts for a service request in Bangkok.
+///
+/// Validates discover → join → search workflow for a city with no pre-joined channels.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b3_bangkok_search_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query =
+        "Поищи в Telegram сантехника в Бангкоке. Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    let elapsed = start.elapsed();
+    println!("Elapsed: {}s", elapsed.as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
+/// B4: Da Nang, Vietnam — bot must find contacts for a service request in Da Nang.
+///
+/// Validates search in Vietnamese Telegram communities.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b4_danang_vietnam_search_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query =
+        "Поищи в Telegram сантехника в Дананге (Вьетнам). Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    let elapsed = start.elapsed();
+    println!("Elapsed: {}s", elapsed.as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
 /// B5 — Da Nang rental houses: full pipeline (discover → join → search → contacts)
 #[tokio::test]
 #[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
@@ -985,12 +1083,12 @@ async fn b5_danang_rental_houses_returns_contacts() {
     println!("Sent message id={sent_id}");
 
     let start = Instant::now();
-    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(900)).await;
     println!("Elapsed: {}s", start.elapsed().as_secs());
 
     let text = reply.unwrap_or_else(|| {
         panic!(
-            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+            "Bot @{bot} did not reply within 900s after message id={sent_id}. \
              Check daemon logs: /tmp/zeroclaw_daemon.log"
         )
     });

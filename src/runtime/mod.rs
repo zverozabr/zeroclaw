@@ -19,9 +19,7 @@ impl From<crate::config::WasmSecurityConfig> for wasm::WasmSecurityConfig {
                     wasm::WasmModuleHashPolicy::Disabled
                 }
                 crate::config::WasmModuleHashPolicy::Warn => wasm::WasmModuleHashPolicy::Warn,
-                crate::config::WasmModuleHashPolicy::Enforce => {
-                    wasm::WasmModuleHashPolicy::Enforce
-                }
+                crate::config::WasmModuleHashPolicy::Enforce => wasm::WasmModuleHashPolicy::Enforce,
             },
             module_sha256: s.module_sha256,
             strict_host_validation: s.strict_host_validation,

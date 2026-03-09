@@ -1533,7 +1533,15 @@ pub async fn run_tool_call_loop(
                 .unwrap_or_default();
             rec.record_prompt(iteration, &prompt_preview);
         }
-
+        if let Some(last_user_content) = request_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| m.content.as_str())
+        {
+            let preview: String = last_user_content.chars().take(300).collect();
+            tracing::info!(turn = %iteration, msg = %preview, "llm.prompt");
+        }
         observer.record_event(&ObserverEvent::LlmRequest {
             provider: provider_name.to_string(),
             model: active_model.clone(),
@@ -1773,6 +1781,10 @@ pub async fn run_tool_call_loop(
                     input_tokens: resp_input_tokens,
                     output_tokens: resp_output_tokens,
                 });
+                {
+                    let preview: String = response_text.chars().take(300).collect();
+                    tracing::info!(turn = %iteration, reply = %preview, "llm.reply");
+                }
 
                 // Place E: record LLM response for session report
                 if let Some(ref rec) = session_recorder {
