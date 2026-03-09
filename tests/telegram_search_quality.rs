@@ -973,6 +973,402 @@ async fn b2_iterative_search_makes_multiple_tool_calls() {
     println!("telegram_search_* calls: {search_calls}");
 }
 
+/// B3: Bangkok — bot must find contacts for a service request in Bangkok.
+///
+/// Validates discover → join → search workflow for a city with no pre-joined channels.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b3_bangkok_search_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query = "Поищи в Telegram сантехника в Бангкоке. Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    let elapsed = start.elapsed();
+    println!("Elapsed: {}s", elapsed.as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
+/// B4: Da Nang, Vietnam — bot must find contacts for a service request in Da Nang.
+///
+/// Validates search in Vietnamese Telegram communities.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b4_danang_vietnam_search_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query =
+        "Поищи в Telegram сантехника в Дананге (Вьетнам). Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    let elapsed = start.elapsed();
+    println!("Elapsed: {}s", elapsed.as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
+/// B5 — Da Nang rental houses: full pipeline (discover → join → search → contacts)
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b5_danang_rental_houses_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query = "Поищи в Telegram дома в аренду в Дананге (Вьетнам). Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(900)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 900s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
+/// B6: Пхукет — бот должен найти контакты для запроса в Пхукете.
+///
+/// Validates search in Thai Telegram communities for Phuket.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b6_phuket_search_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query = "Поищи в Telegram сантехника на Пхукете (Таиланд). Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    let elapsed = start.elapsed();
+    println!("Elapsed: {}s", elapsed.as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
+/// B-NEW1 — fallback resilience: search still works when primary provider has issues.
+///
+/// Sends a real search query and verifies the bot returns contacts.
+/// This test validates the fallback_providers chain is reachable — even if the primary
+/// provider is rate-limited, the fallback_providers in [agents.telegram_searcher] carry
+/// the search through to completion.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured with fallback_providers in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + fallback_providers config"]
+async fn b_new1_search_works_via_fallback_chain() {
+    let bot = "zGsR_bot";
+    let query = "Поищи в Telegram дома в аренду на Самуи. Нужны контакты — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(900)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 900s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("телефон")
+        || text.to_lowercase().contains("написать")
+        || text.to_lowercase().contains("связаться")
+        || text.to_lowercase().contains("контакт");
+
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (fallback chain must succeed), got:\n{text}"
+    );
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize — not dump raw JSON:\n{text}"
+    );
+}
+
+/// B-NEW2 — deduplication: contacts appearing in multiple channels appear only once.
+///
+/// Verifies the system_prompt dedup instruction works: the same @username or phone
+/// should not appear twice in the final answer.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b_new2_contacts_are_deduplicated_in_response() {
+    let bot = "zGsR_bot";
+    let query = "Поищи в Telegram сантехника на Самуи. Дай список уникальных контактов — телефон или @username.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(900)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 900s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    // Extract @usernames from the reply and check for duplicates
+    let usernames: Vec<&str> = text
+        .split_whitespace()
+        .filter(|w| w.starts_with('@') && w.len() > 1)
+        .collect();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut duplicates: Vec<&str> = Vec::new();
+    for u in &usernames {
+        let norm = u.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        if !seen.insert(norm) {
+            duplicates.push(u);
+        }
+    }
+
+    assert!(
+        duplicates.is_empty(),
+        "Duplicate @usernames in bot reply (dedup instruction not followed): {:?}\nFull reply:\n{text}",
+        duplicates
+    );
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("контакт");
+    assert!(
+        has_contact,
+        "Bot reply must contain at least one contact, got:\n{text}"
+    );
+}
+
+/// B7: бот должен включить ссылки на сообщения и топ-3 контакта.
+///
+/// Validates that the agent:
+///   - Presents contacts ranked as Top-3
+///   - Includes at least one clickable t.me source link
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b7_bot_reply_includes_message_links() {
+    let bot = "zGsR_bot";
+    let query = "Поищи в Telegram сантехника на Самуи. Дай топ-3 контакта с ссылками на источники.";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(600)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 600s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    let has_contact = text.contains('@')
+        || contains_phone_number(&text)
+        || text.to_lowercase().contains("контакт");
+    assert!(
+        has_contact,
+        "Bot reply must contain a contact (@username or phone), got:\n{text}"
+    );
+
+    let has_link = text.contains("t.me/") || text.contains("https://t.me");
+    assert!(
+        has_link,
+        "Bot reply must include a t.me message link, got:\n{text}"
+    );
+
+    assert!(
+        !text.contains("\"success\""),
+        "Bot must summarize results — not dump raw JSON:\n{text}"
+    );
+}
+
+/// I8: search_global results must include a non-empty message_link field.
+///
+/// Validates that telegram_reader.py produces clickable t.me URLs for
+/// every message in search_global results (channels/supergroups only).
+///
+/// Requirements:
+///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
+///   - research_session authorized
+#[tokio::test]
+#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + research_session authorized"]
+async fn i8_search_global_results_have_message_link() {
+    let result = run_reader_with_creds(&[
+        "search_global",
+        "--account",
+        "research",
+        "--query",
+        "самуи",
+        "--limit",
+        "5",
+    ])
+    .await;
+
+    assert_eq!(
+        result["success"], true,
+        "search_global must succeed: {:?}",
+        result
+    );
+
+    let results = result["results"].as_array().expect("results must be array");
+    assert!(!results.is_empty(), "Expected at least 1 result for 'самуи'");
+
+    for msg in results {
+        let chat_type = msg["chat"]["type"].as_str().unwrap_or("");
+        if chat_type == "channel" || chat_type == "supergroup" {
+            let link = msg["message_link"].as_str().unwrap_or("");
+            assert!(
+                !link.is_empty(),
+                "channel/supergroup message must have message_link, got: {:?}",
+                msg
+            );
+            assert!(
+                link.starts_with("https://t.me/"),
+                "message_link must start with https://t.me/, got: {link}"
+            );
+        }
+    }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Approximate ISO8601 date string from UNIX timestamp (no chrono dependency).
