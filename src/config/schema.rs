@@ -3204,6 +3204,11 @@ pub struct ObservabilityConfig {
     /// Maximum entries retained when runtime_trace_mode = "rolling".
     #[serde(default = "default_runtime_trace_max_entries")]
     pub runtime_trace_max_entries: usize,
+
+    /// Directory to write per-session JSON reports.
+    /// If None (default), no reports are written.
+    #[serde(default)]
+    pub session_report_dir: Option<String>,
 }
 
 impl Default for ObservabilityConfig {
@@ -3215,6 +3220,7 @@ impl Default for ObservabilityConfig {
             runtime_trace_mode: default_runtime_trace_mode(),
             runtime_trace_path: default_runtime_trace_path(),
             runtime_trace_max_entries: default_runtime_trace_max_entries(),
+            session_report_dir: None,
         }
     }
 }
