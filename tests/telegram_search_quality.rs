@@ -1400,18 +1400,23 @@ async fn i9_null_link_results_have_author_contact() {
     }
 }
 
-/// I10: forward_messages forwards a media message to the target user.
+/// I10: bot_send_media sends a media message to the operator's bot chat via Bot API.
 ///
 /// Picks a message with has_media=true from search_global (any public channel),
-/// then calls forward_messages to relay it to the operator account.
+/// then calls bot_send_media to deliver it through the Bot API so it appears
+/// in the user's chat with @zGsR_bot (not as a separate DM).
 ///
 /// Requirements:
 ///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
+///   - TELEGRAM_BOT_TOKEN in env (plaintext bot token)
+///   - TELEGRAM_OPERATOR_CHAT_ID in env (numeric Telegram user ID of the operator)
 ///   - research_session authorized
-///   - zverozabr is in the research account's contacts
 #[tokio::test]
-#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + research_session authorized"]
-async fn i10_forward_messages_relays_media() {
+#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_CHAT_ID"]
+async fn i10_bot_send_media_delivers_to_bot_chat() {
+    let operator_chat_id = std::env::var("TELEGRAM_OPERATOR_CHAT_ID")
+        .expect("TELEGRAM_OPERATOR_CHAT_ID env var required");
+
     // Step 1: find a message with media from any joined channel
     let search = run_reader_with_creds(&[
         "search_global",
@@ -1439,11 +1444,11 @@ async fn i10_forward_messages_relays_media() {
     let source_chat = media_msg["chat"]["username"].as_str().unwrap();
     let msg_id = media_msg["id"].as_i64().expect("msg id must be integer");
 
-    println!("Forwarding id={msg_id} from @{source_chat} to operator");
+    println!("Sending id={msg_id} from @{source_chat} via Bot API to chat {operator_chat_id}");
 
-    // Step 2: forward to operator account
-    let fwd = run_reader_with_creds(&[
-        "forward_messages",
+    // Step 2: send via Bot API — media arrives in user's bot chat
+    let result = run_reader_with_creds(&[
+        "bot_send_media",
         "--account",
         "research",
         "--source-chat",
@@ -1451,40 +1456,45 @@ async fn i10_forward_messages_relays_media() {
         "--message-ids",
         &msg_id.to_string(),
         "--to-chat",
-        "zverozabr",
+        &operator_chat_id,
     ])
     .await;
 
-    println!("Forward result: {fwd}");
+    println!("bot_send_media result: {result}");
     assert_eq!(
-        fwd["success"], true,
-        "forward_messages must succeed: {:?}",
-        fwd
+        result["success"], true,
+        "bot_send_media must succeed: {:?}",
+        result
     );
     assert!(
-        fwd["forwarded"].as_i64().unwrap_or(0) >= 1,
-        "must report at least 1 forwarded message: {:?}",
-        fwd
+        result["sent"].as_i64().unwrap_or(0) >= 1,
+        "must report at least 1 sent message: {:?}",
+        result
     );
 }
 
-/// I11: null-link + media complete flow — find, verify, forward.
+/// I11: null-link + media complete flow — find, verify, send via bot.
 ///
 /// Uses search_messages in a personal business contact confirmed to have
 /// null-link messages with media (BananaRent_Samui). Verifies:
 ///   1. message_link is null (personal chat — no public URL)
 ///   2. author_contact is @username (actionable fallback contact)
-///   3. forward_messages successfully relays the media to the operator
+///   3. bot_send_media delivers the photo via Bot API to the operator's bot chat
 ///
-/// This is the end-to-end proof that all three null-link+media obligations work.
+/// This is the end-to-end proof that all three null-link+media obligations work
+/// and media appears in the user's @zGsR_bot chat (not a separate DM).
 ///
 /// Requirements:
 ///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
+///   - TELEGRAM_BOT_TOKEN in env (plaintext bot token)
+///   - TELEGRAM_OPERATOR_CHAT_ID in env (numeric Telegram user ID of the operator)
 ///   - research_session authorized
-///   - zverozabr is in the research account's contacts
 #[tokio::test]
-#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + research_session authorized"]
+#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_CHAT_ID"]
 async fn i11_null_link_media_complete_flow() {
+    let operator_chat_id = std::env::var("TELEGRAM_OPERATOR_CHAT_ID")
+        .expect("TELEGRAM_OPERATOR_CHAT_ID env var required");
+
     // Step 1: search messages in the personal contact — null-link guaranteed
     let result = run_reader_with_creds(&[
         "search_messages",
@@ -1531,9 +1541,9 @@ async fn i11_null_link_media_complete_flow() {
         "null-link+media message must have @username author_contact, got: {author_contact}"
     );
 
-    // Step 4: forward the media to the operator account
+    // Step 4: send via Bot API — media arrives in the user's bot chat, not a separate DM
     let fwd = run_reader_with_creds(&[
-        "forward_messages",
+        "bot_send_media",
         "--account",
         "research",
         "--source-chat",
@@ -1541,19 +1551,19 @@ async fn i11_null_link_media_complete_flow() {
         "--message-ids",
         &msg_id.to_string(),
         "--to-chat",
-        "zverozabr",
+        &operator_chat_id,
     ])
     .await;
 
-    println!("Forward result: {fwd}");
+    println!("bot_send_media result: {fwd}");
     assert_eq!(
         fwd["success"], true,
-        "forward_messages must succeed: {:?}",
+        "bot_send_media must succeed: {:?}",
         fwd
     );
     assert!(
-        fwd["forwarded"].as_i64().unwrap_or(0) >= 1,
-        "must have forwarded at least 1 message: {:?}",
+        fwd["sent"].as_i64().unwrap_or(0) >= 1,
+        "must have sent at least 1 message via Bot API: {:?}",
         fwd
     );
 }
