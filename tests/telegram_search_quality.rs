@@ -869,6 +869,17 @@ fn contains_phone_number(text: &str) -> bool {
     digits.len() >= 10
 }
 
+/// Returns true if the text contains at least one "Дата: YYYY-MM-DD" style field.
+fn has_date_field(text: &str) -> bool {
+    text.contains("Дата:") && text.contains("202")
+}
+
+/// Returns true if the text contains "Источник: https://t.me/..." or "Источник: недоступна".
+fn has_source_field(text: &str) -> bool {
+    text.contains("Источник:")
+        && (text.contains("t.me/") || text.to_lowercase().contains("недоступна"))
+}
+
 /// B1: bot must return actual contact info (phone or @username), not just raw JSON.
 ///
 /// The sub-agent (codex-1) should iterate over search results, extract contacts,
@@ -916,6 +927,8 @@ async fn b1_bot_returns_contacts_not_raw_json() {
         has_contact,
         "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
 
     // Must NOT dump raw tool JSON
     assert!(
@@ -1015,6 +1028,8 @@ async fn b3_bangkok_search_returns_contacts() {
         has_contact,
         "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
     assert!(
         !text.contains("\"success\""),
         "Bot must summarize results — not dump raw JSON:\n{text}"
@@ -1064,6 +1079,8 @@ async fn b4_danang_vietnam_search_returns_contacts() {
         has_contact,
         "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
     assert!(
         !text.contains("\"success\""),
         "Bot must summarize results — not dump raw JSON:\n{text}"
@@ -1104,6 +1121,8 @@ async fn b5_danang_rental_houses_returns_contacts() {
         has_contact,
         "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
     assert!(
         !text.contains("\"success\""),
         "Bot must summarize results — not dump raw JSON:\n{text}"
@@ -1153,6 +1172,8 @@ async fn b6_phuket_search_returns_contacts() {
         has_contact,
         "Bot reply must contain a contact (@username, phone, or contact phrase), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
     assert!(
         !text.contains("\"success\""),
         "Bot must summarize results — not dump raw JSON:\n{text}"
@@ -1203,6 +1224,8 @@ async fn b_new1_search_works_via_fallback_chain() {
         has_contact,
         "Bot reply must contain a contact (fallback chain must succeed), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
     assert!(
         !text.contains("\"success\""),
         "Bot must summarize — not dump raw JSON:\n{text}"
@@ -1268,6 +1291,8 @@ async fn b_new2_contacts_are_deduplicated_in_response() {
         has_contact,
         "Bot reply must contain at least one contact, got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
 }
 
 /// B7: бот должен включить ссылки на сообщения и топ-3 контакта.
@@ -1309,6 +1334,8 @@ async fn b7_bot_reply_includes_message_links() {
         has_contact,
         "Bot reply must contain a contact (@username or phone), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
 
     let has_link = text.contains("t.me/") || text.contains("https://t.me");
     assert!(
@@ -1659,6 +1686,8 @@ async fn b8_danang_commercial_realestate_has_dates_and_links() {
         has_contact,
         "Bot reply must contain a contact (@username or phone), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
 
     let has_link = text.contains("t.me/") || text.contains("https://t.me");
     assert!(
@@ -1720,6 +1749,8 @@ async fn b9_no_link_reply_has_author_and_forwarded_media() {
         has_contact,
         "Reply must contain a contact (@username or phone), got:\n{text}"
     );
+    assert!(has_date_field(&text),   "Ответ должен содержать Дата: YYYY-MM-DD, получено:\n{text}");
+    assert!(has_source_field(&text), "Ответ должен содержать Источник: t.me/... или недоступна, получено:\n{text}");
 
     // Must show author fallback or a real link — never fabricate private URLs
     let shows_author = text.contains("@BananaRent_Samui")
