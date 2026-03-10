@@ -324,6 +324,9 @@ pub(super) fn is_xml_meta_tag(tag: &str) -> bool {
             | "analysis"
             | "reasoning"
             | "reflection"
+            | "tool_result"
+            | "tool-result"
+            | "toolresult"
     )
 }
 
@@ -1800,5 +1803,14 @@ mod tests {
         let response = r#"<tool_call>shell["echo hi"]</tool_call>"#;
         let (_text, calls) = parse_tool_calls(response);
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_calls_ignores_embedded_tool_result_tag() {
+        let response = r#"<tool_call>{"name":"shell","arguments":{"command":"ls"}}</tool_call>
+<tool_result>{"status":"success","stdout":"file.txt"}</tool_result>"#;
+        let (_, calls) = parse_tool_calls(response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell");
     }
 }
