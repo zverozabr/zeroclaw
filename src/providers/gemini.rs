@@ -975,6 +975,11 @@ impl GeminiProvider {
             || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
             || status.is_server_error()
             || error_text.contains("RESOURCE_EXHAUSTED")
+            // Expired OAuth tokens often surface as 400 INVALID_ARGUMENT
+            // "API key not valid" — force token refresh rather than retrying
+            // with the same stale credential.
+            || (status == reqwest::StatusCode::BAD_REQUEST
+                && error_text.to_lowercase().contains("api key not valid"))
     }
 
     fn parse_inline_image_marker(image_ref: &str) -> Option<InlineDataPart> {
@@ -1149,8 +1154,10 @@ impl GeminiProvider {
                         }
                         GeminiAuth::ManagedOAuth => {
                             let auth_service = self.auth_service.as_ref().unwrap();
+                            // Force-refresh: the server rejected the current token
+                            // (e.g. expired OAuth masquerading as "API key not valid").
                             let token = auth_service
-                                .get_valid_gemini_access_token(
+                                .force_refresh_gemini_access_token(
                                     self.auth_profile_override.as_deref(),
                                 )
                                 .await?
@@ -2277,6 +2284,22 @@ mod tests {
         }));
         let provider = test_provider(Some(GeminiAuth::OAuthToken(state.clone())));
         assert!(!provider.rotate_oauth_credential(&state).await);
+    }
+
+    #[test]
+    fn should_rotate_on_api_key_not_valid() {
+        assert!(GeminiProvider::should_rotate_oauth_on_error(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}"#,
+        ));
+    }
+
+    #[test]
+    fn should_not_rotate_on_generic_bad_request() {
+        assert!(!GeminiProvider::should_rotate_oauth_on_error(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"code":400,"message":"Invalid JSON payload","status":"INVALID_ARGUMENT"}}"#,
+        ));
     }
 
     #[test]

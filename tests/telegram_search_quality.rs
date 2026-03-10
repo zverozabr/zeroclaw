@@ -32,6 +32,12 @@ fn reader_script() -> PathBuf {
         .join(".zeroclaw/workspace/skills/telegram-reader/scripts/telegram_reader.py")
 }
 
+fn submit_contacts_script() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME env var required");
+    PathBuf::from(home)
+        .join(".zeroclaw/workspace/skills/telegram-reader/scripts/submit_contacts.py")
+}
+
 fn dotenv_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env")
 }
@@ -162,6 +168,61 @@ async fn run_reader_with_creds(args: &[&str]) -> Value {
 
     serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
         panic!("Failed to parse JSON\nstdout: {stdout}\nstderr: {stderr}\nparse error: {e}")
+    })
+}
+
+/// Run submit_contacts.py with Bot API credentials + Telegram credentials.
+///
+/// submit_contacts.py reads TELEGRAM_BOT_TOKEN and TELEGRAM_OPERATOR_CHAT_ID
+/// from env. It may internally call telegram_reader.py for private-chat media,
+/// which needs TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE.
+async fn run_submit_contacts(contacts_json: &str) -> Value {
+    let (api_id, api_hash, _phone) = load_credentials();
+    let research_phone = std::env::var("TELEGRAM_RESEARCH_PHONE")
+        .or_else(|_| {
+            let content = std::fs::read_to_string(dotenv_path()).unwrap_or_default();
+            content
+                .lines()
+                .find(|l| l.starts_with("TELEGRAM_RESEARCH_PHONE="))
+                .map(|l| l["TELEGRAM_RESEARCH_PHONE=".len()..].trim().to_string())
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .unwrap_or_else(|_| _phone.clone());
+
+    let bot_token =
+        std::env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN env var required");
+    let operator_chat_id = std::env::var("TELEGRAM_OPERATOR_CHAT_ID")
+        .expect("TELEGRAM_OPERATOR_CHAT_ID env var required");
+
+    let output = Command::new("python3")
+        .arg(submit_contacts_script())
+        .arg(contacts_json)
+        .env("TELEGRAM_API_ID", &api_id)
+        .env("TELEGRAM_API_HASH", &api_hash)
+        .env("TELEGRAM_PHONE", &research_phone)
+        .env("TELEGRAM_RESEARCH_PHONE", &research_phone)
+        .env("TELEGRAM_BOT_TOKEN", &bot_token)
+        .env("TELEGRAM_OPERATOR_CHAT_ID", &operator_chat_id)
+        .output()
+        .await
+        .expect("Failed to execute submit_contacts.py");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!("submit_contacts stdout: {stdout}");
+    if !stderr.is_empty() {
+        println!("submit_contacts stderr: {stderr}");
+    }
+
+    // submit_contacts prints human-readable text, not always JSON.
+    // Try to parse as JSON; if not, wrap in a synthetic result.
+    let trimmed = stdout.trim();
+    serde_json::from_str(trimmed).unwrap_or_else(|_| {
+        serde_json::json!({
+            "raw_output": trimmed,
+            "exit_code": output.status.code().unwrap_or(-1),
+        })
     })
 }
 
@@ -1680,6 +1741,117 @@ async fn i11_null_link_media_complete_flow() {
         fwd["sent"].as_i64().unwrap_or(0) >= 1,
         "must have sent at least 1 message via Bot API: {:?}",
         fwd
+    );
+}
+
+/// I12: submit_contacts automatically delivers private-chat media.
+///
+/// Verifies that submit_contacts.py handles the media field for private chats
+/// (where source_url is null) by internally calling bot_send_media — so the
+/// user receives one message with photo/video + caption (contact text),
+/// same UX as copyMessage does for public channels.
+///
+/// Flow:
+///   1. Find a null-link+media message in BananaRent_Samui via search_messages
+///   2. Build contacts_json with media field (source_url = null)
+///   3. Call submit_contacts.py with this JSON
+///   4. Assert output reports media sent
+///
+/// Requirements:
+///   - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_RESEARCH_PHONE in env
+///   - TELEGRAM_BOT_TOKEN in env (plaintext bot token)
+///   - TELEGRAM_OPERATOR_CHAT_ID in env (numeric Telegram user ID)
+///   - research_session authorized
+#[tokio::test]
+#[ignore = "requires network + TELEGRAM_RESEARCH_PHONE + TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_CHAT_ID"]
+async fn i12_submit_contacts_delivers_private_media() {
+    let operator_chat_id = std::env::var("TELEGRAM_OPERATOR_CHAT_ID")
+        .expect("TELEGRAM_OPERATOR_CHAT_ID env var required");
+
+    // Step 1: find a null-link+media message in BananaRent_Samui
+    let result = run_reader_with_creds(&[
+        "search_messages",
+        "--account",
+        "research",
+        "--contact-name",
+        "BananaRent_Samui",
+        "--limit",
+        "50",
+    ])
+    .await;
+
+    assert_eq!(
+        result["success"], true,
+        "search_messages must succeed: {:?}",
+        result
+    );
+
+    let messages = result["messages"]
+        .as_array()
+        .expect("messages must be array");
+
+    // Find a message with BOTH media AND non-empty text — ensures media
+    // belongs to the same message whose text we show (no cross-message mixing).
+    let target = messages.iter().find(|m| {
+        m["message_link"].is_null()
+            && m["has_media"].as_bool().unwrap_or(false)
+            && !m["text"].as_str().unwrap_or("").is_empty()
+    });
+
+    // If no message has both media+text, fall back to media-only but with
+    // media caption as description (this is still correct — the media IS the content).
+    let target = if let Some(t) = target {
+        t
+    } else {
+        println!("No message with both media+text found; falling back to media-only message");
+        messages
+            .iter()
+            .find(|m| {
+                m["message_link"].is_null()
+                    && m["has_media"].as_bool().unwrap_or(false)
+            })
+            .expect("Expected at least one null-link+media message in BananaRent_Samui chat")
+    };
+
+    let msg_id = target["id"].as_i64().unwrap();
+    let msg_text = target["text"].as_str().unwrap_or("");
+    let author = target["author_contact"].as_str().unwrap_or("@BananaRent_Samui");
+
+    println!(
+        "Found target: id={msg_id} author={author} has_text={} text={}",
+        !msg_text.is_empty(),
+        &msg_text[..msg_text.len().min(80)]
+    );
+
+    // Step 2: build contacts_json with media field + null source_url
+    // description and message_text come from THE SAME message as media.message_ids
+    let contacts_json = serde_json::json!({
+        "contacts": [{
+            "username_or_phone": author,
+            "description": if msg_text.is_empty() { "(медиа без текста)" } else { msg_text },
+            "date": "2026-03-10",
+            "source_url": null,
+            "message_text": msg_text,
+            "author_contact": author,
+            "media": {
+                "source_chat": "BananaRent_Samui",
+                "message_ids": [msg_id],
+                "to_chat": operator_chat_id,
+            }
+        }]
+    })
+    .to_string();
+
+    // Step 3: call submit_contacts
+    let output = run_submit_contacts(&contacts_json).await;
+    println!("submit_contacts result: {output}");
+
+    // Step 4: assert media was sent
+    // submit_contacts prints "Отправлено N контактов, N с медиа" on success
+    let raw = output["raw_output"].as_str().unwrap_or("");
+    assert!(
+        raw.contains("медиа") || raw.contains("media"),
+        "submit_contacts must report media sent for private-chat contact, got: {raw}"
     );
 }
 

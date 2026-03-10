@@ -253,6 +253,28 @@ impl AuthService {
         &self,
         profile_override: Option<&str>,
     ) -> Result<Option<String>> {
+        self.get_valid_gemini_access_token_inner(profile_override, false)
+            .await
+    }
+
+    /// Force-refresh the Gemini OAuth token regardless of local expiry.
+    ///
+    /// Use when the server rejects the token (e.g. "API key not valid")
+    /// but the local expiry hasn't passed yet (clock skew, server-side revocation).
+    pub async fn force_refresh_gemini_access_token(
+        &self,
+        profile_override: Option<&str>,
+    ) -> Result<Option<String>> {
+        tracing::info!("Forcing Gemini OAuth token refresh (server rejected current token)");
+        self.get_valid_gemini_access_token_inner(profile_override, true)
+            .await
+    }
+
+    async fn get_valid_gemini_access_token_inner(
+        &self,
+        profile_override: Option<&str>,
+        force_refresh: bool,
+    ) -> Result<Option<String>> {
         let data = self.store.load().await?;
         let Some(profile_id) = select_profile_id(&data, GEMINI_PROVIDER, profile_override) else {
             return Ok(None);
@@ -266,7 +288,9 @@ impl AuthService {
             anyhow::bail!("Gemini auth profile is not OAuth-based: {profile_id}");
         };
 
-        if !token_set.is_expiring_within(Duration::from_secs(OPENAI_REFRESH_SKEW_SECS)) {
+        if !force_refresh
+            && !token_set.is_expiring_within(Duration::from_secs(OPENAI_REFRESH_SKEW_SECS))
+        {
             return Ok(Some(token_set.access_token.clone()));
         }
 
@@ -290,7 +314,9 @@ impl AuthService {
             anyhow::bail!("Gemini auth profile is missing token set: {profile_id}");
         };
 
-        if !latest_tokens.is_expiring_within(Duration::from_secs(OPENAI_REFRESH_SKEW_SECS)) {
+        if !force_refresh
+            && !latest_tokens.is_expiring_within(Duration::from_secs(OPENAI_REFRESH_SKEW_SECS))
+        {
             return Ok(Some(latest_tokens.access_token.clone()));
         }
 
