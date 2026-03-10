@@ -28,6 +28,13 @@ fn is_non_retryable(err: &anyhow::Error) -> bool {
         return true;
     }
 
+    // Gemini sometimes returns 400 INVALID_ARGUMENT "API key not valid" for
+    // transient rate-limit conditions instead of a proper 429.  Treat this
+    // specific error as retryable so the backoff loop can wait out the window.
+    if msg_lower.contains("api key not valid") {
+        return false; // retryable
+    }
+
     // 4xx errors are generally non-retryable (bad request, auth failure, etc.),
     // except 429 (rate-limit — transient) and 408 (timeout — worth retrying).
     if let Some(reqwest_err) = err.downcast_ref::<reqwest::Error>() {
@@ -605,6 +612,25 @@ impl Provider for ReliableProvider {
 
         for current_model in &models {
             for (provider_index, (provider_name, provider)) in self.providers.iter().enumerate() {
+                // Skip providers that don't support native tools when tools are requested.
+                // A provider without native tool support would silently return text-only
+                // responses, causing malformed XML parsing downstream.
+                if !tools.is_empty() && !provider.supports_native_tools() {
+                    tracing::warn!(
+                        provider = provider_name,
+                        "chat_with_tools: skipping provider — does not support native tools"
+                    );
+                    push_failure(
+                        &mut failures,
+                        provider_name,
+                        current_model,
+                        1,
+                        1,
+                        "skipped",
+                        "provider does not support native tools",
+                    );
+                    continue;
+                }
                 let sent_models =
                     self.provider_model_chain(current_model, provider_name, provider_index == 0);
                 for sent_model in sent_models {
