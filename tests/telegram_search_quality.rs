@@ -1500,15 +1500,22 @@ async fn b_new2_contacts_are_deduplicated_in_response() {
     });
     println!("Bot reply:\n{text}");
 
-    // Extract @usernames from the reply and check for duplicates
-    let usernames: Vec<&str> = text
-        .split_whitespace()
-        .filter(|w| w.starts_with('@') && w.len() > 1)
+    // Extract @usernames from contact-header lines only (first line of each \n\n block).
+    // Checking the full text would falsely flag usernames that appear as author metadata
+    // (e.g. "Автор: @username") for null-link contacts.
+    let contact_usernames: Vec<&str> = text
+        .split("\n\n")
+        .filter_map(|block| block.lines().next())
+        .flat_map(|line| {
+            line.split_whitespace()
+                .filter(|w| w.starts_with('@') && w.len() > 1)
+                .collect::<Vec<_>>()
+        })
         .collect();
 
     let mut seen = std::collections::HashSet::new();
     let mut duplicates: Vec<&str> = Vec::new();
-    for u in &usernames {
+    for u in &contact_usernames {
         let norm = u.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
         if !seen.insert(norm) {
             duplicates.push(u);
@@ -1517,7 +1524,7 @@ async fn b_new2_contacts_are_deduplicated_in_response() {
 
     assert!(
         duplicates.is_empty(),
-        "Duplicate @usernames in bot reply (dedup instruction not followed): {:?}\nFull reply:\n{text}",
+        "Duplicate @usernames in contact headers (dedup instruction not followed): {:?}\nFull reply:\n{text}",
         duplicates
     );
 
@@ -2203,7 +2210,9 @@ fn assert_contacts_verbatim_in_quotes(text: &str) {
     for block in &blocks {
         let first_line = block.lines().next().unwrap_or("");
 
-        // Extract contact from **@username** or **+phone** pattern in first line
+        // Extract contact from **@username** or **+phone** pattern in first line.
+        // Also handles bare @username / +phone when Telegram strips bold markers
+        // due to markdown parse failures (e.g. usernames with __ triggers italic).
         let contact = if let Some(start) = first_line.find("**@") {
             let rest = &first_line[start + 2..];
             let end = rest.find("**").unwrap_or(rest.len());
@@ -2213,6 +2222,26 @@ fn assert_contacts_verbatim_in_quotes(text: &str) {
             let end = rest.find("**").unwrap_or(rest.len());
             let candidate = &rest[..end];
             // Only treat as phone if mostly digits
+            if candidate.chars().filter(|c| c.is_ascii_digit()).count() >= 7 {
+                candidate.to_string()
+            } else {
+                continue;
+            }
+        } else if first_line.starts_with('@') {
+            // Bare @username — bold markers stripped by Telegram (e.g. __ in username)
+            let end = first_line
+                .find(|c: char| c == ' ')
+                .unwrap_or(first_line.len());
+            // Strip trailing markdown noise (* and _) that Telegram leaves from failed parsing
+            first_line[..end]
+                .trim_end_matches(|c: char| c == '*' || c == '_')
+                .to_string()
+        } else if first_line.starts_with('+') {
+            // Bare +phone — bold markers stripped
+            let end = first_line
+                .find(|c: char| c == ' ' || c == '*')
+                .unwrap_or(first_line.len());
+            let candidate = first_line[..end].trim_end_matches('*');
             if candidate.chars().filter(|c| c.is_ascii_digit()).count() >= 7 {
                 candidate.to_string()
             } else {
