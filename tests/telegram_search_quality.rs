@@ -1401,6 +1401,13 @@ async fn b6_phuket_search_returns_contacts() {
         !text.contains("\"success\""),
         "Bot must summarize results — not dump raw JSON:\n{text}"
     );
+    // Geo check: if contacts found, none should come from Самуи-specific channels
+    // (soft check — just log, don't fail, since it's hard to enforce via text parsing)
+    if text.contains("SamuiGroup") || text.contains("samui0") || text.contains("samui3") {
+        println!(
+            "WARNING b6: reply mentions Самуи channels — possible geo mismatch:\n{text}"
+        );
+    }
 }
 
 /// B-NEW1 — fallback resilience: search still works when primary provider has issues.
