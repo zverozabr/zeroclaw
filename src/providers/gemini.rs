@@ -971,15 +971,18 @@ impl GeminiProvider {
     }
 
     fn should_rotate_oauth_on_error(status: reqwest::StatusCode, error_text: &str) -> bool {
-        status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-            || status.is_server_error()
-            || error_text.contains("RESOURCE_EXHAUSTED")
+        // NOTE: 429 TOO_MANY_REQUESTS and RESOURCE_EXHAUSTED are rate-limit errors,
+        // NOT token expiry. OAuth refresh does not help and wastes time before fallback.
+        // Only refresh when the token itself is rejected (400 "API key not valid",
+        // 401 Unauthorized, 503 Service Unavailable, or other server errors).
+        status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || (status.is_server_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS)
             // Expired OAuth tokens often surface as 400 INVALID_ARGUMENT
             // "API key not valid" — force token refresh rather than retrying
             // with the same stale credential.
             || (status == reqwest::StatusCode::BAD_REQUEST
                 && error_text.to_lowercase().contains("api key not valid"))
+            || status == reqwest::StatusCode::UNAUTHORIZED
     }
 
     fn parse_inline_image_marker(image_ref: &str) -> Option<InlineDataPart> {
