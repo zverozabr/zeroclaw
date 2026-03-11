@@ -433,12 +433,17 @@ fn interruption_scope_key(msg: &traits::ChannelMessage) -> String {
 ///
 /// The id format is `"telegram_{chat_id}_{message_id}"`.  Returns `Some(message_id)`
 /// when the prefix is `"telegram"`, or `None` for any other channel format.
+///
+/// Callback query IDs have format `"telegram_cb_{chat_id}_{message_id}_{callback_id}"` and
+/// are excluded (not reply-able messages).
 fn extract_telegram_message_id(channel_msg_id: &str) -> Option<String> {
+    // Format: "telegram_{chat_id}_{message_id}"
+    // Callback format "telegram_cb_{...}" is excluded (not a reply-able message)
     let mut parts = channel_msg_id.splitn(3, '_');
     let prefix = parts.next()?;
-    let _chat_id = parts.next()?;
+    let chat_id_part = parts.next()?;
     let msg_id = parts.next()?;
-    if prefix == "telegram" {
+    if prefix == "telegram" && chat_id_part != "cb" {
         Some(msg_id.to_string())
     } else {
         None
