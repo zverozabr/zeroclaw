@@ -1158,7 +1158,7 @@ pub struct AgentSessionConfig {
 }
 
 fn default_agent_max_tool_iterations() -> usize {
-    20
+    10
 }
 
 fn default_agent_max_history_messages() -> usize {
@@ -1208,7 +1208,7 @@ fn default_safety_heartbeat_turn_interval() -> usize {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            compact_context: true,
+            compact_context: false,
             session: AgentSessionConfig::default(),
             max_tool_iterations: default_agent_max_tool_iterations(),
             max_history_messages: default_agent_max_history_messages(),
@@ -10821,8 +10821,8 @@ reasoning_level = "high"
     #[test]
     async fn agent_config_defaults() {
         let cfg = AgentConfig::default();
-        assert!(cfg.compact_context);
-        assert_eq!(cfg.max_tool_iterations, 20);
+        assert!(!cfg.compact_context);
+        assert_eq!(cfg.max_tool_iterations, 10);
         assert_eq!(cfg.max_history_messages, 50);
         assert!(!cfg.parallel_tools);
         assert_eq!(cfg.tool_dispatcher, "auto");
