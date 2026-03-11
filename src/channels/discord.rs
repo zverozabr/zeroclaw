@@ -2076,6 +2076,7 @@ mod tests {
         transcription.enabled = true;
         transcription.api_url = format!("http://{addr}/transcribe");
         transcription.model = "whisper-test".to_string();
+        transcription.api_key = Some("test-key".to_string());
 
         let client = reqwest::Client::new();
         let attachments = vec![serde_json::json!({

@@ -281,6 +281,15 @@ fn try_extract_pdf_text(_bytes: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::security::{AutonomyLevel, SecurityPolicy};
+    use std::sync::Once;
+
+    static INIT_CRYPTO: Once = Once::new();
+
+    fn ensure_crypto() {
+        INIT_CRYPTO.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
 
     fn test_security(workspace: std::path::PathBuf) -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy {
@@ -1208,6 +1217,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires valid OpenAI Codex OAuth credentials"]
     async fn e2e_live_file_read_pdf() {
+        ensure_crypto();
         use crate::agent::agent::Agent;
         use crate::agent::dispatcher::XmlToolDispatcher;
         use crate::providers::openai_codex::OpenAiCodexProvider;
