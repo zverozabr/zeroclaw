@@ -2265,16 +2265,16 @@ fn assert_contacts_verbatim_in_quotes(text: &str) {
         } else if first_line.starts_with('@') {
             // Bare @username — bold markers stripped by Telegram (e.g. __ in username)
             let end = first_line
-                .find(|c: char| c == ' ')
+                .find(' ')
                 .unwrap_or(first_line.len());
             // Strip trailing markdown noise (* and _) that Telegram leaves from failed parsing
             first_line[..end]
-                .trim_end_matches(|c: char| c == '*' || c == '_')
+                .trim_end_matches(['*', '_'])
                 .to_string()
         } else if first_line.starts_with('+') {
             // Bare +phone — bold markers stripped
             let end = first_line
-                .find(|c: char| c == ' ' || c == '*')
+                .find([' ', '*'])
                 .unwrap_or(first_line.len());
             let candidate = first_line[..end].trim_end_matches('*');
             if candidate.chars().filter(|c| c.is_ascii_digit()).count() >= 7 {

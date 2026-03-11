@@ -22,6 +22,9 @@ pub struct SendMessage {
     pub subject: Option<String>,
     /// Platform thread identifier for threaded replies (e.g. Slack `thread_ts`).
     pub thread_ts: Option<String>,
+    /// Platform message ID to reply to (e.g. Telegram `message_id`).
+    /// When set, the outgoing message is posted as a reply to that message.
+    pub reply_to_message_id: Option<String>,
 }
 
 impl SendMessage {
@@ -32,6 +35,7 @@ impl SendMessage {
             recipient: recipient.into(),
             subject: None,
             thread_ts: None,
+            reply_to_message_id: None,
         }
     }
 
@@ -46,12 +50,19 @@ impl SendMessage {
             recipient: recipient.into(),
             subject: Some(subject.into()),
             thread_ts: None,
+            reply_to_message_id: None,
         }
     }
 
     /// Set the thread identifier for threaded replies.
     pub fn in_thread(mut self, thread_ts: Option<String>) -> Self {
         self.thread_ts = thread_ts;
+        self
+    }
+
+    /// Set the message ID to reply to.
+    pub fn reply_to(mut self, id: Option<String>) -> Self {
+        self.reply_to_message_id = id;
         self
     }
 }
