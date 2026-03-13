@@ -1283,7 +1283,8 @@ async fn b3_bangkok_search_returns_contacts() {
         || text.to_lowercase().contains("не удалось найти")
         || text.to_lowercase().contains("ничего не найдено");
 
-    if has_contact {
+    // Honest empty trumps has_contact (e.g. "Не найдено контактов" contains "контакт")
+    if has_contact && !is_honest_empty {
         assert!(
             has_date_field(&text),
             "Ответ с контактами должен содержать Дата: YYYY-MM-DD, получено:\n{text}"
@@ -1522,7 +1523,8 @@ async fn b_new1_search_works_via_fallback_chain() {
         "Bot must summarize results — not dump raw JSON:\n{text}"
     );
 
-    if has_contact {
+    // Honest empty trumps has_contact (e.g. "Не найдено контактов" contains "контакт")
+    if has_contact && !is_honest_empty {
         assert!(
             has_date_field(&text),
             "Ответ с контактами должен содержать Дата: YYYY-MM-DD, получено:\n{text}"
@@ -1665,7 +1667,8 @@ async fn b7_bot_reply_includes_message_links() {
         "Bot must summarize results — not dump raw JSON:\n{text}"
     );
 
-    if has_contact {
+    // Honest empty trumps has_contact (e.g. "Не найдено контактов" contains "контакт")
+    if has_contact && !is_honest_empty {
         assert!(
             has_date_field(&text),
             "Ответ с контактами должен содержать Дата: YYYY-MM-DD, получено:\n{text}"
@@ -2145,7 +2148,8 @@ async fn b8_danang_commercial_realestate_has_dates_and_links() {
         "Bot must summarize results — not dump raw JSON:\n{text}"
     );
 
-    if has_contact {
+    // Honest empty trumps has_contact (e.g. "Не найдено контактов" contains "контакт")
+    if has_contact && !is_honest_empty {
         assert!(
             has_date_field(&text),
             "Ответ с контактами должен содержать Дата: YYYY-MM-DD, получено:\n{text}"
