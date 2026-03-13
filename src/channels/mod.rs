@@ -476,45 +476,6 @@ fn interruption_scope_key(msg: &traits::ChannelMessage) -> String {
     format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender)
 }
 
-/// Extract the Telegram message_id from a ChannelMessage `id` field.
-///
-/// The id format is `"telegram_{chat_id}_{message_id}"`.  Returns `Some(message_id)`
-/// when the prefix is `"telegram"`, or `None` for any other channel format.
-///
-/// Callback query IDs have format `"telegram_cb_{chat_id}_{message_id}_{callback_id}"` and
-/// are excluded (not reply-able messages).
-fn should_prefix_sender_identity(msg: &traits::ChannelMessage) -> bool {
-    if msg.channel != "telegram" {
-        return false;
-    }
-
-    let chat_id = msg
-        .reply_target
-        .split_once(':')
-        .map_or(msg.reply_target.as_str(), |(chat_id, _)| chat_id);
-
-    // Telegram supergroups/groups use negative chat IDs.
-    chat_id.starts_with('-')
-}
-
-fn llm_user_content_with_sender_identity(msg: &traits::ChannelMessage, content: &str) -> String {
-    if !should_prefix_sender_identity(msg) {
-        return content.to_string();
-    }
-
-    let sender = msg.sender.trim();
-    if sender.is_empty() {
-        return content.to_string();
-    }
-
-    let prefix = format!("[sender: {sender}]");
-    if content.trim_start().starts_with(prefix.as_str()) {
-        return content.to_string();
-    }
-
-    format!("{prefix} {content}")
-}
-
 /// Strip tool-call XML tags from outgoing messages.
 ///
 /// LLM responses may contain `<function_calls>`, `<function_call>`,
@@ -631,47 +592,12 @@ fn strip_tool_call_tags(message: &str) -> String {
     result.trim().to_string()
 }
 
+/// Static delivery instructions for gateway-only channels that lack a `Channel` trait impl.
+///
+/// Channels with their own `Channel` impl should override `delivery_instructions()`
+/// on the trait directly — see matrix.rs, whatsapp.rs, lark.rs, qq.rs, telegram.rs.
 fn channel_delivery_instructions(channel_name: &str) -> Option<&'static str> {
-    // Channels that implement delivery_instructions() on the trait are handled
-    // via get_live_channel() at the call site.  This function provides static
-    // fallback text for channels that haven't migrated yet.
     match channel_name {
-        "matrix" => Some(
-            "When responding on Matrix:\n\
-             - Use Markdown formatting (bold, italic, code blocks)\n\
-             - Be concise and direct\n\
-             - When you receive a [Voice message], the user spoke to you. Respond naturally as in conversation.\n\
-             - Your text reply will automatically be converted to audio and sent back as a voice message.\n",
-        ),
-        "whatsapp" => Some(
-            "When responding on WhatsApp:\n\
-             - Use *bold* for emphasis (WhatsApp uses single asterisks).\n\
-             - Be concise. No markdown headers (## etc.) — they don't render.\n\
-             - No markdown tables — use bullet lists instead.\n\
-             - For sending images, documents, videos, or audio files use markers: [IMAGE:<absolute-path>], [DOCUMENT:<absolute-path>], [VIDEO:<absolute-path>], [AUDIO:<absolute-path>]\n\
-             - The path MUST be an absolute filesystem path to a local file (e.g. [IMAGE:/home/nicolas/.zeroclaw/workspace/images/chart.png]).\n\
-             - Keep normal text outside markers and never wrap markers in code fences.\n\
-             - You can combine text and media in one response — text is sent first, then each attachment.\n\
-             - Use tool results silently: answer the latest user message directly, and do not narrate delayed/internal tool execution bookkeeping.",
-        ),
-        "lark" | "feishu" => Some(
-            "When responding on Lark/Feishu:\n\
-             - For image attachments, use markers: [IMAGE:<path-or-url-or-data-uri>]\n\
-             - Keep normal text outside markers and never wrap markers in code fences.\n\
-             - Prefer one marker per line to keep delivery deterministic.\n\
-             - If you include both text and images, put text first, then image markers.\n\
-             - Be concise and direct. Skip filler phrases.\n\
-             - Use tool results silently: answer the latest user message directly, and do not narrate delayed/internal tool execution bookkeeping.",
-        ),
-        "qq" => Some(
-            "When responding on QQ:\n\
-             - For image attachments, use markers: [IMAGE:<path-or-url-or-data-uri>]\n\
-             - Keep normal text outside markers and never wrap markers in code fences.\n\
-             - Prefer one marker per line to keep delivery deterministic.\n\
-             - If you include both text and images, put text first, then image markers.\n\
-             - Be concise and direct. Skip filler phrases.\n\
-             - Use tool results silently: answer the latest user message directly, and do not narrate delayed/internal tool execution bookkeeping.",
-        ),
         "bluebubbles" => Some(
             "You are responding on iMessage via BlueBubbles. Always complete your research before replying — use as many tool calls as needed to get a full, accurate answer.\n\
              \n\
@@ -4039,7 +3965,7 @@ If this input is legitimate, rephrase the request and avoid instruction-override
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
     let llm_user_content = get_live_channel(&msg.channel)
         .map(|ch| ch.format_incoming_content(&msg))
-        .unwrap_or_else(|| llm_user_content_with_sender_identity(&msg, &msg.content));
+        .unwrap_or_else(|| msg.content.clone());
     let timestamped_content = format!("[{now}] {llm_user_content}");
     let persisted_user_content = msg.content.clone();
 
@@ -11978,57 +11904,6 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_history_key(&msg1),
             conversation_history_key(&msg2)
         );
-    }
-
-    #[test]
-    fn telegram_group_messages_prefix_sender_identity_for_llm() {
-        let msg = traits::ChannelMessage {
-            id: "msg_1".into(),
-            sender: "Kozimum".into(),
-            reply_target: "-100200300".into(),
-            content: "who am i?".into(),
-            channel: "telegram".into(),
-            timestamp: 1,
-            thread_ts: None,
-            reply_to_message_id: None,
-        };
-
-        let enriched = llm_user_content_with_sender_identity(&msg, &msg.content);
-        assert_eq!(enriched, "[sender: Kozimum] who am i?");
-    }
-
-    #[test]
-    fn telegram_dm_messages_do_not_prefix_sender_identity() {
-        let msg = traits::ChannelMessage {
-            id: "msg_1".into(),
-            sender: "Kozimum".into(),
-            reply_target: "12345".into(),
-            content: "who am i?".into(),
-            channel: "telegram".into(),
-            timestamp: 1,
-            thread_ts: None,
-            reply_to_message_id: None,
-        };
-
-        let enriched = llm_user_content_with_sender_identity(&msg, &msg.content);
-        assert_eq!(enriched, "who am i?");
-    }
-
-    #[test]
-    fn telegram_group_thread_messages_prefix_sender_identity_for_llm() {
-        let msg = traits::ChannelMessage {
-            id: "msg_1".into(),
-            sender: "Kozimum".into(),
-            reply_target: "-100200300:789".into(),
-            content: "who am i?".into(),
-            channel: "telegram".into(),
-            timestamp: 1,
-            thread_ts: Some("789".into()),
-            reply_to_message_id: None,
-        };
-
-        let enriched = llm_user_content_with_sender_identity(&msg, &msg.content);
-        assert_eq!(enriched, "[sender: Kozimum] who am i?");
     }
 
     #[tokio::test]

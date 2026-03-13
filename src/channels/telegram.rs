@@ -3032,6 +3032,29 @@ Allowlist Telegram username (without '@') or numeric user ID.",
     }
 }
 
+/// Format an incoming Telegram message for the LLM.
+///
+/// In group chats (negative chat_id in `reply_target`), the sender name is
+/// prepended so the LLM knows who is speaking.
+fn format_incoming_telegram_content(msg: &ChannelMessage) -> String {
+    let chat_id = msg
+        .reply_target
+        .split_once(':')
+        .map_or(msg.reply_target.as_str(), |(chat_id, _)| chat_id);
+    if !chat_id.starts_with('-') {
+        return msg.content.clone();
+    }
+    let sender = msg.sender.trim();
+    if sender.is_empty() {
+        return msg.content.clone();
+    }
+    let prefix = format!("[sender: {sender}]");
+    if msg.content.trim_start().starts_with(prefix.as_str()) {
+        return msg.content.clone();
+    }
+    format!("{prefix} {}", msg.content)
+}
+
 #[async_trait]
 impl Channel for TelegramChannel {
     fn name(&self) -> &str {
@@ -3043,24 +3066,7 @@ impl Channel for TelegramChannel {
     }
 
     fn format_incoming_content(&self, msg: &ChannelMessage) -> String {
-        // In group chats (negative chat_id), prefix with sender identity so the LLM
-        // knows who is speaking.
-        let chat_id = msg
-            .reply_target
-            .split_once(':')
-            .map_or(msg.reply_target.as_str(), |(chat_id, _)| chat_id);
-        if !chat_id.starts_with('-') {
-            return msg.content.clone();
-        }
-        let sender = msg.sender.trim();
-        if sender.is_empty() {
-            return msg.content.clone();
-        }
-        let prefix = format!("[sender: {sender}]");
-        if msg.content.trim_start().starts_with(prefix.as_str()) {
-            return msg.content.clone();
-        }
-        format!("{prefix} {}", msg.content)
+        format_incoming_telegram_content(msg)
     }
 
     fn delivery_instructions(&self) -> Option<&str> {
@@ -3861,6 +3867,44 @@ Ensure only one `zeroclaw` process is using this bot token."
 mod tests {
     use super::*;
     use std::path::Path;
+
+    fn make_msg(sender: &str, reply_target: &str, content: &str) -> ChannelMessage {
+        ChannelMessage {
+            id: "msg_1".into(),
+            sender: sender.into(),
+            reply_target: reply_target.into(),
+            content: content.into(),
+            channel: "telegram".into(),
+            timestamp: 1,
+            thread_ts: None,
+            reply_to_message_id: None,
+        }
+    }
+
+    #[test]
+    fn group_messages_prefix_sender_identity() {
+        let msg = make_msg("Kozimum", "-100200300", "who am i?");
+        assert_eq!(
+            format_incoming_telegram_content(&msg),
+            "[sender: Kozimum] who am i?"
+        );
+    }
+
+    #[test]
+    fn dm_messages_do_not_prefix_sender_identity() {
+        let msg = make_msg("Kozimum", "12345", "who am i?");
+        assert_eq!(format_incoming_telegram_content(&msg), "who am i?");
+    }
+
+    #[test]
+    fn group_thread_messages_prefix_sender_identity() {
+        let mut msg = make_msg("Kozimum", "-100200300:789", "who am i?");
+        msg.thread_ts = Some("789".into());
+        assert_eq!(
+            format_incoming_telegram_content(&msg),
+            "[sender: Kozimum] who am i?"
+        );
+    }
 
     #[cfg(unix)]
     fn symlink_file(src: &Path, dst: &Path) {

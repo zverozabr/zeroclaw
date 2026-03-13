@@ -712,6 +712,16 @@ impl Channel for MatrixChannel {
         "matrix"
     }
 
+    fn delivery_instructions(&self) -> Option<&str> {
+        Some(
+            "When responding on Matrix:\n\
+             - Use Markdown formatting (bold, italic, code blocks)\n\
+             - Be concise and direct\n\
+             - When you receive a [Voice message], the user spoke to you. Respond naturally as in conversation.\n\
+             - Your text reply will automatically be converted to audio and sent back as a voice message.\n",
+        )
+    }
+
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         if self.otk_conflict_detected.load(Ordering::Relaxed) {
             anyhow::bail!("{}", self.otk_conflict_recovery_message());

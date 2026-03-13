@@ -759,6 +759,18 @@ impl Channel for QQChannel {
         "qq"
     }
 
+    fn delivery_instructions(&self) -> Option<&str> {
+        Some(
+            "When responding on QQ:\n\
+             - For image attachments, use markers: [IMAGE:<path-or-url-or-data-uri>]\n\
+             - Keep normal text outside markers and never wrap markers in code fences.\n\
+             - Prefer one marker per line to keep delivery deterministic.\n\
+             - If you include both text and images, put text first, then image markers.\n\
+             - Be concise and direct. Skip filler phrases.\n\
+             - Use tool results silently: answer the latest user message directly, and do not narrate delayed/internal tool execution bookkeeping.",
+        )
+    }
+
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         let token = self.get_token().await?;
         let (message_url, files_url) = resolve_send_endpoints(self.api_base(), &message.recipient);
