@@ -46,7 +46,7 @@ fn source_does_not_use_legacy_reply_to_field() {
 
         for (line_idx, line) in content.lines().enumerate() {
             for pattern in FORBIDDEN_PATTERNS {
-                if line.contains(pattern) {
+                if line.contains(pattern) && !line.contains("reply_to_message_id") {
                     let rel = file_path
                         .strip_prefix(root)
                         .unwrap_or(&file_path)

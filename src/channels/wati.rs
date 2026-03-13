@@ -198,8 +198,7 @@ impl Channel for WatiChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let error_body = resp.text().await.unwrap_or_default();
-            let sanitized = crate::providers::sanitize_api_error(&error_body);
-            tracing::error!("WATI send failed: {status} — {sanitized}");
+            tracing::error!("WATI send failed: {status} — {error_body}");
             anyhow::bail!("WATI API error: {status}");
         }
 
