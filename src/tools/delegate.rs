@@ -204,6 +204,13 @@ impl Tool for DelegateTool {
             .map(str::trim)
             .unwrap_or("");
 
+        tracing::info!(
+            agent = agent_name,
+            prompt_preview = %crate::util::truncate_with_ellipsis(prompt, 200),
+            depth = self.depth,
+            "Delegate tool invoked by main agent"
+        );
+
         // Look up agent config
         let agent_config = match self.agents.get(agent_name) {
             Some(cfg) => cfg,
@@ -433,6 +440,16 @@ impl DelegateTool {
 
         let noop_observer = NoopObserver;
 
+        tracing::info!(
+            agent = agent_name,
+            provider = %agent_config.provider,
+            model = %agent_config.model,
+            max_iterations = agent_config.max_iterations,
+            sub_tools = ?sub_tools.iter().map(|t| t.name()).collect::<Vec<_>>(),
+            prompt_preview = %crate::util::truncate_with_ellipsis(full_prompt, 200),
+            "Delegate: starting sub-agent tool loop"
+        );
+
         let result = tokio::time::timeout(
             Duration::from_secs(DELEGATE_AGENTIC_TIMEOUT_SECS),
             run_tool_call_loop(
@@ -459,6 +476,12 @@ impl DelegateTool {
 
         match result {
             Ok(Ok(response)) => {
+                tracing::info!(
+                    agent = agent_name,
+                    response_len = response.len(),
+                    response_preview = %crate::util::truncate_with_ellipsis(&response, 500),
+                    "Delegate sub-agent finished successfully"
+                );
                 let rendered = if response.trim().is_empty() {
                     "[Empty response]".to_string()
                 } else {
@@ -475,18 +498,32 @@ impl DelegateTool {
                     error: None,
                 })
             }
-            Ok(Err(e)) => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Agent '{agent_name}' failed: {e}")),
-            }),
-            Err(_) => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!(
-                    "Agent '{agent_name}' timed out after {DELEGATE_AGENTIC_TIMEOUT_SECS}s"
-                )),
-            }),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    agent = agent_name,
+                    error = %e,
+                    "Delegate sub-agent failed"
+                );
+                Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Agent '{agent_name}' failed: {e}")),
+                })
+            }
+            Err(_) => {
+                tracing::warn!(
+                    agent = agent_name,
+                    timeout_secs = DELEGATE_AGENTIC_TIMEOUT_SECS,
+                    "Delegate sub-agent timed out"
+                );
+                Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "Agent '{agent_name}' timed out after {DELEGATE_AGENTIC_TIMEOUT_SECS}s"
+                    )),
+                })
+            }
         }
     }
 }

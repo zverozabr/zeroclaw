@@ -332,7 +332,11 @@ impl Provider for ReliableProvider {
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || self.providers.first().map(|(n, _)| n.as_str()) != Some(provider_name) {
+                            if attempt > 0
+                                || *current_model != model
+                                || self.providers.first().map(|(n, _)| n.as_str())
+                                    != Some(provider_name)
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = *current_model,
@@ -462,7 +466,11 @@ impl Provider for ReliableProvider {
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || self.providers.first().map(|(n, _)| n.as_str()) != Some(provider_name) {
+                            if attempt > 0
+                                || *current_model != model
+                                || self.providers.first().map(|(n, _)| n.as_str())
+                                    != Some(provider_name)
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = *current_model,
@@ -596,7 +604,11 @@ impl Provider for ReliableProvider {
                         .await
                     {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || self.providers.first().map(|(n, _)| n.as_str()) != Some(provider_name) {
+                            if attempt > 0
+                                || *current_model != model
+                                || self.providers.first().map(|(n, _)| n.as_str())
+                                    != Some(provider_name)
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = *current_model,
@@ -717,7 +729,11 @@ impl Provider for ReliableProvider {
                     };
                     match provider.chat(req, current_model, temperature).await {
                         Ok(resp) => {
-                            if attempt > 0 || *current_model != model || self.providers.first().map(|(n, _)| n.as_str()) != Some(provider_name) {
+                            if attempt > 0
+                                || *current_model != model
+                                || self.providers.first().map(|(n, _)| n.as_str())
+                                    != Some(provider_name)
+                            {
                                 tracing::info!(
                                     provider = provider_name,
                                     model = *current_model,

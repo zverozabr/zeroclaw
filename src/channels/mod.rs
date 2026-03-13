@@ -141,7 +141,11 @@ impl Observer for ChannelNotifyObserver {
                     let script_start = cmd[..script_end].rfind('/').map(|i| i + 1).unwrap_or(0);
                     let script_name = &cmd[script_start..script_end];
                     // Extract the action arg after .py
-                    let action = cmd[script_end..].trim().split_whitespace().next().unwrap_or("");
+                    let action = cmd[script_end..]
+                        .trim()
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("");
                     (
                         format!("{script_name}"),
                         if action.is_empty() {
@@ -163,7 +167,14 @@ impl Observer for ChannelNotifyObserver {
                     Some(args) if !args.is_empty() => {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
                             if let Some(q) = v.get("query").and_then(|c| c.as_str()) {
-                                format!(": {}", if q.len() > 120 { &q[..q.floor_char_boundary(120)] } else { q })
+                                format!(
+                                    ": {}",
+                                    if q.len() > 120 {
+                                        &q[..q.floor_char_boundary(120)]
+                                    } else {
+                                        q
+                                    }
+                                )
                             } else if let Some(kw) = v.get("keyword").and_then(|c| c.as_str()) {
                                 format!(": {kw}")
                             } else {

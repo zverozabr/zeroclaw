@@ -316,6 +316,15 @@ pub fn all_tools_with_runtime(
         }
     }
 
+    // Add skill tools (SKILL.toml [[tools]]) as native Tool trait objects.
+    // Inserted before the parent_tools snapshot so delegate sub-agents can
+    // see and filter skill tools via allowed_tools.
+    let skill_tools = crate::skills::create_skill_tools(workspace_dir, root_config, security);
+    if !skill_tools.is_empty() {
+        tracing::info!(count = skill_tools.len(), "Adding skill tools to registry");
+        tool_arcs.extend(skill_tools);
+    }
+
     // Add delegation tool when agents are configured
     if !agents.is_empty() {
         let delegate_agents: HashMap<String, DelegateAgentConfig> = agents

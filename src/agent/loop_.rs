@@ -2184,6 +2184,13 @@ pub(crate) async fn run_tool_call_loop(
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
 
     for iteration in 0..max_iterations {
+        tracing::info!(
+            channel = channel_name,
+            iteration = iteration + 1,
+            max = max_iterations,
+            history_len = history.len(),
+            "Tool loop iteration start"
+        );
         if cancellation_token
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
@@ -2404,6 +2411,25 @@ pub(crate) async fn run_tool_call_loop(
         let display_text =
             resolve_display_text(&response_text, &parsed_text, !tool_calls.is_empty());
         let display_text = strip_tool_result_blocks(&display_text);
+
+        // Log tool calls or final response
+        if tool_calls.is_empty() {
+            tracing::info!(
+                channel = channel_name,
+                iteration = iteration + 1,
+                response_len = display_text.len(),
+                response_preview = %truncate_with_ellipsis(&display_text, 200),
+                "Tool loop: no tool calls, returning final response"
+            );
+        } else {
+            let tool_names: Vec<&str> = tool_calls.iter().map(|c| c.name.as_str()).collect();
+            tracing::info!(
+                channel = channel_name,
+                iteration = iteration + 1,
+                tools = ?tool_names,
+                "Tool loop: LLM requested tool calls"
+            );
+        }
 
         // ── Progress: LLM responded ─────────────────────────────
         if let Some(ref tx) = on_delta {
@@ -2711,6 +2737,16 @@ pub(crate) async fn run_tool_call_loop(
         }
 
         for (tool_name, tool_call_id, outcome) in ordered_results.into_iter().flatten() {
+            tracing::info!(
+                channel = channel_name,
+                iteration = iteration + 1,
+                tool = %tool_name,
+                success = outcome.success,
+                output_len = outcome.output.len(),
+                output_preview = %truncate_with_ellipsis(&outcome.output, 300),
+                duration_ms = outcome.duration.as_millis() as u64,
+                "Tool execution result"
+            );
             individual_results.push((tool_call_id, outcome.output.clone()));
             let _ = writeln!(
                 tool_results,

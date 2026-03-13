@@ -7,6 +7,11 @@ use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 mod audit;
+pub mod tool_handler;
+
+use crate::security::SecurityPolicy;
+use crate::tools::traits::Tool;
+use std::sync::Arc;
 
 const OPEN_SKILLS_REPO_URL: &str = "https://github.com/besoeasy/open-skills";
 const OPEN_SKILLS_SYNC_MARKER: &str = ".zeroclaw-open-skills-sync";
@@ -91,6 +96,57 @@ pub fn load_skills_with_config(workspace_dir: &Path, config: &crate::config::Con
         Some(config.skills.open_skills_enabled),
         config.skills.open_skills_dir.as_deref(),
     )
+}
+
+/// Create native `Tool` trait objects from all loaded skills.
+///
+/// Each `[[tools]]` entry in a SKILL.toml with `kind = "shell"` becomes a
+/// real `Tool` that LLM providers can call via native function calling.
+pub fn create_skill_tools(
+    workspace_dir: &Path,
+    config: &crate::config::Config,
+    security: &Arc<SecurityPolicy>,
+) -> Vec<Arc<dyn Tool>> {
+    let skills = load_skills_with_config(workspace_dir, config);
+    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+
+    for skill in skills {
+        let skill_name = skill.name.clone();
+        let skill_dir = skill
+            .location
+            .as_ref()
+            .and_then(|p| p.parent().map(PathBuf::from));
+
+        for tool_def in skill.tools {
+            let tool_name = tool_def.name.clone();
+            match tool_handler::SkillToolHandler::new(
+                skill_name.clone(),
+                tool_def,
+                security.clone(),
+                skill_dir.clone(),
+            ) {
+                Ok(handler) => {
+                    tracing::info!(
+                        tool = %tool_name,
+                        skill = %skill_name,
+                        "Registered skill tool"
+                    );
+                    tools.push(Arc::new(handler));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        tool = %tool_name,
+                        skill = %skill_name,
+                        "Failed to create skill tool handler"
+                    );
+                }
+            }
+        }
+    }
+
+    tracing::info!(count = tools.len(), "Skill tools created");
+    tools
 }
 
 fn load_skills_with_open_skills_config(

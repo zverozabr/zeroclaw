@@ -3982,11 +3982,11 @@ pub(crate) async fn persist_active_workspace_config_dir(config_dir: &Path) -> Re
     let default_config_dir = default_config_dir()?;
     let state_path = active_workspace_state_path(&default_config_dir);
 
-    // Guard: never persist a temp-directory path as the active workspace.
-    // This prevents transient test runs or one-off invocations from hijacking
-    // the daemon's config resolution.
-    #[cfg(not(test))]
-    if is_temp_directory(config_dir) {
+    // Guard: never persist a temp-directory path into the real user config.
+    // This prevents test runs from hijacking the daemon's config resolution.
+    // When both config_dir and default_config_dir are under /tmp/ (isolated
+    // test with HOME overridden), the write is safe and allowed.
+    if is_temp_directory(config_dir) && !is_temp_directory(&default_config_dir) {
         tracing::warn!(
             path = %config_dir.display(),
             "Refusing to persist temp directory as active workspace marker"
