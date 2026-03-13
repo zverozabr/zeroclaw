@@ -96,47 +96,88 @@ use tokio_util::sync::CancellationToken;
 
 /// Observer wrapper that forwards tool-call events to a channel sender
 /// for real-time threaded notifications.
+/// Throttled: at most one notification per 10 seconds to avoid chat spam.
 struct ChannelNotifyObserver {
     inner: Arc<dyn Observer>,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
     tools_used: AtomicBool,
+    last_notify: Mutex<Option<Instant>>,
 }
+
+/// Minimum interval between tool-call notifications sent to the chat.
+const TOOL_NOTIFY_MIN_INTERVAL: Duration = Duration::from_secs(10);
 
 impl Observer for ChannelNotifyObserver {
     fn record_event(&self, event: &ObserverEvent) {
         if let ObserverEvent::ToolCallStart { tool, arguments } = event {
             self.tools_used.store(true, Ordering::Relaxed);
-            let detail = match arguments {
-                Some(args) if !args.is_empty() => {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
-                        if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
-                            format!(": `{}`", if cmd.len() > 200 { &cmd[..200] } else { cmd })
-                        } else if let Some(q) = v.get("query").and_then(|c| c.as_str()) {
-                            format!(": {}", if q.len() > 200 { &q[..200] } else { q })
-                        } else if let Some(p) = v.get("path").and_then(|c| c.as_str()) {
-                            format!(": {p}")
-                        } else if let Some(u) = v.get("url").and_then(|c| c.as_str()) {
-                            format!(": {u}")
+
+            // Throttle: skip if we sent a notification recently.
+            let should_send = {
+                let mut last = self.last_notify.lock().unwrap_or_else(|e| e.into_inner());
+                let now = Instant::now();
+                if last.is_some_and(|t| now.duration_since(t) < TOOL_NOTIFY_MIN_INTERVAL) {
+                    false
+                } else {
+                    *last = Some(now);
+                    true
+                }
+            };
+            if !should_send {
+                self.inner.record_event(event);
+                return;
+            }
+
+            // For `shell` tool, extract a cleaner label from the command.
+            let (label, detail) = if tool == "shell" {
+                let cmd = arguments
+                    .as_ref()
+                    .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
+                    .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+                    .unwrap_or_default();
+                // Extract script basename if it's a python script invocation
+                if let Some(idx) = cmd.find(".py") {
+                    let script_end = idx + 3;
+                    let script_start = cmd[..script_end].rfind('/').map(|i| i + 1).unwrap_or(0);
+                    let script_name = &cmd[script_start..script_end];
+                    // Extract the action arg after .py
+                    let action = cmd[script_end..].trim().split_whitespace().next().unwrap_or("");
+                    (
+                        format!("{script_name}"),
+                        if action.is_empty() {
+                            String::new()
                         } else {
-                            let s = args.to_string();
-                            if s.len() > 120 {
-                                format!(": {}…", &s[..120])
-                            } else {
-                                format!(": {s}")
-                            }
-                        }
+                            format!(": {action}")
+                        },
+                    )
+                } else {
+                    let truncated = if cmd.len() > 80 {
+                        format!("{}…", &cmd[..cmd.floor_char_boundary(80)])
                     } else {
-                        let s = args.to_string();
-                        if s.len() > 120 {
-                            format!(": {}…", &s[..120])
+                        cmd
+                    };
+                    ("shell".to_string(), format!(": `{truncated}`"))
+                }
+            } else {
+                let detail = match arguments {
+                    Some(args) if !args.is_empty() => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
+                            if let Some(q) = v.get("query").and_then(|c| c.as_str()) {
+                                format!(": {}", if q.len() > 120 { &q[..q.floor_char_boundary(120)] } else { q })
+                            } else if let Some(kw) = v.get("keyword").and_then(|c| c.as_str()) {
+                                format!(": {kw}")
+                            } else {
+                                String::new()
+                            }
                         } else {
-                            format!(": {s}")
+                            String::new()
                         }
                     }
-                }
-                _ => String::new(),
+                    _ => String::new(),
+                };
+                (tool.to_string(), detail)
             };
-            let _ = self.tx.send(format!("\u{1F527} `{tool}`{detail}"));
+            let _ = self.tx.send(format!("\u{1F527} `{label}`{detail}"));
         }
         self.inner.record_event(event);
     }
@@ -1924,6 +1965,7 @@ async fn process_channel_message(
         inner: Arc::clone(&ctx.observer),
         tx: notify_tx,
         tools_used: AtomicBool::new(false),
+        last_notify: Mutex::new(None),
     });
     let notify_observer_flag = Arc::clone(&notify_observer);
     let notify_channel = target_channel.clone();

@@ -1981,7 +1981,7 @@ async fn execute_one_tool(
     let args_summary = {
         let raw = call_arguments.to_string();
         if raw.len() > 300 {
-            format!("{}…", &raw[..300])
+            format!("{}…", &raw[..raw.floor_char_boundary(300)])
         } else {
             raw
         }

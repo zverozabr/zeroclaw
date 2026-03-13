@@ -2448,6 +2448,10 @@ pub struct ReliabilityConfig {
     /// The primary `api_key` is always tried first; these are extras.
     #[serde(default)]
     pub api_keys: Vec<String>,
+    /// Per-provider API keys for fallback profiles that use explicit keys
+    /// instead of OAuth. Keyed by profile name (e.g. `"gemini:gemini-api-1"`).
+    #[serde(default)]
+    pub fallback_api_keys: std::collections::HashMap<String, String>,
     /// Per-model fallback chains. When a model fails, try these alternatives in order.
     /// Example: `{ "claude-opus-4-20250514" = ["claude-sonnet-4-20250514", "gpt-4o"] }`
     #[serde(default)]
@@ -2497,6 +2501,7 @@ impl Default for ReliabilityConfig {
             provider_backoff_ms: default_provider_backoff_ms(),
             fallback_providers: Vec::new(),
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: default_channel_backoff_secs(),
             channel_max_backoff_secs: default_channel_backoff_max_secs(),

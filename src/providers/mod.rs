@@ -1423,7 +1423,13 @@ pub fn create_resilient_provider_with_options(
             None => options.clone(),
         };
 
-        match create_provider_with_options(provider_name, None, &fallback_options) {
+        // Look up an explicit API key from [reliability.fallback_api_keys].
+        let fallback_key = reliability
+            .fallback_api_keys
+            .get(fallback.as_str())
+            .map(String::as_str);
+
+        match create_provider_with_options(provider_name, fallback_key, &fallback_options) {
             Ok(provider) => providers.push((fallback.clone(), provider)),
             Err(_error) => {
                 tracing::warn!(
@@ -2572,6 +2578,7 @@ mod tests {
                 "openai".into(),
             ],
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: 2,
             channel_max_backoff_secs: 60,
@@ -2611,6 +2618,7 @@ mod tests {
             provider_backoff_ms: 100,
             fallback_providers: vec!["lmstudio".into(), "ollama".into()],
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: 2,
             channel_max_backoff_secs: 60,
@@ -2633,6 +2641,7 @@ mod tests {
             provider_backoff_ms: 100,
             fallback_providers: vec!["custom:http://host.docker.internal:1234/v1".into()],
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: 2,
             channel_max_backoff_secs: 60,
@@ -2659,6 +2668,7 @@ mod tests {
                 "lmstudio".into(),
             ],
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: 2,
             channel_max_backoff_secs: 60,
@@ -2691,6 +2701,7 @@ mod tests {
             provider_backoff_ms: 100,
             fallback_providers: vec!["osaurus".into(), "lmstudio".into()],
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: 2,
             channel_max_backoff_secs: 60,
@@ -2985,6 +2996,7 @@ mod tests {
             provider_backoff_ms: 100,
             fallback_providers: vec!["openai-codex:second".into()],
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: 2,
             channel_max_backoff_secs: 60,
@@ -3014,6 +3026,7 @@ mod tests {
                 "nonexistent-provider".into(),
             ],
             api_keys: Vec::new(),
+            fallback_api_keys: std::collections::HashMap::new(),
             model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: 2,
             channel_max_backoff_secs: 60,
