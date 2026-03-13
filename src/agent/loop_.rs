@@ -2755,6 +2755,65 @@ pub(crate) async fn run_tool_call_loop(
             );
         }
 
+        // ── Early return for terminal tools ─────────────────────────
+        // If a terminal tool (e.g. submit_contacts) returned successfully with
+        // meaningful output, return it directly — skip the LLM re-turn that would
+        // often generate a redundant plain-text summary or a malformed tool call.
+        {
+            let terminal_output = tool_calls
+                .iter()
+                .zip(individual_results.iter())
+                .find_map(|(call, (_id, output))| {
+                    let is_terminal = tools_registry
+                        .iter()
+                        .find(|t| t.name() == call.name)
+                        .is_some_and(|t| t.is_terminal());
+                    if is_terminal && !output.is_empty() {
+                        // Filter out trivial outputs that don't constitute a real answer
+                        let trimmed = output.trim().to_lowercase();
+                        let is_trivial = trimmed == "done"
+                            || trimmed.starts_with("skipped")
+                            || trimmed.is_empty();
+                        // Don't early-return raw JSON — let LLM format it
+                        let is_raw_json = output.trim().starts_with('{')
+                            || output.trim().starts_with('[');
+                        if is_trivial || is_raw_json {
+                            None
+                        } else {
+                            Some(output.clone())
+                        }
+                    } else {
+                        None
+                    }
+                });
+            if let Some(output) = terminal_output {
+                tracing::info!(
+                    channel = channel_name,
+                    iteration = iteration + 1,
+                    output_len = output.len(),
+                    "Terminal tool returned — early exit from tool loop"
+                );
+                runtime_trace::record_event(
+                    "terminal_tool_early_return",
+                    Some(channel_name),
+                    Some(provider_name),
+                    Some(model),
+                    Some(&turn_id),
+                    Some(true),
+                    None,
+                    serde_json::json!({
+                        "iteration": iteration + 1,
+                        "output_preview": scrub_credentials(&output).chars().take(200).collect::<String>(),
+                    }),
+                );
+                if let Some(ref tx) = on_delta {
+                    let _ = tx.send(DRAFT_CLEAR_SENTINEL.to_string()).await;
+                    let _ = tx.send(output.clone()).await;
+                }
+                return Ok(output);
+            }
+        }
+
         // Add assistant message with tool calls + tool results to history.
         // Native mode: use JSON-structured messages so convert_messages() can
         // reconstruct proper OpenAI-format tool_calls and tool result messages.
