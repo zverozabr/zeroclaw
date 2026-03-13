@@ -27,6 +27,8 @@ pub struct DelegateTool {
     fallback_credential: Option<String>,
     /// Provider runtime options inherited from root config.
     provider_runtime_options: providers::ProviderRuntimeOptions,
+    /// Global reliability config for building per-agent fallback chains.
+    reliability: crate::config::ReliabilityConfig,
     /// Depth at which this tool instance lives in the delegation chain.
     depth: u32,
     /// Parent tool registry for agentic sub-agents.
@@ -60,6 +62,7 @@ impl DelegateTool {
             security,
             fallback_credential,
             provider_runtime_options,
+            reliability: crate::config::ReliabilityConfig::default(),
             depth: 0,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
@@ -96,10 +99,17 @@ impl DelegateTool {
             security,
             fallback_credential,
             provider_runtime_options,
+            reliability: crate::config::ReliabilityConfig::default(),
             depth,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
         }
+    }
+
+    /// Attach global reliability config for building per-agent fallback chains.
+    pub fn with_reliability(mut self, reliability: crate::config::ReliabilityConfig) -> Self {
+        self.reliability = reliability;
+        self
     }
 
     /// Attach parent tools used to build sub-agent allowlist registries.
@@ -240,7 +250,7 @@ impl Tool for DelegateTool {
             });
         }
 
-        // Create provider for this agent
+        // Create provider for this agent with fallback chain
         let provider_credential_owned = agent_config
             .api_key
             .clone()
@@ -248,21 +258,52 @@ impl Tool for DelegateTool {
         #[allow(clippy::option_as_ref_deref)]
         let provider_credential = provider_credential_owned.as_ref().map(String::as_str);
 
-        let provider: Box<dyn Provider> = match providers::create_provider_with_options(
-            &agent_config.provider,
-            provider_credential,
-            &self.provider_runtime_options,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!(
-                        "Failed to create provider '{}' for agent '{agent_name}': {e}",
-                        agent_config.provider
-                    )),
-                });
+        let provider: Box<dyn Provider> = if agent_config.fallback_providers.is_empty() {
+            // No agent-specific fallbacks — create a bare provider
+            match providers::create_provider_with_options(
+                &agent_config.provider,
+                provider_credential,
+                &self.provider_runtime_options,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!(
+                            "Failed to create provider '{}' for agent '{agent_name}': {e}",
+                            agent_config.provider
+                        )),
+                    });
+                }
+            }
+        } else {
+            // Build a per-agent reliability config with the agent's fallback chain
+            let agent_reliability = crate::config::ReliabilityConfig {
+                fallback_providers: agent_config.fallback_providers.clone(),
+                provider_retries: self.reliability.provider_retries,
+                provider_backoff_ms: self.reliability.provider_backoff_ms,
+                fallback_api_keys: self.reliability.fallback_api_keys.clone(),
+                ..self.reliability.clone()
+            };
+            match providers::create_resilient_provider_with_options(
+                &agent_config.provider,
+                provider_credential,
+                None,
+                &agent_reliability,
+                &self.provider_runtime_options,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!(
+                            "Failed to create resilient provider '{}' for agent '{agent_name}': {e}",
+                            agent_config.provider
+                        )),
+                    });
+                }
             }
         };
 
@@ -520,6 +561,7 @@ mod tests {
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                fallback_providers: Vec::new(),
             },
         );
         agents.insert(
@@ -534,6 +576,7 @@ mod tests {
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                fallback_providers: Vec::new(),
             },
         );
         agents
@@ -687,6 +730,7 @@ mod tests {
             agentic: true,
             allowed_tools,
             max_iterations,
+            fallback_providers: Vec::new(),
         }
     }
 
@@ -795,6 +839,7 @@ mod tests {
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                fallback_providers: Vec::new(),
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -901,6 +946,7 @@ mod tests {
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                fallback_providers: Vec::new(),
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -936,6 +982,7 @@ mod tests {
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                fallback_providers: Vec::new(),
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());

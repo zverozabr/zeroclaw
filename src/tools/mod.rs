@@ -343,6 +343,7 @@ pub fn all_tools_with_runtime(
                 provider_timeout_secs: Some(root_config.provider_timeout_secs),
             },
         )
+        .with_reliability(root_config.reliability.clone())
         .with_parent_tools(parent_tools)
         .with_multimodal_config(root_config.multimodal.clone());
         tool_arcs.push(Arc::new(delegate_tool));
@@ -581,6 +582,7 @@ mod tests {
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                fallback_providers: Vec::new(),
             },
         );
 

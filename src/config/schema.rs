@@ -290,6 +290,10 @@ pub struct DelegateAgentConfig {
     /// Maximum tool-call iterations in agentic mode.
     #[serde(default = "default_max_tool_iterations")]
     pub max_iterations: usize,
+    /// Fallback provider chain for this agent (same format as
+    /// `[reliability].fallback_providers`, e.g. `"gemini:gemini-api-1"`).
+    #[serde(default)]
+    pub fallback_providers: Vec<String>,
 }
 
 /// Valid temperature range for all paths (config, CLI, env override).
@@ -6100,6 +6104,7 @@ tool_dispatcher = "xml"
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                fallback_providers: Vec::new(),
             },
         );
 
