@@ -5,6 +5,7 @@ pub mod noop;
 pub mod otel;
 pub mod prometheus;
 pub mod runtime_trace;
+pub mod session_recorder;
 pub mod traits;
 pub mod verbose;
 

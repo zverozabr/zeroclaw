@@ -1,6 +1,6 @@
 use crate::providers::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
-    Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
+    NormalizedStopReason, Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
 };
 use crate::tools::ToolSpec;
 use async_trait::async_trait;
@@ -139,6 +139,8 @@ struct SystemBlock {
 struct NativeChatResponse {
     #[serde(default)]
     content: Vec<NativeContentIn>,
+    #[serde(default)]
+    stop_reason: Option<String>,
     #[serde(default)]
     usage: Option<AnthropicUsage>,
 }
@@ -433,14 +435,19 @@ impl AnthropicProvider {
         response
             .content
             .into_iter()
-            .find(|c| c.kind == "text")
-            .and_then(|c| c.text)
+            .filter(|c| c.kind == "text")
+            .filter_map(|c| c.text.map(|text| text.trim().to_string()))
+            .find(|text| !text.is_empty())
             .ok_or_else(|| anyhow::anyhow!("No response from Anthropic"))
     }
 
     fn parse_native_response(response: NativeChatResponse) -> ProviderChatResponse {
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
+        let raw_stop_reason = response.stop_reason.clone();
+        let stop_reason = raw_stop_reason
+            .as_deref()
+            .map(NormalizedStopReason::from_anthropic_stop_reason);
 
         let usage = response.usage.map(|u| TokenUsage {
             input_tokens: u.input_tokens,
@@ -483,6 +490,9 @@ impl AnthropicProvider {
             tool_calls,
             usage,
             reasoning_content: None,
+            quota_metadata: None,
+            stop_reason,
+            raw_stop_reason,
         }
     }
 
@@ -576,8 +586,14 @@ impl Provider for AnthropicProvider {
             return Err(super::api_error("Anthropic", response).await);
         }
 
+        // Extract quota metadata from response headers before consuming body
+        let quota_extractor = super::quota_adapter::UniversalQuotaExtractor::new();
+        let quota_metadata = quota_extractor.extract("anthropic", response.headers(), None);
+
         let native_response: NativeChatResponse = response.json().await?;
-        Ok(Self::parse_native_response(native_response))
+        let mut result = Self::parse_native_response(native_response);
+        result.quota_metadata = quota_metadata;
+        Ok(result)
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -1432,14 +1448,41 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_returns_vision_and_native_tools() {
+    fn parse_text_response_ignores_empty_and_whitespace_text_blocks() {
+        let json = r#"{
+            "content": [
+                {"type": "text", "text": ""},
+                {"type": "text", "text": "   \n  "},
+                {"type": "text", "text": "  final answer  "}
+            ]
+        }"#;
+        let response: ChatResponse = serde_json::from_str(json).unwrap();
+
+        let parsed = AnthropicProvider::parse_text_response(response).unwrap();
+        assert_eq!(parsed, "final answer");
+    }
+
+    #[test]
+    fn parse_text_response_rejects_empty_or_whitespace_only_text_blocks() {
+        let json = r#"{
+            "content": [
+                {"type": "text", "text": ""},
+                {"type": "text", "text": "   \n  "},
+                {"type": "tool_use", "id": "tool_1", "name": "shell"}
+            ]
+        }"#;
+        let response: ChatResponse = serde_json::from_str(json).unwrap();
+
+        let err = AnthropicProvider::parse_text_response(response).unwrap_err();
+        assert!(err.to_string().contains("No response from Anthropic"));
+    }
+
+    #[test]
+    fn capabilities_reports_vision_and_native_tool_calling() {
         let provider = AnthropicProvider::new(Some("test-key"));
         let caps = provider.capabilities();
-        assert!(
-            caps.native_tool_calling,
-            "Anthropic should support native tool calling"
-        );
-        assert!(caps.vision, "Anthropic should support vision");
+        assert!(caps.vision);
+        assert!(caps.native_tool_calling);
     }
 
     #[test]

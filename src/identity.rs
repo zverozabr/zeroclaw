@@ -981,6 +981,46 @@ pub fn is_aieos_configured(config: &IdentityConfig) -> bool {
     config.format == "aieos" && (config.aieos_path.is_some() || config.aieos_inline.is_some())
 }
 
+/// Default path for the AIEOS identity JSON file.
+pub fn default_aieos_identity_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    format!("{home}/.zeroclaw/identity/aieos.json")
+}
+
+/// Generate a default AIEOS identity JSON document.
+pub fn generate_default_aieos_json(agent_name: &str, user_name: &str) -> String {
+    serde_json::json!({
+        "identity": {
+            "names": { "first": agent_name },
+            "user": { "preferred_name": user_name }
+        }
+    })
+    .to_string()
+}
+
+/// An identity backend option for the onboarding wizard.
+pub struct IdentityBackendOption {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+}
+
+/// List available identity backend options for selection in the onboarding wizard.
+pub fn selectable_identity_backends() -> Vec<IdentityBackendOption> {
+    vec![
+        IdentityBackendOption {
+            key: "openclaw",
+            label: "OpenClaw (Markdown)",
+            description: "Simple markdown-based identity",
+        },
+        IdentityBackendOption {
+            key: "aieos",
+            label: "AIEOS (JSON)",
+            description: "Portable AI identity specification",
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,6 +1277,7 @@ mod tests {
     fn is_aieos_configured_true_with_path() {
         let config = IdentityConfig {
             format: "aieos".into(),
+            extra_files: Vec::new(),
             aieos_path: Some("identity.json".into()),
             aieos_inline: None,
         };
@@ -1249,6 +1290,7 @@ mod tests {
             format: "aieos".into(),
             aieos_path: None,
             aieos_inline: Some("{\"identity\":{}}".into()),
+            extra_files: Vec::new(),
         };
         assert!(is_aieos_configured(&config));
     }
@@ -1259,6 +1301,7 @@ mod tests {
             format: "openclaw".into(),
             aieos_path: Some("identity.json".into()),
             aieos_inline: None,
+            extra_files: Vec::new(),
         };
         assert!(!is_aieos_configured(&config));
     }
@@ -1269,6 +1312,7 @@ mod tests {
             format: "aieos".into(),
             aieos_path: None,
             aieos_inline: None,
+            extra_files: Vec::new(),
         };
         assert!(!is_aieos_configured(&config));
     }
@@ -1443,6 +1487,7 @@ mod tests {
             format: "aieos".into(),
             aieos_path: Some("identity.json".into()),
             aieos_inline: None,
+            extra_files: Vec::new(),
         };
 
         let identity = load_aieos_identity(&config, temp.path()).unwrap().unwrap();

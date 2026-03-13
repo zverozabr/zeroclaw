@@ -36,7 +36,18 @@ impl XmlToolDispatcher {
         let cleaned = Self::strip_think_tags(response);
         let mut text_parts = Vec::new();
         let mut calls = Vec::new();
-        let mut remaining = cleaned.as_str();
+        // Normalize tag variants produced by some models/channels so the parser is consistent.
+        // The dispatcher expects <tool_call>...</tool_call>, but other parts of the system accept
+        // <toolcall>, <tool-call>, and <invoke>. Normalize them here.
+        let normalized = cleaned
+            .replace("<toolcall>", "<tool_call>")
+            .replace("</toolcall>", "</tool_call>")
+            .replace("<tool-call>", "<tool_call>")
+            .replace("</tool-call>", "</tool_call>")
+            .replace("<invoke>", "<tool_call>")
+            .replace("</invoke>", "</tool_call>");
+
+        let mut remaining = normalized.as_str();
 
         while let Some(start) = remaining.find("<tool_call>") {
             let before = &remaining[..start];
@@ -275,6 +286,9 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
+                quota_metadata: None,
+            stop_reason: None,
+            raw_stop_reason: None,
         };
         let dispatcher = XmlToolDispatcher;
         let (_, calls) = dispatcher.parse_response(&response);
@@ -292,6 +306,9 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
+            quota_metadata: None,
+            stop_reason: None,
+            raw_stop_reason: None,
         };
         let dispatcher = XmlToolDispatcher;
         let (text, calls) = dispatcher.parse_response(&response);
@@ -310,6 +327,9 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
+            quota_metadata: None,
+            stop_reason: None,
+            raw_stop_reason: None,
         };
         let dispatcher = XmlToolDispatcher;
         let (_, calls) = dispatcher.parse_response(&response);
@@ -327,6 +347,9 @@ mod tests {
             }],
             usage: None,
             reasoning_content: None,
+            quota_metadata: None,
+            stop_reason: None,
+            raw_stop_reason: None,
         };
         let dispatcher = NativeToolDispatcher;
         let (_, calls) = dispatcher.parse_response(&response);

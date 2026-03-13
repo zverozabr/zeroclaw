@@ -10,6 +10,20 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+let fallbackMessageIdCounter = 0;
+const EMPTY_DONE_FALLBACK =
+  'Tool execution completed, but no final response text was returned.';
+
+function makeMessageId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid;
+
+  fallbackMessageIdCounter += 1;
+  return `msg_${Date.now().toString(36)}_${fallbackMessageIdCounter.toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
 export default function AgentChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -41,6 +55,22 @@ export default function AgentChat() {
 
     ws.onMessage = (msg: WsMessage) => {
       switch (msg.type) {
+        case 'history': {
+          const restored: ChatMessage[] = (msg.messages ?? [])
+            .filter((entry) => entry.content?.trim())
+            .map((entry): ChatMessage => ({
+              id: makeMessageId(),
+              role: entry.role === 'user' ? 'user' : 'agent',
+              content: entry.content.trim(),
+              timestamp: new Date(),
+            }));
+
+          setMessages(restored);
+          setTyping(false);
+          pendingContentRef.current = '';
+          break;
+        }
+
         case 'chunk':
           setTyping(true);
           pendingContentRef.current += msg.content ?? '';
@@ -48,18 +78,19 @@ export default function AgentChat() {
 
         case 'message':
         case 'done': {
-          const content = msg.full_response ?? msg.content ?? pendingContentRef.current;
-          if (content) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                role: 'agent',
-                content,
-                timestamp: new Date(),
-              },
-            ]);
-          }
+          const content = (msg.full_response ?? msg.content ?? pendingContentRef.current ?? '').trim();
+          const finalContent = content || EMPTY_DONE_FALLBACK;
+
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: makeMessageId(),
+              role: 'agent',
+              content: finalContent,
+              timestamp: new Date(),
+            },
+          ]);
+
           pendingContentRef.current = '';
           setTyping(false);
           break;
@@ -69,7 +100,7 @@ export default function AgentChat() {
           setMessages((prev) => [
             ...prev,
             {
-              id: crypto.randomUUID(),
+              id: makeMessageId(),
               role: 'agent',
               content: `[Tool Call] ${msg.name ?? 'unknown'}(${JSON.stringify(msg.args ?? {})})`,
               timestamp: new Date(),
@@ -81,7 +112,7 @@ export default function AgentChat() {
           setMessages((prev) => [
             ...prev,
             {
-              id: crypto.randomUUID(),
+              id: makeMessageId(),
               role: 'agent',
               content: `[Tool Result] ${msg.output ?? ''}`,
               timestamp: new Date(),
@@ -93,7 +124,7 @@ export default function AgentChat() {
           setMessages((prev) => [
             ...prev,
             {
-              id: crypto.randomUUID(),
+              id: makeMessageId(),
               role: 'agent',
               content: `[Error] ${msg.message ?? 'Unknown error'}`,
               timestamp: new Date(),
@@ -124,7 +155,7 @@ export default function AgentChat() {
     setMessages((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: makeMessageId(),
         role: 'user',
         content: trimmed,
         timestamp: new Date(),
@@ -167,7 +198,7 @@ export default function AgentChat() {
   }, []);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3.5rem)]">
+    <div className="flex min-h-[28rem] flex-col h-[calc(100dvh-8.5rem)]">
       {/* Connection status bar */}
       {error && (
         <div className="px-4 py-2 bg-red-900/30 border-b border-red-700 flex items-center gap-2 text-sm text-red-300">
