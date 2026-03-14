@@ -409,6 +409,10 @@ impl Tool for SkillToolHandler {
             cmd.env("SKILL_DIR", dir);
         }
 
+        for (key, val) in &self.tool_def.env {
+            cmd.env(key, val);
+        }
+
         let output = cmd
             .output()
             .await
@@ -470,6 +474,7 @@ mod tests {
             max_parallel: None,
             max_result_chars: None,
             max_calls_per_turn: None,
+            env: HashMap::new(),
         }
     }
 
@@ -700,6 +705,7 @@ mod tests {
             max_parallel: None,
             max_result_chars: None,
             max_calls_per_turn: None,
+            env: HashMap::new(),
         };
         let security = Arc::new(SecurityPolicy::default());
         let result = SkillToolHandler::new("test".into(), tool_def, security, None);
@@ -721,6 +727,7 @@ mod tests {
             max_parallel: None,
             max_result_chars: None,
             max_calls_per_turn: None,
+            env: HashMap::new(),
         };
         let security = Arc::new(SecurityPolicy::default());
         let handler = SkillToolHandler::new("test".into(), tool_def, security, None).unwrap();
@@ -731,5 +738,40 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert!(result.output.trim().contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_passes_env_vars() {
+        let tool_def = SkillTool {
+            name: "env_tool".into(),
+            description: "Print env var".into(),
+            kind: "shell".into(),
+            command: "env".into(),
+            args: HashMap::new(),
+            tags: Vec::new(),
+            terminal: false,
+            max_parallel: None,
+            max_result_chars: None,
+            max_calls_per_turn: None,
+            env: [("SKILL_MY_VAR".to_string(), "hello_from_env".to_string())]
+                .into_iter()
+                .collect(),
+        };
+        let mut policy = SecurityPolicy::default();
+        policy.allowed_commands.push("env".into());
+        let security = Arc::new(policy);
+        let handler = SkillToolHandler::new("test".into(), tool_def, security, None).unwrap();
+
+        let result = handler.execute(serde_json::json!({})).await.unwrap();
+        assert!(
+            result.success,
+            "Command should succeed, got: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("SKILL_MY_VAR=hello_from_env"),
+            "Expected env var in output, got: {}",
+            result.output
+        );
     }
 }

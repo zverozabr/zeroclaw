@@ -66,6 +66,10 @@ pub struct SkillTool {
     /// Excess calls receive a synthetic skip message instead of executing.
     #[serde(default)]
     pub max_calls_per_turn: Option<usize>,
+    /// Per-tool environment variables passed to subprocess.
+    /// Defined in SKILL.toml as `[tools.env]` section.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 /// Skill manifest parsed from SKILL.toml
@@ -1176,6 +1180,7 @@ command = "echo hello"
                 max_parallel: None,
                 max_result_chars: None,
                 max_calls_per_turn: None,
+                env: HashMap::new(),
             }],
             prompts: vec!["Do the thing.".to_string()],
             location: Some(PathBuf::from("/tmp/workspace/skills/test/SKILL.md")),
@@ -1381,6 +1386,7 @@ description = "Bare minimum"
                 max_parallel: None,
                 max_result_chars: None,
                 max_calls_per_turn: None,
+                env: HashMap::new(),
             }],
             prompts: vec![],
             location: None,
@@ -1554,6 +1560,51 @@ description = "Bare minimum"
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "http_request");
         assert_ne!(skills[0].name, "CONTRIBUTING");
+    }
+
+    #[test]
+    fn skill_tool_deserializes_env_section() {
+        let toml_str = r#"
+[skill]
+name = "test"
+description = "test skill"
+version = "1.0.0"
+
+[[tools]]
+name = "my_tool"
+description = "a tool"
+kind = "shell"
+command = "echo hello"
+
+[tools.env]
+SKILL_URL_VERIFY_TIMEOUT = "5"
+SKILL_VERBATIM_GATE = "0"
+"#;
+        let manifest: SkillManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.tools.len(), 1);
+        let env = &manifest.tools[0].env;
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.get("SKILL_URL_VERIFY_TIMEOUT").unwrap(), "5");
+        assert_eq!(env.get("SKILL_VERBATIM_GATE").unwrap(), "0");
+    }
+
+    #[test]
+    fn skill_tool_deserializes_without_env_section() {
+        let toml_str = r#"
+[skill]
+name = "test"
+description = "test skill"
+version = "1.0.0"
+
+[[tools]]
+name = "my_tool"
+description = "a tool"
+kind = "shell"
+command = "echo hello"
+"#;
+        let manifest: SkillManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.tools.len(), 1);
+        assert!(manifest.tools[0].env.is_empty());
     }
 }
 
