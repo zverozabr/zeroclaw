@@ -1792,6 +1792,21 @@ fn strip_tool_result_blocks(text: &str) -> String {
     result.trim().to_string()
 }
 
+/// Strip unparsed `<tool_call>` / `<toolcall>` / `<tool-call>` / `<invoke>` tags
+/// from text that will be shown to the user. Returns true if any were stripped.
+fn strip_unparsed_tool_call_tags(text: &str) -> (String, bool) {
+    static TOOL_CALL_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?si)<(?:tool_call|toolcall|tool-call|invoke)\b[^>]*>.*?</(?:tool_call|toolcall|tool-call|invoke)>").unwrap()
+    });
+    static UNCLOSED_TOOL_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?si)<(?:tool_call|toolcall|tool-call|invoke)\b[^>]*>.*").unwrap()
+    });
+    let had_tags = TOOL_CALL_TAG_RE.is_match(text) || UNCLOSED_TOOL_CALL_RE.is_match(text);
+    let result = TOOL_CALL_TAG_RE.replace_all(text, "");
+    let result = UNCLOSED_TOOL_CALL_RE.replace_all(&result, "");
+    (result.trim().to_string(), had_tags)
+}
+
 fn detect_tool_call_parse_issue(response: &str, parsed_calls: &[ParsedToolCall]) -> Option<String> {
     if !parsed_calls.is_empty() {
         return None;
@@ -2484,6 +2499,27 @@ pub(crate) async fn run_tool_call_loop(
         }
 
         if tool_calls.is_empty() {
+            // Strip any unparsed <tool_call> tags that would leak XML to the user.
+            let (cleaned_text, had_tool_tags) = strip_unparsed_tool_call_tags(&display_text);
+            if had_tool_tags {
+                tracing::warn!(
+                    original_len = display_text.len(),
+                    cleaned_len = cleaned_text.len(),
+                    "Stripped unparseable <tool_call> tags from final response"
+                );
+            }
+            let display_text = if cleaned_text.is_empty() && had_tool_tags {
+                // Model produced only malformed tool calls — return error
+                // so the caller can retry or report gracefully.
+                return Err(anyhow::anyhow!(
+                    "Model produced only malformed tool calls that could not be parsed"
+                ));
+            } else if cleaned_text.is_empty() {
+                display_text
+            } else {
+                cleaned_text
+            };
+
             runtime_trace::record_event(
                 "turn_final_response",
                 Some(channel_name),
@@ -5395,6 +5431,46 @@ Final answer."#;
     fn strip_tool_result_blocks_returns_empty_for_only_tags() {
         let input = "<tool_result name=\"memory_recall\" status=\"ok\">\n{}\n</tool_result>";
         assert_eq!(strip_tool_result_blocks(input), "");
+    }
+
+    #[test]
+    fn strip_unparsed_tool_call_tags_removes_matched_tags() {
+        let input = "Hello <tool_call>{\"name\":\"x\",\"arguments\":{}}</tool_call> world";
+        let (result, stripped) = strip_unparsed_tool_call_tags(input);
+        assert!(stripped);
+        assert_eq!(result, "Hello  world");
+    }
+
+    #[test]
+    fn strip_unparsed_tool_call_tags_removes_unclosed_tags() {
+        let input = "Hello <tool_call>{\"name\":\"x\"";
+        let (result, stripped) = strip_unparsed_tool_call_tags(input);
+        assert!(stripped);
+        assert_eq!(result, "Hello");
+    }
+
+    #[test]
+    fn strip_unparsed_tool_call_tags_handles_aliases() {
+        let input = "<toolcall>stuff</toolcall>Clean text";
+        let (result, stripped) = strip_unparsed_tool_call_tags(input);
+        assert!(stripped);
+        assert_eq!(result, "Clean text");
+    }
+
+    #[test]
+    fn strip_unparsed_tool_call_tags_clean_text_untouched() {
+        let input = "Just a normal response.";
+        let (result, stripped) = strip_unparsed_tool_call_tags(input);
+        assert!(!stripped);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn strip_unparsed_tool_call_tags_only_tags_returns_empty() {
+        let input = "<tool_call>{\"name\":\"submit_contacts\",\"arguments\":{\"contacts_json\":\"{}\"}}</tool_call>";
+        let (result, stripped) = strip_unparsed_tool_call_tags(input);
+        assert!(stripped);
+        assert!(result.is_empty());
     }
 
     #[test]
