@@ -131,6 +131,41 @@ fn truncate_tool_args_for_progress(name: &str, args: &serde_json::Value, max_len
     }
 }
 
+/// Truncate a tool result to `max_chars`, preserving UTF-8 boundaries.
+fn truncate_tool_result(output: &str, max_chars: usize) -> String {
+    if output.len() <= max_chars {
+        return output.to_string();
+    }
+    let boundary = output.floor_char_boundary(max_chars);
+    format!(
+        "{}\n...(truncated, {} chars total)",
+        &output[..boundary],
+        output.len()
+    )
+}
+
+/// Emergency compaction: truncate tool results in history and keep only recent messages.
+fn compact_history_for_budget(
+    history: &mut Vec<ChatMessage>,
+    max_result_chars: usize,
+    keep_recent: usize,
+) {
+    // Drop old messages, keep system prompt (first) + recent
+    if history.len() > keep_recent + 1 {
+        let system = history[0].clone();
+        let recent: Vec<_> = history.iter().rev().take(keep_recent).cloned().collect();
+        history.clear();
+        history.push(system);
+        history.extend(recent.into_iter().rev());
+    }
+    // Truncate tool results in remaining messages
+    for msg in history.iter_mut() {
+        if msg.role == "tool" && msg.content.len() > max_result_chars {
+            msg.content = truncate_tool_result(&msg.content, max_result_chars);
+        }
+    }
+}
+
 /// Convert a tool registry to OpenAI function-calling format for native tool support.
 fn tools_to_openai_format(tools_registry: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
     tools_registry
@@ -1967,6 +2002,8 @@ pub(crate) async fn agent_turn(
         None,
         &[],
         &[],
+        5,
+        4000,
     )
     .await
 }
@@ -2167,6 +2204,8 @@ pub(crate) async fn run_tool_call_loop(
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
+    max_parallel_tool_calls: usize,
+    max_tool_result_chars: usize,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2502,11 +2541,15 @@ pub(crate) async fn run_tool_call_loop(
         // tool executions concurrently for lower wall-clock latency.
         let mut tool_results = String::new();
         let mut individual_results: Vec<(Option<String>, String)> = Vec::new();
+        let allow_parallel_execution = should_execute_tools_in_parallel(&tool_calls, approval);
+
         let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>> =
             (0..tool_calls.len()).map(|_| None).collect();
-        let allow_parallel_execution = should_execute_tools_in_parallel(&tool_calls, approval);
         let mut executable_indices: Vec<usize> = Vec::new();
         let mut executable_calls: Vec<ParsedToolCall> = Vec::new();
+        // Per-tool call counter for max_calls_per_turn enforcement.
+        let mut tool_call_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         for (idx, call) in tool_calls.iter().enumerate() {
             // ── Hook: before_tool_call (modifying) ──────────
@@ -2635,6 +2678,37 @@ pub(crate) async fn run_tool_call_loop(
                 continue;
             }
 
+            // ── Per-tool call cap ──────────────────────────────
+            if let Some(tool_impl) = tools_registry.iter().find(|t| t.name() == tool_name) {
+                if let Some(max) = tool_impl.max_calls_per_turn() {
+                    let count = tool_call_counts.entry(tool_name.clone()).or_insert(0);
+                    if *count >= max {
+                        let skip_msg = format!(
+                            "Skipped: {tool_name} already called {count} times this turn (limit {max}). \
+                             Use a different tool or refine your approach."
+                        );
+                        tracing::info!(
+                            tool = %tool_name,
+                            count = *count,
+                            max = max,
+                            "Per-tool call cap reached, skipping"
+                        );
+                        ordered_results[idx] = Some((
+                            tool_name.clone(),
+                            call.tool_call_id.clone(),
+                            ToolExecutionOutcome {
+                                output: skip_msg,
+                                success: false,
+                                error_reason: Some("per-tool call cap".into()),
+                                duration: Duration::ZERO,
+                            },
+                        ));
+                        continue;
+                    }
+                    *count += 1;
+                }
+            }
+
             runtime_trace::record_event(
                 "tool_call_start",
                 Some(channel_name),
@@ -2671,13 +2745,36 @@ pub(crate) async fn run_tool_call_loop(
         }
 
         let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
-            execute_tools_parallel(
-                &executable_calls,
-                tools_registry,
-                observer,
-                cancellation_token.as_ref(),
-            )
-            .await?
+            let max_par = max_parallel_tool_calls.max(1);
+            if executable_calls.len() <= max_par {
+                // Small batch — run all in parallel
+                execute_tools_parallel(
+                    &executable_calls,
+                    tools_registry,
+                    observer,
+                    cancellation_token.as_ref(),
+                )
+                .await?
+            } else {
+                // Large batch — split into sequential groups of max_parallel
+                tracing::info!(
+                    total = executable_calls.len(),
+                    batch_size = max_par,
+                    "Batching tool calls to limit parallelism"
+                );
+                let mut all_outcomes = Vec::new();
+                for chunk in executable_calls.chunks(max_par) {
+                    let batch = execute_tools_parallel(
+                        chunk,
+                        tools_registry,
+                        observer,
+                        cancellation_token.as_ref(),
+                    )
+                    .await?;
+                    all_outcomes.extend(batch);
+                }
+                all_outcomes
+            }
         } else {
             execute_tools_sequential(
                 &executable_calls,
@@ -2747,11 +2844,18 @@ pub(crate) async fn run_tool_call_loop(
                 duration_ms = outcome.duration.as_millis() as u64,
                 "Tool execution result"
             );
-            individual_results.push((tool_call_id, outcome.output.clone()));
+            // Per-tool max_result_chars override, then global default
+            let tool_max_chars = tools_registry
+                .iter()
+                .find(|t| t.name() == tool_name)
+                .and_then(|t| t.max_result_chars())
+                .unwrap_or(max_tool_result_chars);
+            let truncated_output = truncate_tool_result(&outcome.output, tool_max_chars);
+            individual_results.push((tool_call_id, truncated_output.clone()));
             let _ = writeln!(
                 tool_results,
                 "<tool_result name=\"{}\">\n{}\n</tool_result>",
-                tool_name, outcome.output
+                tool_name, truncated_output
             );
         }
 
@@ -2846,6 +2950,25 @@ pub(crate) async fn run_tool_call_loop(
                 });
                 history.push(ChatMessage::tool(tool_msg.to_string()));
             }
+        }
+
+        // Token budget safety net — compact history if context is too large
+        let total_chars: usize = history.iter().map(|m| m.content.len()).sum();
+        let approx_tokens = total_chars / 3;
+        if approx_tokens > 800_000 {
+            tracing::warn!(
+                approx_tokens,
+                history_len = history.len(),
+                "Token budget critical — aggressive compaction"
+            );
+            compact_history_for_budget(history, 1000, 10);
+        } else if approx_tokens > 500_000 {
+            tracing::info!(
+                approx_tokens,
+                history_len = history.len(),
+                "Token budget high — soft compaction"
+            );
+            compact_history_for_budget(history, 2000, 15);
         }
     }
 
@@ -3217,6 +3340,8 @@ pub async fn run(
             None,
             &[],
             &config.agent.tool_call_dedup_exempt,
+            config.agent.max_parallel_tool_calls,
+            config.agent.max_tool_result_chars,
         )
         .await?;
         final_output = response.clone();
@@ -3351,6 +3476,8 @@ pub async fn run(
                 None,
                 &[],
                 &config.agent.tool_call_dedup_exempt,
+                config.agent.max_parallel_tool_calls,
+                config.agent.max_tool_result_chars,
             )
             .await
             {
@@ -3897,6 +4024,8 @@ mod tests {
             None,
             &[],
             &[],
+            5,
+            4000,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3944,6 +4073,8 @@ mod tests {
             None,
             &[],
             &[],
+            5,
+            4000,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3985,6 +4116,8 @@ mod tests {
             None,
             &[],
             &[],
+            5,
+            4000,
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -4112,6 +4245,8 @@ mod tests {
             None,
             &[],
             &[],
+            5,
+            4000,
         )
         .await
         .expect("parallel execution should complete");
@@ -4182,6 +4317,8 @@ mod tests {
             None,
             &[],
             &[],
+            5,
+            4000,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4244,6 +4381,8 @@ mod tests {
             None,
             &[],
             &exempt,
+            5,
+            4000,
         )
         .await
         .expect("loop should finish with exempt tool executing twice");
@@ -4321,6 +4460,8 @@ mod tests {
             None,
             &[],
             &exempt,
+            5,
+            4000,
         )
         .await
         .expect("loop should complete");
@@ -4375,6 +4516,8 @@ mod tests {
             None,
             &[],
             &[],
+            5,
+            4000,
         )
         .await
         .expect("native fallback id flow should complete");
@@ -6086,5 +6229,353 @@ Let me check the result."#;
         let parsed: serde_json::Value = serde_json::from_str(result.as_deref().unwrap()).unwrap();
         assert_eq!(parsed["content"].as_str(), Some("answer"));
         assert!(parsed.get("reasoning_content").is_none());
+    }
+
+    // ── Tool call optimization tests ──────────────────────────────────
+
+    #[test]
+    fn truncate_tool_result_noop_for_short_output() {
+        let input = "hello world";
+        let result = truncate_tool_result(input, 100);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn truncate_tool_result_truncates_long_output() {
+        let input = "a".repeat(5000);
+        let result = truncate_tool_result(&input, 100);
+        assert!(result.len() < 200);
+        assert!(result.contains("...(truncated, 5000 chars total)"));
+        assert!(result.starts_with("aaaa"));
+    }
+
+    #[test]
+    fn truncate_tool_result_respects_utf8_boundaries() {
+        // Cyrillic chars are 2 bytes each
+        let input = "Б".repeat(500); // 1000 bytes, 500 chars
+        let result = truncate_tool_result(&input, 200);
+        assert!(result.contains("...(truncated,"));
+        // Must not panic on UTF-8 boundary
+        assert!(result.starts_with("Б"));
+    }
+
+    #[test]
+    fn compact_history_for_budget_keeps_system_and_recent() {
+        let mut history: Vec<ChatMessage> = Vec::new();
+        history.push(ChatMessage::system("system prompt"));
+        for i in 0..20 {
+            history.push(ChatMessage::user(format!("msg {i}")));
+        }
+        assert_eq!(history.len(), 21);
+
+        compact_history_for_budget(&mut history, 4000, 5);
+
+        // system + 5 recent = 6
+        assert_eq!(history.len(), 6);
+        assert_eq!(history[0].role, "system");
+        assert_eq!(history[0].content, "system prompt");
+        // Last message should be the most recent
+        assert!(history[5].content.contains("msg 19"));
+    }
+
+    #[test]
+    fn compact_history_for_budget_truncates_tool_results() {
+        let mut history: Vec<ChatMessage> = Vec::new();
+        history.push(ChatMessage::system("sys"));
+        history.push(ChatMessage::tool("x".repeat(10000)));
+        history.push(ChatMessage::user("last"));
+
+        compact_history_for_budget(&mut history, 100, 10);
+
+        // All 3 messages kept (< keep_recent + 1)
+        assert_eq!(history.len(), 3);
+        // Tool result should be truncated
+        assert!(history[1].content.len() < 200);
+        assert!(history[1].content.contains("...(truncated,"));
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_batches_parallel_calls_to_max_limit() {
+        // Provider returns 6 tool calls, max_parallel=2 → should batch into 3 groups
+        let provider = ScriptedProvider::from_text_responses(vec![
+            r#"<tool_call>
+{"name":"delay_a","arguments":{"value":"1"}}
+</tool_call>
+<tool_call>
+{"name":"delay_a","arguments":{"value":"2"}}
+</tool_call>
+<tool_call>
+{"name":"delay_a","arguments":{"value":"3"}}
+</tool_call>
+<tool_call>
+{"name":"delay_a","arguments":{"value":"4"}}
+</tool_call>
+<tool_call>
+{"name":"delay_a","arguments":{"value":"5"}}
+</tool_call>
+<tool_call>
+{"name":"delay_a","arguments":{"value":"6"}}
+</tool_call>"#,
+            "done",
+        ]);
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(DelayTool::new(
+            "delay_a",
+            100,
+            Arc::clone(&active),
+            Arc::clone(&max_active),
+        ))];
+
+        let approval_cfg = crate::config::AutonomyConfig {
+            level: crate::security::AutonomyLevel::Full,
+            ..crate::config::AutonomyConfig::default()
+        };
+        let approval_mgr = ApprovalManager::from_config(&approval_cfg);
+
+        let mut history = vec![
+            ChatMessage::system("test-system"),
+            ChatMessage::user("run 6 calls"),
+        ];
+        let observer = NoopObserver;
+
+        let result = run_tool_call_loop(
+            &provider,
+            &mut history,
+            &tools_registry,
+            &observer,
+            "mock",
+            "mock",
+            0.0,
+            true,
+            Some(&approval_mgr),
+            "test",
+            &crate::config::MultimodalConfig::default(),
+            4,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            2, // max_parallel_tool_calls = 2
+            4000,
+        )
+        .await
+        .expect("tool loop should succeed");
+
+        assert_eq!(result, "done");
+        // With max_parallel=2 and 6 calls, max concurrency should be <= 2
+        let peak = max_active.load(Ordering::SeqCst);
+        assert!(
+            peak <= 2,
+            "Peak concurrency was {peak}, expected <= 2 with max_parallel_tool_calls=2"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_truncates_tool_results_to_max_chars() {
+        // Tool returns a large output; max_tool_result_chars=50 should truncate it
+        struct LargeOutputTool;
+
+        #[async_trait]
+        impl Tool for LargeOutputTool {
+            fn name(&self) -> &str {
+                "big_tool"
+            }
+            fn description(&self) -> &str {
+                "Returns large output"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {"x": {"type": "string"}}})
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+            ) -> anyhow::Result<crate::tools::ToolResult> {
+                Ok(crate::tools::ToolResult {
+                    success: true,
+                    output: "Z".repeat(10000),
+                    error: None,
+                })
+            }
+        }
+
+        let provider = ScriptedProvider::from_text_responses(vec![
+            r#"<tool_call>
+{"name":"big_tool","arguments":{"x":"go"}}
+</tool_call>"#,
+            "final answer",
+        ]);
+
+        let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(LargeOutputTool)];
+        let mut history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("do it"),
+        ];
+        let observer = NoopObserver;
+
+        let result = run_tool_call_loop(
+            &provider,
+            &mut history,
+            &tools_registry,
+            &observer,
+            "mock",
+            "mock",
+            0.0,
+            true,
+            None,
+            "cli",
+            &crate::config::MultimodalConfig::default(),
+            4,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            5,
+            50, // max_tool_result_chars = 50
+        )
+        .await
+        .expect("should succeed");
+
+        assert_eq!(result, "final answer");
+
+        // Check that tool result in history was truncated
+        let tool_msgs: Vec<_> = history
+            .iter()
+            .filter(|m| m.role == "tool" || (m.role == "user" && m.content.contains("tool_result")))
+            .collect();
+        assert!(!tool_msgs.is_empty(), "should have tool result in history");
+
+        for msg in &tool_msgs {
+            assert!(
+                msg.content.len() < 500,
+                "Tool result in history should be truncated, got {} chars",
+                msg.content.len()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_respects_per_tool_call_cap() {
+        // Provider returns 10 tool calls to the same tool (each with distinct args
+        // to avoid dedup), then returns "done" on the next LLM turn.
+        let mut tool_calls_xml = String::new();
+        for i in 0..10 {
+            tool_calls_xml.push_str(&format!(
+                "<tool_call>\n{{\"name\":\"capped_tool\",\"arguments\":{{\"value\":\"{i}\"}}}}\n</tool_call>\n"
+            ));
+        }
+
+        let provider = ScriptedProvider::from_text_responses(vec![&tool_calls_xml, "done"]);
+
+        let invocations = Arc::new(AtomicUsize::new(0));
+
+        struct CappedTool {
+            invocations: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl Tool for CappedTool {
+            fn name(&self) -> &str {
+                "capped_tool"
+            }
+            fn description(&self) -> &str {
+                "Tool with per-turn call cap"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "string" }
+                    }
+                })
+            }
+            fn max_calls_per_turn(&self) -> Option<usize> {
+                Some(3)
+            }
+            async fn execute(
+                &self,
+                args: serde_json::Value,
+            ) -> anyhow::Result<crate::tools::ToolResult> {
+                self.invocations.fetch_add(1, Ordering::SeqCst);
+                let value = args
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                Ok(crate::tools::ToolResult {
+                    success: true,
+                    output: format!("executed:{value}"),
+                    error: None,
+                })
+            }
+        }
+
+        let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(CappedTool {
+            invocations: Arc::clone(&invocations),
+        })];
+
+        let approval_cfg = crate::config::AutonomyConfig {
+            level: crate::security::AutonomyLevel::Full,
+            ..crate::config::AutonomyConfig::default()
+        };
+        let approval_mgr = ApprovalManager::from_config(&approval_cfg);
+
+        let mut history = vec![
+            ChatMessage::system("test-system"),
+            ChatMessage::user("run capped tool many times"),
+        ];
+        let observer = NoopObserver;
+
+        let result = run_tool_call_loop(
+            &provider,
+            &mut history,
+            &tools_registry,
+            &observer,
+            "mock",
+            "mock",
+            0.0,
+            true,
+            Some(&approval_mgr),
+            "test",
+            &crate::config::MultimodalConfig::default(),
+            4,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            5,
+            4000,
+        )
+        .await
+        .expect("tool loop should succeed");
+
+        assert_eq!(result, "done");
+
+        // Only 3 out of 10 calls should have actually executed.
+        let actual = invocations.load(Ordering::SeqCst);
+        assert_eq!(
+            actual, 3,
+            "Expected exactly 3 tool executions (cap), but got {actual}"
+        );
+
+        // The remaining 7 should have produced skip messages in history.
+        // Results may be split across a "[Tool results]" user message or
+        // individual "tool" role messages depending on whether tool_call_ids
+        // are present.  Search all history for the skip text.
+        let all_history = history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let skip_count = all_history
+            .matches("already called")
+            .count();
+        assert_eq!(
+            skip_count, 7,
+            "Expected 7 skip messages for capped calls, but found {skip_count}"
+        );
     }
 }

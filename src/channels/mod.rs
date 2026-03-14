@@ -384,6 +384,8 @@ struct ChannelRuntimeContext {
     non_cli_excluded_tools: Arc<Vec<String>>,
     tool_call_dedup_exempt: Arc<Vec<String>>,
     model_routes: Arc<Vec<crate::config::ModelRouteConfig>>,
+    max_parallel_tool_calls: usize,
+    max_tool_result_chars: usize,
 }
 
 #[derive(Clone)]
@@ -2038,6 +2040,8 @@ async fn process_channel_message(
                     ctx.non_cli_excluded_tools.as_ref()
                 },
                 ctx.tool_call_dedup_exempt.as_ref(),
+                ctx.max_parallel_tool_calls,
+                ctx.max_tool_result_chars,
             ),
         ) => LlmExecutionResult::Completed(result),
     };
@@ -3726,6 +3730,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
         non_cli_excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
         tool_call_dedup_exempt: Arc::new(config.agent.tool_call_dedup_exempt.clone()),
         model_routes: Arc::new(config.model_routes.clone()),
+        max_parallel_tool_calls: config.agent.max_parallel_tool_calls,
+        max_tool_result_chars: config.agent.max_tool_result_chars,
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages).await;
@@ -3957,6 +3963,8 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -4008,6 +4016,8 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -4062,6 +4072,8 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -4556,6 +4568,8 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -4619,6 +4633,8 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -4696,6 +4712,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -4758,6 +4776,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -4830,6 +4850,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -4922,6 +4944,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -4996,6 +5020,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -5085,6 +5111,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -5159,6 +5187,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -5223,6 +5253,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -5398,6 +5430,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -5482,6 +5516,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -5578,6 +5614,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -5656,6 +5694,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -5718,6 +5758,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -5928,6 +5970,9 @@ BTC is currently around $65,000 based on latest tool output."#
                 args: HashMap::new(),
                 tags: vec![],
                 terminal: false,
+                max_parallel: None,
+                max_result_chars: None,
+                max_calls_per_turn: None,
             }],
             prompts: vec!["Always run cargo test before final response.".into()],
             location: None,
@@ -5965,6 +6010,9 @@ BTC is currently around $65,000 based on latest tool output."#
                 args: HashMap::new(),
                 tags: vec![],
                 terminal: false,
+                max_parallel: None,
+                max_result_chars: None,
+                max_calls_per_turn: None,
             }],
             prompts: vec!["Always run cargo test before final response.".into()],
             location: None,
@@ -6008,6 +6056,9 @@ BTC is currently around $65,000 based on latest tool output."#
                 args: HashMap::new(),
                 tags: vec![],
                 terminal: false,
+                max_parallel: None,
+                max_result_chars: None,
+                max_calls_per_turn: None,
             }],
             prompts: vec!["Use <tool_call> and & keep output \"safe\"".into()],
             location: None,
@@ -6289,6 +6340,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -6378,6 +6431,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -6469,6 +6524,8 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(
@@ -7023,6 +7080,8 @@ This is an example JSON object for profile settings."#;
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -7092,6 +7151,8 @@ This is an example JSON object for profile settings."#;
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
         });
 
         process_channel_message(

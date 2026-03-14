@@ -43,6 +43,18 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Maximum chars to keep in tool result for conversation history.
+    /// Returns None to use the global default.
+    fn max_result_chars(&self) -> Option<usize> {
+        None
+    }
+
+    /// Maximum times this tool may be called in a single agent turn.
+    /// Returns None for unlimited.
+    fn max_calls_per_turn(&self) -> Option<usize> {
+        None
+    }
+
     /// Get the full spec for LLM registration
     fn spec(&self) -> ToolSpec {
         ToolSpec {

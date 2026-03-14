@@ -294,6 +294,14 @@ pub struct DelegateAgentConfig {
     /// `[reliability].fallback_providers`, e.g. `"gemini:gemini-api-1"`).
     #[serde(default)]
     pub fallback_providers: Vec<String>,
+    /// Maximum parallel tool calls per batch in agentic mode.
+    /// Defaults to 5 when absent.
+    #[serde(default)]
+    pub max_parallel_tool_calls: Option<usize>,
+    /// Maximum chars kept in tool results for conversation history.
+    /// Defaults to 4000 when absent.
+    #[serde(default)]
+    pub max_tool_result_chars: Option<usize>,
 }
 
 /// Valid temperature range for all paths (config, CLI, env override).
@@ -625,6 +633,14 @@ pub struct AgentConfig {
     /// Tools exempt from the within-turn duplicate-call dedup check. Default: `[]`.
     #[serde(default)]
     pub tool_call_dedup_exempt: Vec<String>,
+    /// Maximum number of tool calls executed in parallel per iteration. Default: `5`.
+    /// If the LLM requests more calls, they are batched into sequential groups.
+    #[serde(default = "default_max_parallel_tool_calls")]
+    pub max_parallel_tool_calls: usize,
+    /// Maximum chars kept per tool result in conversation history. Default: `4000`.
+    /// Results exceeding this are truncated with a `...(truncated)` suffix.
+    #[serde(default = "default_max_tool_result_chars")]
+    pub max_tool_result_chars: usize,
 }
 
 fn default_agent_max_tool_iterations() -> usize {
@@ -639,6 +655,14 @@ fn default_agent_tool_dispatcher() -> String {
     "auto".into()
 }
 
+fn default_max_parallel_tool_calls() -> usize {
+    5
+}
+
+fn default_max_tool_result_chars() -> usize {
+    4000
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -648,6 +672,8 @@ impl Default for AgentConfig {
             parallel_tools: false,
             tool_dispatcher: default_agent_tool_dispatcher(),
             tool_call_dedup_exempt: Vec::new(),
+            max_parallel_tool_calls: default_max_parallel_tool_calls(),
+            max_tool_result_chars: default_max_tool_result_chars(),
         }
     }
 }
@@ -6105,6 +6131,8 @@ tool_dispatcher = "xml"
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
 

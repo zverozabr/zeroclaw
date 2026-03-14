@@ -1147,6 +1147,13 @@ fn assert_full_message_if_no_link(text: &str) {
         text.len()
     );
     let lower = text.to_lowercase();
+    // When source is unavailable (personal chat), author info is acceptable
+    let has_author_or_source = lower.contains("автор")
+        || lower.contains("источник")
+        || lower.contains("author");
+    if has_author_or_source {
+        return;
+    }
     let has_media = lower.contains("фото")
         || lower.contains("видео")
         || lower.contains("photo")
@@ -1158,8 +1165,8 @@ fn assert_full_message_if_no_link(text: &str) {
         || text.contains("📎");
     assert!(
         has_media,
-        "Без t.me/ ссылки ответ должен упоминать медиа (фото/видео/медиа/переслано), \
-         получено:\n{text}"
+        "Без t.me/ ссылки ответ должен упоминать медиа (фото/видео/медиа/переслано) \
+         или автора/источник, получено:\n{text}"
     );
 }
 

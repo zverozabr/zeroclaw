@@ -45,6 +45,8 @@ pub struct SkillToolHandler {
     security: Arc<SecurityPolicy>,
     /// Directory containing the SKILL.toml — set as `SKILL_DIR` env var.
     skill_dir: Option<PathBuf>,
+    /// Per-tool concurrency limiter. None = unlimited.
+    concurrency_limit: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl SkillToolHandler {
@@ -62,12 +64,16 @@ impl SkillToolHandler {
             );
         }
         let parameters = Self::extract_parameters(&tool_def)?;
+        let concurrency_limit = tool_def
+            .max_parallel
+            .map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
         Ok(Self {
             skill_name,
             tool_def,
             parameters,
             security,
             skill_dir,
+            concurrency_limit,
         })
     }
 
@@ -325,7 +331,25 @@ impl Tool for SkillToolHandler {
         self.tool_def.terminal
     }
 
+    fn max_result_chars(&self) -> Option<usize> {
+        self.tool_def.max_result_chars
+    }
+
+    fn max_calls_per_turn(&self) -> Option<usize> {
+        self.tool_def.max_calls_per_turn
+    }
+
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
+        // Per-tool concurrency limit — held for the duration of execute()
+        let _permit = match &self.concurrency_limit {
+            Some(sem) => Some(
+                sem.acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Semaphore closed: {e}"))?,
+            ),
+            None => None,
+        };
+
         if self.security.is_rate_limited() {
             return Ok(ToolResult {
                 output: "Rate limit exceeded — try again later.".into(),
@@ -443,6 +467,9 @@ mod tests {
             args,
             tags: vec!["test-tag".to_string()],
             terminal: true,
+            max_parallel: None,
+            max_result_chars: None,
+            max_calls_per_turn: None,
         }
     }
 
@@ -670,6 +697,9 @@ mod tests {
             args: HashMap::new(),
             tags: Vec::new(),
             terminal: false,
+            max_parallel: None,
+            max_result_chars: None,
+            max_calls_per_turn: None,
         };
         let security = Arc::new(SecurityPolicy::default());
         let result = SkillToolHandler::new("test".into(), tool_def, security, None);
@@ -688,6 +718,9 @@ mod tests {
                 .collect(),
             tags: Vec::new(),
             terminal: false,
+            max_parallel: None,
+            max_result_chars: None,
+            max_calls_per_turn: None,
         };
         let security = Arc::new(SecurityPolicy::default());
         let handler = SkillToolHandler::new("test".into(), tool_def, security, None).unwrap();

@@ -56,6 +56,16 @@ pub struct SkillTool {
     /// directly to the user without an additional LLM turn.
     #[serde(default)]
     pub terminal: bool,
+    /// Maximum concurrent executions of this tool. Overrides global `max_parallel_tool_calls`.
+    #[serde(default)]
+    pub max_parallel: Option<usize>,
+    /// Maximum chars kept in result for conversation history. Overrides global `max_tool_result_chars`.
+    #[serde(default)]
+    pub max_result_chars: Option<usize>,
+    /// Maximum times this tool may be called in a single agent turn.
+    /// Excess calls receive a synthetic skip message instead of executing.
+    #[serde(default)]
+    pub max_calls_per_turn: Option<usize>,
 }
 
 /// Skill manifest parsed from SKILL.toml
@@ -1163,6 +1173,9 @@ command = "echo hello"
                 args: HashMap::new(),
                 tags: vec![],
                 terminal: false,
+                max_parallel: None,
+                max_result_chars: None,
+                max_calls_per_turn: None,
             }],
             prompts: vec!["Do the thing.".to_string()],
             location: Some(PathBuf::from("/tmp/workspace/skills/test/SKILL.md")),
@@ -1365,6 +1378,9 @@ description = "Bare minimum"
                 args: HashMap::new(),
                 tags: vec![],
                 terminal: false,
+                max_parallel: None,
+                max_result_chars: None,
+                max_calls_per_turn: None,
             }],
             prompts: vec![],
             location: None,

@@ -1282,6 +1282,8 @@ mod tests {
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
         config.agents.insert(
@@ -1297,6 +1299,8 @@ mod tests {
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
 

@@ -470,6 +470,8 @@ impl DelegateTool {
                 None,
                 &[],
                 &[],
+                agent_config.max_parallel_tool_calls.unwrap_or(5),
+                agent_config.max_tool_result_chars.unwrap_or(4000),
             ),
         )
         .await;
@@ -552,6 +554,10 @@ impl Tool for ToolArcRef {
         self.inner.parameters_schema()
     }
 
+    fn max_calls_per_turn(&self) -> Option<usize> {
+        self.inner.max_calls_per_turn()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.inner.execute(args).await
     }
@@ -599,6 +605,8 @@ mod tests {
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
         agents.insert(
@@ -614,6 +622,8 @@ mod tests {
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
         agents
@@ -768,6 +778,8 @@ mod tests {
             allowed_tools,
             max_iterations,
             fallback_providers: Vec::new(),
+            max_parallel_tool_calls: None,
+            max_tool_result_chars: None,
         }
     }
 
@@ -877,6 +889,8 @@ mod tests {
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -984,6 +998,8 @@ mod tests {
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1020,6 +1036,8 @@ mod tests {
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
                 fallback_providers: Vec::new(),
+                max_parallel_tool_calls: None,
+                max_tool_result_chars: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
