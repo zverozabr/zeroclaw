@@ -695,6 +695,19 @@ impl Provider for ReliableProvider {
                                 break;
                             }
 
+                            if rate_limited && self.providers.len() > 1 {
+                                tracing::info!(
+                                    provider = provider_name,
+                                    model = *current_model,
+                                    "Rate limited, skipping to next provider"
+                                );
+                                let cd = parse_retry_after_ms(&e)
+                                    .map(|ms| Duration::from_millis(ms.min(60_000)))
+                                    .unwrap_or(Self::RATE_LIMIT_COOLDOWN);
+                                self.set_cooldown(provider_idx, cd);
+                                break;
+                            }
+
                             if attempt < self.max_retries {
                                 let wait = self.compute_backoff(backoff_ms, &e);
                                 tracing::warn!(
@@ -850,6 +863,19 @@ impl Provider for ReliableProvider {
                                 break;
                             }
 
+                            if rate_limited && self.providers.len() > 1 {
+                                tracing::info!(
+                                    provider = provider_name,
+                                    model = *current_model,
+                                    "Rate limited, skipping to next provider"
+                                );
+                                let cd = parse_retry_after_ms(&e)
+                                    .map(|ms| Duration::from_millis(ms.min(60_000)))
+                                    .unwrap_or(Self::RATE_LIMIT_COOLDOWN);
+                                self.set_cooldown(provider_idx, cd);
+                                break;
+                            }
+
                             if attempt < self.max_retries {
                                 let wait = self.compute_backoff(backoff_ms, &e);
                                 tracing::warn!(
@@ -976,6 +1002,19 @@ impl Provider for ReliableProvider {
                                     error = %error_detail,
                                     "Non-retryable error, moving on"
                                 );
+                                break;
+                            }
+
+                            if rate_limited && self.providers.len() > 1 {
+                                tracing::info!(
+                                    provider = provider_name,
+                                    model = *current_model,
+                                    "Rate limited, skipping to next provider"
+                                );
+                                let cd = parse_retry_after_ms(&e)
+                                    .map(|ms| Duration::from_millis(ms.min(60_000)))
+                                    .unwrap_or(Self::RATE_LIMIT_COOLDOWN);
+                                self.set_cooldown(provider_idx, cd);
                                 break;
                             }
 
