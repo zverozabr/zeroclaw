@@ -190,6 +190,15 @@ pub trait Channel: Send + Sync {
     async fn unpin_message(&self, _channel_id: &str, _message_id: &str) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// Resolve a human-readable sender identity from the raw sender string.
+    ///
+    /// Channels may override this to look up display names, strip platform
+    /// prefixes, or enrich the sender label shown to the LLM. The default
+    /// implementation returns the raw sender unchanged.
+    fn sender_identity(&self, raw_sender: &str) -> String {
+        raw_sender.to_string()
+    }
 }
 
 #[cfg(test)]
