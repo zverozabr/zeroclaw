@@ -131,6 +131,11 @@ pub trait Channel: Send + Sync {
         Ok(())
     }
 
+    /// Delete a previously sent draft/status message (e.g. when no final reply is needed).
+    async fn delete_draft(&self, _recipient: &str, _message_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Finalize a draft with the complete response (e.g. apply Markdown formatting).
     async fn finalize_draft(
         &self,

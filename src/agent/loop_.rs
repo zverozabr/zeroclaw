@@ -189,6 +189,9 @@ const DEFAULT_MAX_HISTORY_MESSAGES: usize = 50;
 tokio::task_local! {
     pub(crate) static TOOL_LOOP_SESSION_REPORT_DIR: Option<String>;
     pub(crate) static TOOL_LOOP_SESSION_REPORT_MAX_FILES: usize;
+    /// Reply-to message ID from the incoming channel message.
+    /// Used by skill tools to pass to subprocess env (ZC_REPLY_TO_MESSAGE_ID).
+    pub(crate) static TOOL_LOOP_REPLY_TO_MESSAGE_ID: Option<String>;
 }
 
 /// Run a future with the session report directory set in task-local storage.
@@ -205,6 +208,20 @@ where
             dir,
             TOOL_LOOP_SESSION_REPORT_MAX_FILES.scope(max_files, future),
         )
+        .await
+}
+
+/// Run a future with the reply-to message ID set in task-local storage.
+/// Skill tools read this to inject `ZC_REPLY_TO_MESSAGE_ID` into subprocess env.
+pub(crate) async fn scope_reply_to_message_id<F>(
+    reply_to: Option<String>,
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    TOOL_LOOP_REPLY_TO_MESSAGE_ID
+        .scope(reply_to, future)
         .await
 }
 
@@ -3149,6 +3166,9 @@ pub(crate) async fn run_tool_call_loop(
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
         }
 
+        // Track terminal tool output by name for early return check below.
+        let mut terminal_tool_output: Option<String> = None;
+
         for (tool_name, tool_call_id, outcome) in ordered_results.into_iter().flatten() {
             tracing::info!(
                 channel = channel_name,
@@ -3160,6 +3180,28 @@ pub(crate) async fn run_tool_call_loop(
                 duration_ms = u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX),
                 "Tool execution result"
             );
+            // Check if this tool is terminal and has meaningful output
+            if terminal_tool_output.is_none() {
+                let is_terminal = tools_registry
+                    .iter()
+                    .find(|t| t.name() == tool_name)
+                    .is_some_and(|t| t.is_terminal());
+                if is_terminal {
+                    // Terminal tool fired — exit the loop after this iteration.
+                    // Use empty string for service/trivial outputs (e.g. "done",
+                    // "Отправлено 3 контактов") so the channel doesn't send them
+                    // as a visible message. Only relay genuinely informative output.
+                    let trimmed = outcome.output.trim().to_lowercase();
+                    let is_service = trimmed.is_empty()
+                        || trimmed == "done"
+                        || trimmed.starts_with("skipped")
+                        || trimmed.starts_with("отправлено")
+                        || outcome.output.trim().starts_with('{')
+                        || outcome.output.trim().starts_with('[');
+                    terminal_tool_output =
+                        Some(if is_service { String::new() } else { outcome.output.clone() });
+                }
+            }
             // Per-tool max_result_chars override, then global default
             let tool_max_chars = tools_registry
                 .iter()
@@ -3180,31 +3222,7 @@ pub(crate) async fn run_tool_call_loop(
         // meaningful output, return it directly — skip the LLM re-turn that would
         // often generate a redundant plain-text summary or a malformed tool call.
         {
-            let terminal_output = tool_calls.iter().zip(individual_results.iter()).find_map(
-                |(call, (_id, output))| {
-                    let is_terminal = tools_registry
-                        .iter()
-                        .find(|t| t.name() == call.name)
-                        .is_some_and(|t| t.is_terminal());
-                    if is_terminal && !output.is_empty() {
-                        // Filter out trivial outputs that don't constitute a real answer
-                        let trimmed = output.trim().to_lowercase();
-                        let is_trivial = trimmed == "done"
-                            || trimmed.starts_with("skipped")
-                            || trimmed.is_empty();
-                        // Don't early-return raw JSON — let LLM format it
-                        let is_raw_json =
-                            output.trim().starts_with('{') || output.trim().starts_with('[');
-                        if is_trivial || is_raw_json {
-                            None
-                        } else {
-                            Some(output.clone())
-                        }
-                    } else {
-                        None
-                    }
-                },
-            );
+            let terminal_output = terminal_tool_output;
             if let Some(output) = terminal_output {
                 tracing::info!(
                     channel = channel_name,

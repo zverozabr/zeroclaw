@@ -2218,9 +2218,9 @@ impl Channel for TelegramChannel {
     }
 
     async fn send_draft(&self, message: &SendMessage) -> anyhow::Result<Option<String>> {
-        if self.stream_mode == StreamMode::Off {
-            return Ok(None);
-        }
+        // NOTE: no stream_mode check here — callers (LLM streaming) already gate
+        // on supports_draft_updates(). Tool notification code needs send_draft to
+        // always work so it can capture the message ID for subsequent edits.
 
         let (chat_id, thread_id) = Self::parse_reply_target(&message.recipient);
         let initial_text = if message.content.is_empty() {
@@ -2261,6 +2261,24 @@ impl Channel for TelegramChannel {
             .insert(chat_id.to_string(), std::time::Instant::now());
 
         Ok(message_id)
+    }
+
+    async fn delete_draft(&self, recipient: &str, message_id: &str) -> anyhow::Result<()> {
+        let (chat_id, _) = Self::parse_reply_target(recipient);
+        let msg_id: i64 = message_id.parse().unwrap_or(0);
+        if msg_id == 0 {
+            return Ok(());
+        }
+        let _ = self
+            .client
+            .post(self.api_url("deleteMessage"))
+            .json(&serde_json::json!({
+                "chat_id": chat_id,
+                "message_id": msg_id,
+            }))
+            .send()
+            .await;
+        Ok(())
     }
 
     async fn update_draft(
@@ -2925,13 +2943,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_draft_returns_none_when_stream_mode_off() {
+    async fn send_draft_attempts_send_even_when_stream_mode_off() {
+        // send_draft no longer short-circuits on stream_mode=Off so that tool
+        // notification messages can always be sent and edited. With a fake
+        // token the HTTP call will fail, which is the expected behaviour.
         let ch = TelegramChannel::new("fake-token".into(), vec!["*".into()], false);
-        let id = ch
-            .send_draft(&SendMessage::new("draft", "123"))
-            .await
-            .unwrap();
-        assert!(id.is_none());
+        let result = ch.send_draft(&SendMessage::new("draft", "123")).await;
+        // Should error because the fake token can't reach the Telegram API.
+        assert!(result.is_err());
     }
 
     #[tokio::test]

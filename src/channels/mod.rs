@@ -74,7 +74,9 @@ pub use whatsapp::WhatsAppChannel;
 #[cfg(feature = "whatsapp-web")]
 pub use whatsapp_web::WhatsAppWebChannel;
 
-use crate::agent::loop_::{build_tool_instructions, run_tool_call_loop, scrub_credentials};
+use crate::agent::loop_::{
+    build_tool_instructions, run_tool_call_loop, scope_reply_to_message_id, scrub_credentials,
+};
 use crate::config::Config;
 use crate::identity;
 use crate::memory::{self, Memory};
@@ -114,22 +116,6 @@ impl Observer for ChannelNotifyObserver {
     fn record_event(&self, event: &ObserverEvent) {
         if let ObserverEvent::ToolCallStart { tool, arguments } = event {
             self.tools_used.store(true, Ordering::Relaxed);
-
-            // Throttle: skip if we sent a notification recently.
-            let should_send = {
-                let mut last = self.last_notify.lock().unwrap_or_else(|e| e.into_inner());
-                let now = Instant::now();
-                if last.is_some_and(|t| now.duration_since(t) < TOOL_NOTIFY_MIN_INTERVAL) {
-                    false
-                } else {
-                    *last = Some(now);
-                    true
-                }
-            };
-            if !should_send {
-                self.inner.record_event(event);
-                return;
-            }
 
             // For `shell` tool, extract a cleaner label from the command.
             let (label, detail) = if tool == "shell" {
@@ -2131,23 +2117,59 @@ async fn process_channel_message(
     let notify_channel = target_channel.clone();
     let notify_reply_target = msg.reply_target.clone();
     let notify_thread_root = followup_thread_id(&msg);
-    let notify_task = if msg.channel == "cli" || !ctx.show_tool_calls {
+    let notify_reply_to = msg.reply_to_message_id.clone();
+    let notify_task: Option<tokio::task::JoinHandle<Option<String>>> = if msg.channel == "cli"
+        || !ctx.show_tool_calls
+    {
         Some(tokio::spawn(async move {
             while notify_rx.recv().await.is_some() {}
+            None
         }))
     } else {
         Some(tokio::spawn(async move {
             let thread_ts = notify_thread_root;
+            let mut status_msg_id: Option<String> = None;
+            let mut accumulated_lines: Vec<String> = Vec::new();
+
             while let Some(text) = notify_rx.recv().await {
                 if let Some(ref ch) = notify_channel {
-                    let _ = ch
-                        .send(
-                            &SendMessage::new(&text, &notify_reply_target)
-                                .in_thread(thread_ts.clone()),
-                        )
-                        .await;
+                    // Mark previous line as done, add new current line
+                    if let Some(last) = accumulated_lines.last_mut() {
+                        *last = last.replacen('\u{23f3}', "\u{2705}", 1);
+                    }
+                    accumulated_lines.push(format!("\u{23f3} {text}"));
+                    let status_text = accumulated_lines.join("\n");
+
+                    if let Some(ref mid) = status_msg_id {
+                        // Update existing status message
+                        let _ = ch.update_draft(&notify_reply_target, mid, &status_text).await;
+                    } else {
+                        // Send initial status message
+                        match ch
+                            .send_draft(
+                                &SendMessage::new(&status_text, &notify_reply_target)
+                                    .in_thread(thread_ts.clone())
+                                    .reply_to(notify_reply_to.clone()),
+                            )
+                            .await
+                        {
+                            Ok(Some(id)) => status_msg_id = Some(id),
+                            Ok(None) | Err(_) => {
+                                // Fallback: send as regular message
+                                let _ = ch
+                                    .send(
+                                        &SendMessage::new(&status_text, &notify_reply_target)
+                                            .in_thread(thread_ts.clone()),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
                 }
             }
+
+            // Return status message ID so it can be replaced by final answer
+            status_msg_id
         }))
     };
 
@@ -2187,33 +2209,36 @@ async fn process_channel_message(
         () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
         result = tokio::time::timeout(
             Duration::from_secs(timeout_budget_secs),
-            run_tool_call_loop(
-                active_provider.as_ref(),
-                &mut history,
-                ctx.tools_registry.as_ref(),
-                notify_observer.as_ref() as &dyn Observer,
-                route.provider.as_str(),
-                route.model.as_str(),
-                runtime_defaults.temperature,
-                true,
-                None,
-                msg.channel.as_str(),
-                &ctx.multimodal,
-                ctx.max_tool_iterations,
-                Some(cancellation_token.clone()),
-                delta_tx,
-                ctx.hooks.as_deref(),
-                if msg.channel == "cli" {
-                    &[]
-                } else {
-                    ctx.non_cli_excluded_tools.as_ref()
-                },
-                ctx.tool_call_dedup_exempt.as_ref(),
-                ctx.max_parallel_tool_calls,
-                ctx.max_tool_result_chars,
-                0,
-                session_recorder.as_ref(),
-                session_debug,
+            scope_reply_to_message_id(
+                msg.reply_to_message_id.clone(),
+                run_tool_call_loop(
+                    active_provider.as_ref(),
+                    &mut history,
+                    ctx.tools_registry.as_ref(),
+                    notify_observer.as_ref() as &dyn Observer,
+                    route.provider.as_str(),
+                    route.model.as_str(),
+                    runtime_defaults.temperature,
+                    true,
+                    None,
+                    msg.channel.as_str(),
+                    &ctx.multimodal,
+                    ctx.max_tool_iterations,
+                    Some(cancellation_token.clone()),
+                    delta_tx,
+                    ctx.hooks.as_deref(),
+                    if msg.channel == "cli" {
+                        &[]
+                    } else {
+                        ctx.non_cli_excluded_tools.as_ref()
+                    },
+                    ctx.tool_call_dedup_exempt.as_ref(),
+                    ctx.max_parallel_tool_calls,
+                    ctx.max_tool_result_chars,
+                    0,
+                    session_recorder.as_ref(),
+                    session_debug,
+                ),
             ),
         ) => LlmExecutionResult::Completed(result),
     };
@@ -2229,9 +2254,11 @@ async fn process_channel_message(
     // Drop the notify sender so the forwarder task finishes
     drop(notify_observer);
     drop(notify_observer_flag);
-    if let Some(handle) = notify_task {
-        let _ = handle.await;
-    }
+    let status_msg_id: Option<String> = if let Some(handle) = notify_task {
+        handle.await.ok().flatten()
+    } else {
+        None
+    };
 
     if let Some(token) = typing_cancellation.as_ref() {
         token.cancel();
@@ -2385,29 +2412,46 @@ async fn process_channel_message(
                 "channel.send: dispatching reply"
             );
             if let Some(channel) = target_channel.as_ref() {
-                if let Some(ref draft_id) = draft_message_id {
-                    if let Err(e) = channel
-                        .finalize_draft(&msg.reply_target, draft_id, &delivered_response)
+                // Skip sending empty responses (e.g. terminal tool with service output
+                // like "Отправлено 3 контактов" — the tool already delivered directly).
+                if delivered_response.trim().is_empty() {
+                    // Clean up any status/draft message so it doesn't linger.
+                    let effective_draft_id =
+                        draft_message_id.as_deref().or(status_msg_id.as_deref());
+                    if let Some(draft_id) = effective_draft_id {
+                        let _ = channel.delete_draft(&msg.reply_target, draft_id).await;
+                    }
+                    tracing::debug!("Skipping empty response — terminal tool delivered directly");
+                } else {
+                    // Prefer: streaming draft > status message > new message
+                    let effective_draft_id =
+                        draft_message_id.as_deref().or(status_msg_id.as_deref());
+                    if let Some(draft_id) = effective_draft_id {
+                        if let Err(e) = channel
+                            .finalize_draft(&msg.reply_target, draft_id, &delivered_response)
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to finalize draft: {e}; sending as new message"
+                            );
+                            let _ = channel
+                                .send(
+                                    &SendMessage::new(&delivered_response, &msg.reply_target)
+                                        .in_thread(msg.thread_ts.clone())
+                                        .reply_to(msg.reply_to_message_id.clone()),
+                                )
+                                .await;
+                        }
+                    } else if let Err(e) = channel
+                        .send(
+                            &SendMessage::new(delivered_response, &msg.reply_target)
+                                .in_thread(msg.thread_ts.clone())
+                                .reply_to(msg.reply_to_message_id.clone()),
+                        )
                         .await
                     {
-                        tracing::warn!("Failed to finalize draft: {e}; sending as new message");
-                        let _ = channel
-                            .send(
-                                &SendMessage::new(&delivered_response, &msg.reply_target)
-                                    .in_thread(msg.thread_ts.clone())
-                                    .reply_to(msg.reply_to_message_id.clone()),
-                            )
-                            .await;
+                        eprintln!("  ❌ Failed to reply on {}: {e}", channel.name());
                     }
-                } else if let Err(e) = channel
-                    .send(
-                        &SendMessage::new(delivered_response, &msg.reply_target)
-                            .in_thread(msg.thread_ts.clone())
-                            .reply_to(msg.reply_to_message_id.clone()),
-                    )
-                    .await
-                {
-                    eprintln!("  ❌ Failed to reply on {}: {e}", channel.name());
                 }
             }
             // Finalize session report on success

@@ -413,6 +413,14 @@ impl Tool for SkillToolHandler {
             cmd.env(key, val);
         }
 
+        // Inject reply-to message ID from channel context so skill scripts
+        // can reply to the user's original message.
+        if let Ok(Some(reply_to)) = crate::agent::loop_::TOOL_LOOP_REPLY_TO_MESSAGE_ID
+            .try_with(|v| v.clone())
+        {
+            cmd.env("ZC_REPLY_TO_MESSAGE_ID", reply_to);
+        }
+
         let output = cmd
             .output()
             .await

@@ -1036,13 +1036,14 @@ asyncio.run(main())
                         let text = chosen["text"].as_str().unwrap_or("").to_string();
                         return Some(text);
                     }
-                    // Skip intermediate tool-call notifications (🔧) and keep waiting
-                    // for the final answer.
+                    // Skip intermediate tool-call notifications (🔧/✅/⏳) and keep waiting
+                    // for the final answer. Status messages contain 🔧 emoji anywhere
+                    // in the text (often prefixed by ✅ or ⏳).
                     let non_tool_msgs: Vec<_> = sorted
                         .iter()
                         .filter(|m| {
                             let t = m["text"].as_str().unwrap_or("");
-                            !t.starts_with("🔧") && !t.starts_with("\u{1f527}")
+                            !t.contains('\u{1f527}')
                         })
                         .collect();
                     if let Some(chosen) = non_tool_msgs.last() {
@@ -2398,6 +2399,42 @@ fn chrono_approx(unix_secs: u64) -> String {
 }
 
 // ─── Unstructured / Digest E2E Tests ─────────────────────────────────────────
+
+/// B11: English query for Da Nang services — bot must translate to Russian and find contacts.
+///
+/// Tests that the bot correctly handles English queries against Russian-speaking channels.
+/// The system_prompt instructs the LLM to translate English to Russian for search.
+/// Response must have contacts with source links or quotes.
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - [agents.telegram_searcher] configured in ~/.zeroclaw/config.toml
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session + [agents.telegram_searcher] config"]
+async fn b11_english_query_danang_cake_shop_returns_contacts() {
+    let bot = "zGsR_bot";
+    let query = "Cake shop online Da Nang recommendations";
+
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(900)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        panic!(
+            "Bot @{bot} did not reply within 900s after message id={sent_id}. \
+             Check daemon logs: /tmp/zeroclaw_daemon.log"
+        )
+    });
+    println!("Bot reply:\n{text}");
+
+    assert_contact_reply_quality(&text);
+    assert_full_message_if_no_link(&text);
+}
 
 /// D1: Free-form digest — bot summarizes recent activity across Samui chats.
 ///

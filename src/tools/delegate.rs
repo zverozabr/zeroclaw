@@ -570,6 +570,10 @@ impl Tool for ToolArcRef {
         self.inner.max_calls_per_turn()
     }
 
+    fn is_terminal(&self) -> bool {
+        self.inner.is_terminal()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.inner.execute(args).await
     }
