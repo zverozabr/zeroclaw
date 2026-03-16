@@ -766,12 +766,30 @@ fn supports_runtime_model_switch(channel_name: &str) -> bool {
     matches!(channel_name, "telegram" | "discord" | "matrix")
 }
 
+/// Strip leading blockquote (reply context) from content.
+/// Telegram prepends `> @sender:\n> quoted...\n\n` when replying.
+fn strip_reply_quote(content: &str) -> &str {
+    if !content.starts_with('>') {
+        return content;
+    }
+    // Find the end of the blockquote block (first line not starting with '>')
+    // followed by the actual user content.
+    if let Some(pos) = content.find("\n\n") {
+        let after = &content[pos + 2..];
+        // Verify everything before was blockquote lines
+        if content[..pos].lines().all(|l| l.starts_with('>') || l.is_empty()) {
+            return after;
+        }
+    }
+    content
+}
+
 fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRuntimeCommand> {
     if !supports_runtime_model_switch(channel_name) {
         return None;
     }
 
-    let trimmed = content.trim();
+    let trimmed = strip_reply_quote(content).trim();
     if !trimmed.starts_with('/') {
         return None;
     }
@@ -1462,7 +1480,7 @@ async fn try_handle_pending_selection(
     msg: &traits::ChannelMessage,
     sender_key: &str,
 ) -> Option<String> {
-    let trimmed = msg.content.trim();
+    let trimmed = strip_reply_quote(&msg.content).trim();
 
     // "default N" pattern
     if let Some(rest) = trimmed.strip_prefix("default ") {
@@ -8437,5 +8455,22 @@ This is an example JSON object for profile settings."#;
         );
         // Sibling still gets auto-fallback
         assert_eq!(fallbacks.get("gemini-3-pro").unwrap(), &["gemini-3-flash"]);
+    }
+
+    #[test]
+    fn strip_reply_quote_removes_blockquote_prefix() {
+        assert_eq!(
+            strip_reply_quote("> @user:\n> quoted text\n\n/models"),
+            "/models"
+        );
+        assert_eq!(
+            strip_reply_quote("> @user:\n> line1\n> line2\n\n/models flash"),
+            "/models flash"
+        );
+        // No quote — unchanged
+        assert_eq!(strip_reply_quote("/models"), "/models");
+        assert_eq!(strip_reply_quote("hello"), "hello");
+        // Bare number after quote
+        assert_eq!(strip_reply_quote("> @bot:\n> pick a model\n\n2"), "2");
     }
 }
