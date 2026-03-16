@@ -214,7 +214,6 @@ const CHANNEL_MAX_IN_FLIGHT_MESSAGES: usize = 64;
 const CHANNEL_TYPING_REFRESH_INTERVAL_SECS: u64 = 4;
 const CHANNEL_HEALTH_HEARTBEAT_SECS: u64 = 30;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
-const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
 const MEMORY_CONTEXT_MAX_ENTRIES: usize = 4;
 const MEMORY_CONTEXT_ENTRY_MAX_CHARS: usize = 800;
 const MEMORY_CONTEXT_MAX_CHARS: usize = 4_000;
@@ -232,6 +231,27 @@ const CHANNEL_HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
 
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
+type PendingSelectionMap = Arc<Mutex<HashMap<String, PendingSelectionEntry>>>;
+
+const PENDING_SELECTION_TIMEOUT_SECS: u64 = 60;
+
+#[derive(Debug, Clone)]
+struct PendingSelectionEntry {
+    kind: PendingSelectionKind,
+    created_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+enum PendingSelectionKind {
+    AwaitingProvider(Vec<String>),
+    AwaitingModel(String, Vec<String>),
+}
+
+impl PendingSelectionEntry {
+    fn is_expired(&self) -> bool {
+        self.created_at.elapsed() > Duration::from_secs(PENDING_SELECTION_TIMEOUT_SECS)
+    }
+}
 
 fn live_channels_registry() -> &'static Mutex<HashMap<String, Arc<dyn Channel>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, Arc<dyn Channel>>>> = OnceLock::new();
@@ -294,10 +314,7 @@ struct ChannelRouteSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ChannelRuntimeCommand {
-    ShowProviders,
-    SetProvider(String),
-    ShowModel,
-    SetModel(String),
+    Models(Option<String>),
     NewSession,
 }
 
@@ -380,6 +397,7 @@ struct ChannelRuntimeContext {
     conversation_histories: ConversationHistoryMap,
     provider_cache: ProviderCacheMap,
     route_overrides: RouteSelectionMap,
+    pending_selections: PendingSelectionMap,
     api_key: Option<String>,
     api_url: Option<String>,
     reliability: Arc<crate::config::ReliabilityConfig>,
@@ -767,21 +785,12 @@ fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRun
         .to_ascii_lowercase();
 
     match base_command.as_str() {
-        "/models" => {
-            if let Some(provider) = parts.next() {
-                Some(ChannelRuntimeCommand::SetProvider(
-                    provider.trim().to_string(),
-                ))
+        "/models" | "/model" => {
+            let arg = parts.collect::<Vec<_>>().join(" ").trim().to_string();
+            if arg.is_empty() {
+                Some(ChannelRuntimeCommand::Models(None))
             } else {
-                Some(ChannelRuntimeCommand::ShowProviders)
-            }
-        }
-        "/model" => {
-            let model = parts.collect::<Vec<_>>().join(" ").trim().to_string();
-            if model.is_empty() {
-                Some(ChannelRuntimeCommand::ShowModel)
-            } else {
-                Some(ChannelRuntimeCommand::SetModel(model))
+                Some(ChannelRuntimeCommand::Models(Some(arg)))
             }
         }
         "/new" => Some(ChannelRuntimeCommand::NewSession),
@@ -1183,7 +1192,7 @@ fn is_context_window_overflow_error(err: &anyhow::Error) -> bool {
     .any(|hint| lower.contains(hint))
 }
 
-fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<String> {
+fn load_all_cached_models(workspace_dir: &Path, provider_name: &str) -> Vec<String> {
     let cache_path = workspace_dir.join("state").join(MODEL_CACHE_FILE);
     let Ok(raw) = std::fs::read_to_string(cache_path) else {
         return Vec::new();
@@ -1196,13 +1205,7 @@ fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<S
         .entries
         .into_iter()
         .find(|entry| entry.provider == provider_name)
-        .map(|entry| {
-            entry
-                .models
-                .into_iter()
-                .take(MODEL_CACHE_PREVIEW_LIMIT)
-                .collect::<Vec<_>>()
-        })
+        .map(|entry| entry.models)
         .unwrap_or_default()
 }
 
@@ -1273,74 +1276,339 @@ async fn create_resilient_provider_nonblocking(
     .context("failed to join provider initialization task")?
 }
 
-fn build_models_help_response(
-    current: &ChannelRouteSelection,
-    workspace_dir: &Path,
+fn collect_active_providers(
+    default_provider: Option<&str>,
     model_routes: &[crate::config::ModelRouteConfig],
+    fallback_providers: &[String],
+) -> Vec<String> {
+    let mut providers: Vec<String> = Vec::new();
+
+    if let Some(p) = default_provider {
+        providers.push(p.to_string());
+    }
+
+    for entry in fallback_providers {
+        if let Some(p) = entry.split(':').next() {
+            let p = p.trim().to_string();
+            if !p.is_empty() {
+                providers.push(p);
+            }
+        }
+    }
+
+    for route in model_routes {
+        providers.push(route.provider.clone());
+    }
+
+    providers.sort();
+    providers.dedup();
+    providers
+}
+
+/// Split models into (hardcoded_from_routes, fetched_only).
+fn build_merged_model_list(
+    provider: &str,
+    model_routes: &[crate::config::ModelRouteConfig],
+    cached_models: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let hardcoded: Vec<String> = model_routes
+        .iter()
+        .filter(|r| r.provider == provider)
+        .map(|r| r.model.clone())
+        .collect();
+
+    let hardcoded_set: HashSet<&str> = hardcoded.iter().map(String::as_str).collect();
+
+    let fetched: Vec<String> = cached_models
+        .iter()
+        .filter(|m| !hardcoded_set.contains(m.as_str()))
+        .cloned()
+        .collect();
+
+    (hardcoded, fetched)
+}
+
+fn build_provider_list_response(
+    current: &ChannelRouteSelection,
+    active_providers: &[String],
 ) -> String {
-    let mut response = String::new();
-    let _ = writeln!(
-        response,
-        "Current provider: `{}`\nCurrent model: `{}`",
+    let mut response = format!(
+        "\u{1f50c} Provider: {} | Model: {}\n\n",
         current.provider, current.model
     );
-    response.push_str("\nSwitch model with `/model <model-id>` or `/model <hint>`.\n");
 
-    if !model_routes.is_empty() {
-        response.push_str("\nConfigured model routes:\n");
-        for route in model_routes {
-            let _ = writeln!(
-                response,
-                "  `{}` → {} ({})",
-                route.hint, route.model, route.provider
-            );
-        }
+    for (i, provider) in active_providers.iter().enumerate() {
+        let marker = if *provider == current.provider {
+            " \u{2713}"
+        } else {
+            ""
+        };
+        let _ = writeln!(response, "{}. {}{}", i + 1, provider, marker);
     }
 
-    let cached_models = load_cached_model_preview(workspace_dir, &current.provider);
-    if cached_models.is_empty() {
-        let _ = writeln!(
-            response,
-            "\nNo cached model list found for `{}`. Ask the operator to run `zeroclaw models refresh --provider {}`.",
-            current.provider, current.provider
-        );
-    } else {
-        let _ = writeln!(
-            response,
-            "\nCached model IDs (top {}):",
-            cached_models.len()
-        );
-        for model in cached_models {
-            let _ = writeln!(response, "- `{model}`");
-        }
-    }
-
+    response.push_str("\nReply with number to switch provider:");
     response
 }
 
-fn build_providers_help_response(current: &ChannelRouteSelection) -> String {
-    let mut response = String::new();
-    let _ = writeln!(
-        response,
-        "Current provider: `{}`\nCurrent model: `{}`",
-        current.provider, current.model
-    );
-    response.push_str("\nSwitch provider with `/models <provider>`.\n");
-    response.push_str("Switch model with `/model <model-id>`.\n\n");
-    response.push_str("Available providers:\n");
-    for provider in providers::list_providers() {
-        if provider.aliases.is_empty() {
-            let _ = writeln!(response, "- {}", provider.name);
+fn build_model_list_response(
+    provider: &str,
+    hardcoded: &[String],
+    fetched: &[String],
+    default_model: Option<&str>,
+) -> String {
+    let mut response = format!("\u{1f4e6} {} models:\n\n", provider);
+    let mut index = 1usize;
+
+    for model in hardcoded {
+        let marker = if default_model == Some(model.as_str()) {
+            " \u{2605}"
         } else {
-            let _ = writeln!(
-                response,
-                "- {} (aliases: {})",
-                provider.name,
-                provider.aliases.join(", ")
-            );
+            ""
+        };
+        let _ = writeln!(response, "{}. {}{}", index, model, marker);
+        index += 1;
+    }
+
+    if !fetched.is_empty() {
+        response.push_str("\u{2500}\u{2500} fetched \u{2500}\u{2500}\n");
+        for model in fetched {
+            let marker = if default_model == Some(model.as_str()) {
+                " \u{2605}"
+            } else {
+                ""
+            };
+            let _ = writeln!(response, "{}. {}{}", index, model, marker);
+            index += 1;
         }
     }
+
+    response.push_str("\nReply with number, or \"default N\" to set default:");
     response
+}
+
+fn clear_pending_selection(ctx: &ChannelRuntimeContext, sender_key: &str) {
+    ctx.pending_selections
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(sender_key);
+}
+
+fn set_pending_selection(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+    kind: PendingSelectionKind,
+) {
+    ctx.pending_selections
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            sender_key.to_string(),
+            PendingSelectionEntry {
+                kind,
+                created_at: Instant::now(),
+            },
+        );
+}
+
+fn take_pending_selection(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+) -> Option<PendingSelectionKind> {
+    let mut map = ctx
+        .pending_selections
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let entry = map.remove(sender_key)?;
+    if entry.is_expired() {
+        return None;
+    }
+    Some(entry.kind)
+}
+
+async fn try_handle_pending_selection(
+    ctx: &ChannelRuntimeContext,
+    msg: &traits::ChannelMessage,
+    sender_key: &str,
+) -> Option<String> {
+    let trimmed = msg.content.trim();
+
+    // "default N" pattern
+    if let Some(rest) = trimmed.strip_prefix("default ") {
+        let rest = rest.trim();
+        if let Ok(n) = rest.parse::<usize>() {
+            if let Some(PendingSelectionKind::AwaitingModel(provider, models)) =
+                take_pending_selection(ctx, sender_key)
+            {
+                if (1..=models.len()).contains(&n) {
+                    let model = &models[n - 1];
+                    let _ = crate::onboard::save_provider_default(
+                        &ctx.workspace_dir,
+                        &provider,
+                        model,
+                    )
+                    .await;
+                    return Some(format!(
+                        "\u{2705} Default model for {} set to {}",
+                        provider, model
+                    ));
+                }
+                // Re-insert so user can retry
+                let len = models.len();
+                set_pending_selection(
+                    ctx,
+                    sender_key,
+                    PendingSelectionKind::AwaitingModel(provider, models),
+                );
+                return Some(format!("Invalid index. Pick 1-{len}."));
+            }
+        }
+        clear_pending_selection(ctx, sender_key);
+        return None;
+    }
+
+    // Bare number
+    if let Ok(n) = trimmed.parse::<usize>() {
+        let pending = take_pending_selection(ctx, sender_key)?;
+        match pending {
+            PendingSelectionKind::AwaitingProvider(providers) => {
+                if (1..=providers.len()).contains(&n) {
+                    let provider = &providers[n - 1];
+                    let mut current = get_route_selection(ctx, sender_key);
+
+                    let default_model = crate::onboard::resolve_default_model_for_provider(
+                        &ctx.workspace_dir,
+                        provider,
+                        &ctx.model_routes,
+                    )
+                    .await;
+
+                    current.provider = provider.clone();
+                    if let Some(ref model) = default_model {
+                        current.model = model.clone();
+                    }
+                    set_route_selection(ctx, sender_key, current);
+
+                    let cached = load_all_cached_models(&ctx.workspace_dir, provider);
+                    let (hardcoded, fetched) =
+                        build_merged_model_list(provider, &ctx.model_routes, &cached);
+
+                    // Fire-and-forget refresh
+                    let ws = Arc::clone(&ctx.workspace_dir);
+                    let api_key = ctx.api_key.clone();
+                    let api_url = ctx.api_url.clone();
+                    let p = provider.clone();
+                    tokio::spawn(async move {
+                        let _ = crate::onboard::refresh_models_quiet(
+                            &ws,
+                            &p,
+                            api_key.as_deref(),
+                            api_url.as_deref(),
+                            false,
+                        )
+                        .await;
+                    });
+
+                    let all_models: Vec<String> =
+                        hardcoded.iter().chain(fetched.iter()).cloned().collect();
+                    set_pending_selection(
+                        ctx,
+                        sender_key,
+                        PendingSelectionKind::AwaitingModel(provider.clone(), all_models),
+                    );
+
+                    return Some(build_model_list_response(
+                        provider,
+                        &hardcoded,
+                        &fetched,
+                        default_model.as_deref(),
+                    ));
+                }
+                set_pending_selection(
+                    ctx,
+                    sender_key,
+                    PendingSelectionKind::AwaitingProvider(providers.clone()),
+                );
+                return Some(format!("Invalid index. Pick 1-{}.", providers.len()));
+            }
+            PendingSelectionKind::AwaitingModel(provider, models) => {
+                if (1..=models.len()).contains(&n) {
+                    let model = &models[n - 1];
+                    let mut current = get_route_selection(ctx, sender_key);
+
+                    if let Some(route) = ctx.model_routes.iter().find(|r| r.model == *model) {
+                        current.provider = route.provider.clone();
+                    } else {
+                        current.provider = provider;
+                    }
+                    current.model = model.clone();
+                    set_route_selection(ctx, sender_key, current.clone());
+
+                    return Some(format!(
+                        "\u{2705} Switched to {} ({})",
+                        model, current.provider
+                    ));
+                }
+                let len = models.len();
+                set_pending_selection(
+                    ctx,
+                    sender_key,
+                    PendingSelectionKind::AwaitingModel(provider, models),
+                );
+                return Some(format!("Invalid index. Pick 1-{len}."));
+            }
+        }
+    }
+
+    clear_pending_selection(ctx, sender_key);
+    None
+}
+
+fn handle_models_command(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+    current: &mut ChannelRouteSelection,
+    arg: Option<&str>,
+) -> String {
+    match arg {
+        Some(hint) => {
+            if let Some(route) = ctx.model_routes.iter().find(|r| {
+                r.hint.eq_ignore_ascii_case(hint) || r.model.eq_ignore_ascii_case(hint)
+            }) {
+                current.provider = route.provider.clone();
+                current.model = route.model.clone();
+                set_route_selection(ctx, sender_key, current.clone());
+                format!(
+                    "\u{2705} Switched to {} ({})",
+                    current.model, current.provider
+                )
+            } else {
+                format!(
+                    "Unknown hint `{}`. Use `/models` to see available options.",
+                    hint
+                )
+            }
+        }
+        None => {
+            let defaults = runtime_defaults_snapshot(ctx);
+            let active = collect_active_providers(
+                Some(defaults.default_provider.as_str()),
+                &ctx.model_routes,
+                &ctx.reliability.fallback_providers,
+            );
+
+            if active.is_empty() {
+                return "No providers configured.".to_string();
+            }
+
+            set_pending_selection(
+                ctx,
+                sender_key,
+                PendingSelectionKind::AwaitingProvider(active.clone()),
+            );
+
+            build_provider_list_response(current, &active)
+        }
+    }
 }
 
 async fn handle_runtime_command_if_needed(
@@ -1348,7 +1616,27 @@ async fn handle_runtime_command_if_needed(
     msg: &traits::ChannelMessage,
     target_channel: Option<&Arc<dyn Channel>>,
 ) -> bool {
+    let sender_key = conversation_history_key(msg);
+
+    // Check for pending selection first (bare number or "default N")
+    let pending_response = try_handle_pending_selection(ctx, msg, &sender_key).await;
+    if let Some(response) = pending_response {
+        if let Some(channel) = target_channel {
+            let _ = channel
+                .send(
+                    &SendMessage::new(response, &msg.reply_target)
+                        .in_thread(msg.thread_ts.clone())
+                        .reply_to(msg.reply_to_message_id.clone()),
+                )
+                .await;
+        }
+        return true;
+    }
+
+    // Parse slash command
     let Some(command) = parse_runtime_command(&msg.channel, &msg.content) else {
+        // Not a command — clear pending selection if any
+        clear_pending_selection(ctx, &sender_key);
         return false;
     };
 
@@ -1356,64 +1644,15 @@ async fn handle_runtime_command_if_needed(
         return true;
     };
 
-    let sender_key = conversation_history_key(msg);
     let mut current = get_route_selection(ctx, &sender_key);
 
     let response = match command {
-        ChannelRuntimeCommand::ShowProviders => build_providers_help_response(&current),
-        ChannelRuntimeCommand::SetProvider(raw_provider) => {
-            match resolve_provider_alias(&raw_provider) {
-                Some(provider_name) => match get_or_create_provider(ctx, &provider_name).await {
-                    Ok(_) => {
-                        if provider_name != current.provider {
-                            current.provider = provider_name.clone();
-                            set_route_selection(ctx, &sender_key, current.clone());
-                        }
-
-                        format!(
-                            "Provider switched to `{provider_name}` for this sender session. Current model is `{}`.\nUse `/model <model-id>` to set a provider-compatible model.",
-                            current.model
-                        )
-                    }
-                    Err(err) => {
-                        let safe_err = providers::sanitize_api_error(&err.to_string());
-                        format!(
-                            "Failed to initialize provider `{provider_name}`. Route unchanged.\nDetails: {safe_err}"
-                        )
-                    }
-                },
-                None => format!(
-                    "Unknown provider `{raw_provider}`. Use `/models` to list valid providers."
-                ),
-            }
-        }
-        ChannelRuntimeCommand::ShowModel => {
-            build_models_help_response(&current, ctx.workspace_dir.as_path(), &ctx.model_routes)
-        }
-        ChannelRuntimeCommand::SetModel(raw_model) => {
-            let model = raw_model.trim().trim_matches('`').to_string();
-            if model.is_empty() {
-                "Model ID cannot be empty. Use `/model <model-id>`.".to_string()
-            } else {
-                // Resolve provider+model from model_routes (match by model name or hint)
-                if let Some(route) = ctx.model_routes.iter().find(|r| {
-                    r.model.eq_ignore_ascii_case(&model) || r.hint.eq_ignore_ascii_case(&model)
-                }) {
-                    current.provider = route.provider.clone();
-                    current.model = route.model.clone();
-                } else {
-                    current.model = model.clone();
-                }
-                set_route_selection(ctx, &sender_key, current.clone());
-
-                format!(
-                    "Model switched to `{}` (provider: `{}`). Context preserved.",
-                    current.model, current.provider
-                )
-            }
+        ChannelRuntimeCommand::Models(arg) => {
+            handle_models_command(ctx, &sender_key, &mut current, arg.as_deref())
         }
         ChannelRuntimeCommand::NewSession => {
             clear_sender_history(ctx, &sender_key);
+            clear_pending_selection(ctx, &sender_key);
             "Conversation history cleared. Starting fresh.".to_string()
         }
     };
@@ -4055,6 +4294,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         conversation_histories: Arc::new(Mutex::new(HashMap::new())),
         provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
         route_overrides: Arc::new(Mutex::new(HashMap::new())),
+        pending_selections: Arc::new(Mutex::new(HashMap::new())),
         api_key: config.api_key.clone(),
         api_url: config.api_url.clone(),
         reliability: Arc::new(config.reliability.clone()),
@@ -4337,6 +4577,7 @@ mod tests {
             conversation_histories: Arc::new(Mutex::new(histories)),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -4442,6 +4683,7 @@ mod tests {
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -4503,6 +4745,7 @@ mod tests {
             conversation_histories: Arc::new(Mutex::new(histories)),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5039,6 +5282,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5109,6 +5353,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5193,6 +5438,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5262,6 +5508,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5325,6 +5572,13 @@ BTC is currently around $65,000 based on latest tool output."#
         provider_cache_seed.insert("test-provider".to_string(), Arc::clone(&default_provider));
         provider_cache_seed.insert("openrouter".to_string(), fallback_provider);
 
+        let model_routes = vec![crate::config::ModelRouteConfig {
+            hint: "fast".into(),
+            provider: "openrouter".into(),
+            model: "openrouter-fast".into(),
+            api_key: None,
+        }];
+
         let runtime_ctx = Arc::new(ChannelRuntimeContext {
             channels_by_name: Arc::new(channels_by_name),
             provider: Arc::clone(&default_provider),
@@ -5341,6 +5595,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5355,20 +5610,21 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
+            model_routes: Arc::new(model_routes),
             max_parallel_tool_calls: 5,
             max_tool_result_chars: 4000,
             ack_reactions: true,
             show_tool_calls: true,
         });
 
+        // /models fast — hint shortcut switches provider+model without LLM call
         process_channel_message(
             runtime_ctx.clone(),
             traits::ChannelMessage {
                 id: "msg-cmd-1".to_string(),
                 sender: "alice".to_string(),
                 reply_target: "chat-1".to_string(),
-                content: "/models openrouter".to_string(),
+                content: "/models fast".to_string(),
                 channel: "telegram".to_string(),
                 timestamp: 1,
                 thread_ts: None,
@@ -5380,7 +5636,11 @@ BTC is currently around $65,000 based on latest tool output."#
 
         let sent = channel_impl.sent_messages.lock().await;
         assert_eq!(sent.len(), 1);
-        assert!(sent[0].contains("Provider switched to `openrouter`"));
+        assert!(
+            sent[0].contains("Switched to openrouter-fast"),
+            "expected hint switch, got: {}",
+            sent[0]
+        );
 
         let route_key = "telegram_alice";
         let route = runtime_ctx
@@ -5391,7 +5651,7 @@ BTC is currently around $65,000 based on latest tool output."#
             .cloned()
             .expect("route should be stored for sender");
         assert_eq!(route.provider, "openrouter");
-        assert_eq!(route.model, "default-model");
+        assert_eq!(route.model, "openrouter-fast");
 
         assert_eq!(default_provider_impl.call_count.load(Ordering::SeqCst), 0);
         assert_eq!(fallback_provider_impl.call_count.load(Ordering::SeqCst), 0);
@@ -5440,6 +5700,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
             route_overrides: Arc::new(Mutex::new(route_overrides)),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5521,6 +5782,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5617,6 +5879,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5701,6 +5964,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5772,6 +6036,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -5954,6 +6219,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -6045,6 +6311,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -6151,6 +6418,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -6254,6 +6522,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -6339,6 +6608,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -6408,6 +6678,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -7061,6 +7332,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -7157,6 +7429,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -7255,6 +7528,7 @@ BTC is currently around $65,000 based on latest tool output."#
             conversation_histories: Arc::new(Mutex::new(histories)),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -7816,6 +8090,7 @@ This is an example JSON object for profile settings."#;
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
@@ -7892,6 +8167,7 @@ This is an example JSON object for profile settings."#;
             conversation_histories: Arc::new(Mutex::new(HashMap::new())),
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),

@@ -51,7 +51,10 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 .await;
     }
 
-    let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
+    let mut handles: Vec<JoinHandle<()>> = vec![
+        spawn_state_writer(config.clone()),
+        spawn_model_refresh_worker(config.clone()),
+    ];
 
     {
         let gateway_cfg = config.clone();
@@ -163,6 +166,70 @@ fn spawn_state_writer(config: Config) -> JoinHandle<()> {
             let _ = tokio::fs::write(&path, data).await;
         }
     })
+}
+
+fn spawn_model_refresh_worker(config: Config) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        // Let other components start first.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        refresh_active_providers(&config).await;
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(crate::onboard::MODEL_CACHE_TTL_SECS)).await;
+            refresh_active_providers(&config).await;
+        }
+    })
+}
+
+async fn refresh_active_providers(config: &Config) {
+    let mut providers: Vec<String> = Vec::new();
+
+    // Default provider
+    if let Some(ref p) = config.default_provider {
+        providers.push(p.clone());
+    }
+
+    // Fallback providers (format: "provider" or "provider:profile")
+    for entry in &config.reliability.fallback_providers {
+        if let Some(p) = entry.split(':').next() {
+            providers.push(p.to_string());
+        }
+    }
+
+    // Model routes
+    for route in &config.model_routes {
+        providers.push(route.provider.clone());
+    }
+
+    providers.sort();
+    providers.dedup();
+
+    if providers.is_empty() {
+        tracing::debug!("No active providers to refresh model cache for");
+        return;
+    }
+
+    tracing::info!(
+        "Refreshing model cache for {} provider(s): {}",
+        providers.len(),
+        providers.join(", ")
+    );
+
+    for provider in &providers {
+        match crate::onboard::refresh_models_quiet(
+            &config.workspace_dir,
+            provider,
+            config.api_key.as_deref(),
+            config.api_url.as_deref(),
+            false,
+        )
+        .await
+        {
+            Ok(0) => {} // cache fresh or unsupported — silent
+            Ok(n) => tracing::info!("Model cache refreshed for '{provider}': {n} models"),
+            Err(e) => tracing::warn!("Model cache refresh failed for '{provider}': {e}"),
+        }
+    }
 }
 
 fn spawn_component_supervisor<F, Fut>(
