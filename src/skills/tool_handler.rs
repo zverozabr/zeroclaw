@@ -358,9 +358,12 @@ impl Tool for SkillToolHandler {
             });
         }
 
-        let command = self
-            .render_command(&args)
-            .context("Failed to render skill tool command")?;
+        let command = match self.render_command(&args) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                anyhow::bail!("Failed to render skill tool command. args={} error={}", args, e);
+            }
+        };
 
         if let Err(e) = self.security.validate_command_execution(&command, false) {
             tracing::warn!(
