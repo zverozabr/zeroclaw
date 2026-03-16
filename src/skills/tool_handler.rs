@@ -130,12 +130,18 @@ impl SkillToolHandler {
     fn infer_parameter_type(description: &str) -> ParameterType {
         let desc_lower = description.to_lowercase();
 
-        if desc_lower.contains("number")
-            || desc_lower.contains("count")
+        // "number of X" / "count of" / "limit" / "maximum" / "minimum" → integer
+        // But NOT "phone number", "account number", "order number", "ID number", etc.
+        // Use word-boundary-aware checks to avoid false positives (e.g. "account" contains "count").
+        let has_integer_hint = desc_lower.contains("number of")
             || desc_lower.contains("limit")
             || desc_lower.contains("maximum")
             || desc_lower.contains("minimum")
-        {
+            || desc_lower
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w == "count");
+
+        if has_integer_hint {
             return ParameterType::Integer;
         }
 
@@ -559,6 +565,18 @@ mod tests {
             SkillToolHandler::infer_parameter_type("Maximum number of items"),
             ParameterType::Integer
         );
+        assert_eq!(
+            SkillToolHandler::infer_parameter_type("number of results"),
+            ParameterType::Integer
+        );
+        assert_eq!(
+            SkillToolHandler::infer_parameter_type("count of messages"),
+            ParameterType::Integer
+        );
+        assert_eq!(
+            SkillToolHandler::infer_parameter_type("limit"),
+            ParameterType::Integer
+        );
     }
 
     #[test]
@@ -573,6 +591,23 @@ mod tests {
     fn infer_string_type_default() {
         assert_eq!(
             SkillToolHandler::infer_parameter_type("User name or email"),
+            ParameterType::String
+        );
+    }
+
+    #[test]
+    fn infer_string_for_phone_number() {
+        // "phone number" should NOT trigger integer inference
+        assert_eq!(
+            SkillToolHandler::infer_parameter_type("Telegram contact username or phone number"),
+            ParameterType::String
+        );
+        assert_eq!(
+            SkillToolHandler::infer_parameter_type("account number or ID"),
+            ParameterType::String
+        );
+        assert_eq!(
+            SkillToolHandler::infer_parameter_type("order number"),
             ParameterType::String
         );
     }
