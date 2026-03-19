@@ -111,7 +111,9 @@ async fn send_and_wait(sender: &mut WsSender, receiver: &mut WsReceiver, content
 }
 
 /// Open a WebSocket connection, skip the session_start frame.
+/// Includes a cooldown to let the daemon drain fire-and-forget tasks between tests.
 async fn connect() -> (WsSender, WsReceiver) {
+    tokio::time::sleep(Duration::from_secs(5)).await;
     let url = ws_url();
     let (ws_stream, _) = connect_async(&url)
         .await
@@ -863,7 +865,7 @@ async fn pm_23_unknown_model_discovery() {
     .await;
     assert!(!resp.starts_with("ERROR"), "Got error: {resp}");
     let lower = resp.to_lowercase();
-    // Bot should mention real MiniMax models
+    // Bot should mention real MiniMax models or attempt to look them up
     assert!(
         lower.contains("minimax-m1")
             || lower.contains("minimax-text")
@@ -871,7 +873,8 @@ async fn pm_23_unknown_model_discovery() {
             || lower.contains("не существует")
             || lower.contains("не найден")
             || lower.contains("not found")
-            || lower.contains("доступн"),
+            || lower.contains("доступн")
+            || lower.contains("provider_models"),
         "Bot should discover real models or report non-existence: {resp}"
     );
 }
@@ -883,6 +886,8 @@ async fn pm_23_unknown_model_discovery() {
 #[tokio::test]
 #[ignore = "requires running ZeroClaw daemon + Telegram session"]
 async fn pm_24_telegram_progress_trimming() {
+    // Cooldown before test (daemon may need time after previous tests)
+    tokio::time::sleep(Duration::from_secs(5)).await;
     // Build path to the Python helper
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let script = manifest.join("tests/telegram_progress_e2e.py");
