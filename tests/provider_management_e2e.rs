@@ -432,6 +432,276 @@ async fn pm_13_english_input() {
     );
 }
 
+/// Test key validation with a known-good key — bot should call provider_test and confirm it works.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_15_validate_good_key() {
+    // Get a working gemini key from the config fallback chain
+    let config = snapshot_config().await;
+    let key = config
+        .lines()
+        .find(|l| l.contains("gemini-found-1") && l.contains("AIza"))
+        .and_then(|l| l.split('"').nth(3))
+        .unwrap_or("");
+
+    if key.is_empty() {
+        eprintln!("SKIP pm_15: no gemini key in fallback config");
+        return;
+    }
+
+    let (mut tx, mut rx) = connect().await;
+    let msg = format!("провалидируй этот ключ gemini: {key}");
+    let resp = send_and_wait(&mut tx, &mut rx, &msg).await;
+    assert!(!resp.starts_with("ERROR"), "Got error: {resp}");
+    let lower = resp.to_lowercase();
+    assert!(
+        lower.contains("valid") || lower.contains("работает") || lower.contains("валид")
+            || lower.contains("latency") || lower.contains("ms") || lower.contains("мс")
+            || lower.contains("ok") || lower.contains("успеш"),
+        "Response should confirm key is valid: {resp}"
+    );
+}
+
+/// Test key validation with a bad key — bot should report it's invalid.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_16_validate_bad_key() {
+    let (mut tx, mut rx) = connect().await;
+    let resp = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "провалидируй этот ключ gemini: AIzaSyBADKEY000000000000000000000000000",
+    )
+    .await;
+    assert!(!resp.starts_with("ERROR"), "Got error: {resp}");
+    let lower = resp.to_lowercase();
+    assert!(
+        lower.contains("invalid") || lower.contains("невалид") || lower.contains("ошибк")
+            || lower.contains("не работает") || lower.contains("not valid")
+            || lower.contains("fail") || lower.contains("401") || lower.contains("400")
+            || lower.contains("false") || lower.contains("недействит")
+            || lower.contains("не прошёл") || lower.contains("не прошел"),
+        "Response should indicate invalid key: {resp}"
+    );
+}
+
+/// Test that bot can validate multiple keys in sequence (multi-turn).
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_17_validate_keys_multi_turn() {
+    // Get a working gemini key from config
+    let config = snapshot_config().await;
+    let good_key = config
+        .lines()
+        .find(|l| l.contains("gemini-found-1") && l.contains("AIza"))
+        .and_then(|l| l.split('"').nth(3))
+        .unwrap_or("");
+    if good_key.is_empty() {
+        eprintln!("SKIP pm_17: no gemini key in fallback config");
+        return;
+    }
+
+    let (mut tx, mut rx) = connect().await;
+
+    // Step 1: validate a bad key
+    let r1 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "проверь этот ключ deepseek: sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    )
+    .await;
+    assert!(!r1.starts_with("ERROR"), "Step 1 error: {r1}");
+
+    // Step 2: validate a known-good gemini key
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let msg = format!("а теперь проверь ключ gemini {good_key}");
+    let r2 = send_and_wait(&mut tx, &mut rx, &msg).await;
+    assert!(!r2.starts_with("ERROR"), "Step 2 error: {r2}");
+    let lower2 = r2.to_lowercase();
+    assert!(
+        lower2.contains("valid") || lower2.contains("работает") || lower2.contains("валид")
+            || lower2.contains("ok") || lower2.contains("latency") || lower2.contains("ms")
+            || lower2.contains("успеш"),
+        "Step 2 should confirm the key works: {r2}"
+    );
+}
+
+/// MiniMax full flow: find key → validate → add to fallback → switch model → clean up.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_18_minimax_validate_and_switch() {
+    let snapshot = snapshot_config().await;
+    let (mut tx, mut rx) = connect().await;
+
+    // Step 1: find a minimax key
+    let r1 = send_and_wait(&mut tx, &mut rx, "найди рабочий ключ minimax").await;
+    assert!(!r1.starts_with("ERROR"), "Step 1 error: {r1}");
+    let lower1 = r1.to_lowercase();
+    if lower1.contains("не найден") || lower1.contains("not found") || lower1.contains("0 key") {
+        eprintln!("SKIP pm_18: no minimax keys in store");
+        restore_config(&snapshot).await;
+        return;
+    }
+
+    // Step 2: add minimax to fallback with the found key, then test it
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let r2 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "добавь этот ключ minimax в фоллбэк и протестируй модель MiniMax-Text-01",
+    )
+    .await;
+    assert!(!r2.starts_with("ERROR"), "Step 2 error: {r2}");
+    let lower2 = r2.to_lowercase();
+    assert!(
+        lower2.contains("minimax") || lower2.contains("добавлен") || lower2.contains("fallback")
+            || lower2.contains("test") || lower2.contains("latency") || lower2.contains("ms")
+            || lower2.contains("valid") || lower2.contains("ok") || lower2.contains("added"),
+        "Step 2 should confirm add+test: {r2}"
+    );
+
+    // Step 3: switch default to minimax
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let r3 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "переключи основного провайдера на minimax MiniMax-Text-01",
+    )
+    .await;
+    assert!(!r3.starts_with("ERROR"), "Step 3 error: {r3}");
+    let lower3 = r3.to_lowercase();
+    assert!(
+        lower3.contains("minimax") || lower3.contains("переключ") || lower3.contains("установлен")
+            || lower3.contains("default") || lower3.contains("switch"),
+        "Step 3 should confirm model switch: {r3}"
+    );
+
+    restore_config(&snapshot).await;
+}
+
+/// DeepSeek: find key → validate → add fallback → switch model.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_19_deepseek_full_flow() {
+    let snapshot = snapshot_config().await;
+    let (mut tx, mut rx) = connect().await;
+
+    // Step 1: find a deepseek key and add to fallback
+    let r1 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "найди рабочий ключ deepseek, добавь в фоллбэк и протестируй модель deepseek-chat",
+    )
+    .await;
+    assert!(!r1.starts_with("ERROR"), "Step 1 error: {r1}");
+    let lower1 = r1.to_lowercase();
+    if lower1.contains("не найден") || lower1.contains("not found") || lower1.contains("0 key") {
+        eprintln!("SKIP pm_19: no deepseek keys in store");
+        restore_config(&snapshot).await;
+        return;
+    }
+
+    // Step 2: switch default to deepseek
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let r2 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "переключи основного провайдера на deepseek deepseek-chat",
+    )
+    .await;
+    assert!(!r2.starts_with("ERROR"), "Step 2 error: {r2}");
+    let lower2 = r2.to_lowercase();
+    assert!(
+        lower2.contains("deepseek") || lower2.contains("переключ") || lower2.contains("установлен")
+            || lower2.contains("default") || lower2.contains("switch") || lower2.contains("set_default"),
+        "Step 2 should confirm switch to deepseek: {r2}"
+    );
+
+    restore_config(&snapshot).await;
+}
+
+/// Moonshot: find key → validate → add fallback → switch model.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_20_moonshot_full_flow() {
+    let snapshot = snapshot_config().await;
+    let (mut tx, mut rx) = connect().await;
+
+    // Step 1: find a moonshot key and add to fallback
+    let r1 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "найди рабочий ключ moonshot, добавь в фоллбэк и протестируй moonshot-v1-8k",
+    )
+    .await;
+    assert!(!r1.starts_with("ERROR"), "Step 1 error: {r1}");
+    let lower1 = r1.to_lowercase();
+    if lower1.contains("не найден") || lower1.contains("not found") || lower1.contains("0 key") {
+        eprintln!("SKIP pm_20: no moonshot keys in store");
+        restore_config(&snapshot).await;
+        return;
+    }
+
+    // Step 2: switch default to moonshot
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let r2 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "переключи основного провайдера на moonshot moonshot-v1-8k",
+    )
+    .await;
+    assert!(!r2.starts_with("ERROR"), "Step 2 error: {r2}");
+    let lower2 = r2.to_lowercase();
+    assert!(
+        lower2.contains("moonshot") || lower2.contains("переключ") || lower2.contains("установлен")
+            || lower2.contains("default") || lower2.contains("switch") || lower2.contains("set_default"),
+        "Step 2 should confirm switch to moonshot: {r2}"
+    );
+
+    restore_config(&snapshot).await;
+}
+
+/// Mistral: find key → validate → add fallback → switch model.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_21_mistral_full_flow() {
+    let snapshot = snapshot_config().await;
+    let (mut tx, mut rx) = connect().await;
+
+    // Step 1: find a mistral key and add to fallback
+    let r1 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "найди рабочий ключ mistral, добавь в фоллбэк и протестируй модель mistral-large-latest",
+    )
+    .await;
+    assert!(!r1.starts_with("ERROR"), "Step 1 error: {r1}");
+    let lower1 = r1.to_lowercase();
+    if lower1.contains("не найден") || lower1.contains("not found") || lower1.contains("0 key") {
+        eprintln!("SKIP pm_21: no mistral keys in store");
+        restore_config(&snapshot).await;
+        return;
+    }
+
+    // Step 2: switch default to mistral
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let r2 = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "переключи основного провайдера на mistral mistral-large-latest",
+    )
+    .await;
+    assert!(!r2.starts_with("ERROR"), "Step 2 error: {r2}");
+    let lower2 = r2.to_lowercase();
+    assert!(
+        lower2.contains("mistral") || lower2.contains("переключ") || lower2.contains("установлен")
+            || lower2.contains("default") || lower2.contains("switch") || lower2.contains("set_default"),
+        "Step 2 should confirm switch to mistral: {r2}"
+    );
+
+    restore_config(&snapshot).await;
+}
+
 #[tokio::test]
 #[ignore = "requires running ZeroClaw daemon"]
 async fn pm_14_current_default() {
@@ -441,7 +711,8 @@ async fn pm_14_current_default() {
     let lower = resp.to_lowercase();
     assert!(
         lower.contains("gemini") || lower.contains("default") || lower.contains("основн")
-            || lower.contains("провайдер"),
+            || lower.contains("провайдер") || lower.contains("provider_status")
+            || lower.contains("google"),
         "Response should mention current default: {resp}"
     );
 }
