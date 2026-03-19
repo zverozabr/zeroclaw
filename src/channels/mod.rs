@@ -126,7 +126,8 @@ struct ChannelNotifyObserver {
 }
 
 /// Minimum interval between tool-call notifications sent to the chat.
-const TOOL_NOTIFY_MIN_INTERVAL: Duration = Duration::from_secs(10);
+/// Kept low since progress trimming already caps visible lines.
+const TOOL_NOTIFY_MIN_INTERVAL: Duration = Duration::from_millis(500);
 
 impl Observer for ChannelNotifyObserver {
     fn record_event(&self, event: &ObserverEvent) {
@@ -186,7 +187,20 @@ impl Observer for ChannelNotifyObserver {
                 };
                 (tool.to_string(), detail)
             };
-            let _ = self.tx.send(format!("\u{1F527} `{label}`{detail}"));
+            // Throttle: skip if last notification was less than TOOL_NOTIFY_MIN_INTERVAL ago.
+            let should_send = {
+                let mut guard = self.last_notify.lock().unwrap();
+                match *guard {
+                    Some(t) if t.elapsed() < TOOL_NOTIFY_MIN_INTERVAL => false,
+                    _ => {
+                        *guard = Some(Instant::now());
+                        true
+                    }
+                }
+            };
+            if should_send {
+                let _ = self.tx.send(format!("\u{1F527} `{label}`{detail}"));
+            }
         }
         self.inner.record_event(event);
     }
@@ -2890,26 +2904,36 @@ async fn process_channel_message(
                 ChatMessage::assistant(&history_response),
             );
 
-            // Fire-and-forget LLM-driven memory consolidation.
+            // Bounded fire-and-forget LLM-driven memory consolidation.
+            // Semaphore limits concurrent consolidation tasks to avoid resource exhaustion.
             if ctx.auto_save_memory && msg.content.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS {
-                let provider = Arc::clone(&ctx.provider);
-                let model = ctx.model.to_string();
-                let memory = Arc::clone(&ctx.memory);
-                let user_msg = msg.content.clone();
-                let assistant_resp = delivered_response.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = crate::memory::consolidation::consolidate_turn(
-                        provider.as_ref(),
-                        &model,
-                        memory.as_ref(),
-                        &user_msg,
-                        &assistant_resp,
-                    )
-                    .await
-                    {
-                        tracing::debug!("Memory consolidation skipped: {e}");
-                    }
-                });
+                static CONSOLIDATION_SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+                let sem = CONSOLIDATION_SEM.get_or_init(|| tokio::sync::Semaphore::new(4));
+                if let Ok(permit) = sem.try_acquire() {
+                    let provider = Arc::clone(&ctx.provider);
+                    let model = ctx.model.to_string();
+                    let memory = Arc::clone(&ctx.memory);
+                    let user_msg = msg.content.clone();
+                    let assistant_resp = delivered_response.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        if let Err(e) = crate::memory::consolidation::consolidate_turn(
+                            provider.as_ref(),
+                            &model,
+                            memory.as_ref(),
+                            &user_msg,
+                            &assistant_resp,
+                        )
+                        .await
+                        {
+                            tracing::debug!("Memory consolidation skipped: {e}");
+                        }
+                    });
+                } else {
+                    tracing::debug!(
+                        "Memory consolidation skipped: too many concurrent tasks (limit 4)"
+                    );
+                }
             }
 
             println!(

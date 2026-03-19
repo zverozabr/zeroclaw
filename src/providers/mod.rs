@@ -1121,7 +1121,12 @@ fn create_provider_with_url_and_options(
         // ── Primary providers (custom implementations) ───────
         "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(key))),
         "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(key))),
-        "openai" => Ok(Box::new(openai::OpenAiProvider::with_base_url(api_url, key))),
+        "openai" => {
+            let base = api_url.unwrap_or("https://api.openai.com/v1");
+            Ok(compat(OpenAiCompatibleProvider::new(
+                "OpenAI", base, key, AuthStyle::Bearer,
+            )))
+        }
         // Ollama uses api_url for custom base URL (e.g. remote Ollama instance)
         "ollama" => {
 

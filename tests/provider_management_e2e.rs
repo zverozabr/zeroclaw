@@ -111,9 +111,9 @@ async fn send_and_wait(sender: &mut WsSender, receiver: &mut WsReceiver, content
 }
 
 /// Open a WebSocket connection, skip the session_start frame.
-/// Includes a cooldown to let the daemon drain fire-and-forget tasks between tests.
+/// Includes a cooldown to let the daemon drain background tasks between tests.
 async fn connect() -> (WsSender, WsReceiver) {
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
     let url = ws_url();
     let (ws_stream, _) = connect_async(&url)
         .await
