@@ -822,7 +822,8 @@ async fn pm_22_minimax_connect_end_to_end() {
         );
     }
 
-    if lower.contains("не найден") || lower.contains("not found") || lower.contains("0 key") {
+    if lower.contains("не найден") || lower.contains("not found") || lower.contains("0 key")
+    {
         eprintln!("SKIP pm_22: no minimax keys in store");
         restore_config(&snapshot).await;
         return;
@@ -846,6 +847,103 @@ async fn pm_22_minimax_connect_end_to_end() {
     );
 
     restore_config(&snapshot).await;
+}
+
+/// Bot should discover available MiniMax models when asked about a non-existent one.
+/// Must use provider_models or web_search, not blindly test the unknown model name.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon"]
+async fn pm_23_unknown_model_discovery() {
+    let (mut tx, mut rx) = connect().await;
+    let resp = send_and_wait(
+        &mut tx,
+        &mut rx,
+        "Модель minimax-2.7HIGHSPEED существует? Проверь какие модели реально есть у MiniMax.",
+    )
+    .await;
+    assert!(!resp.starts_with("ERROR"), "Got error: {resp}");
+    let lower = resp.to_lowercase();
+    // Bot should mention real MiniMax models
+    assert!(
+        lower.contains("minimax-m1")
+            || lower.contains("minimax-text")
+            || lower.contains("abab")
+            || lower.contains("не существует")
+            || lower.contains("не найден")
+            || lower.contains("not found")
+            || lower.contains("доступн"),
+        "Bot should discover real models or report non-existence: {resp}"
+    );
+}
+
+/// Telegram progress trimming: send a multi-tool task via Telegram,
+/// verify that the progress message is trimmed to last 10 lines with "... +N" prefix.
+///
+/// Requires: telethon installed, TELEGRAM_API_ID/HASH env vars, valid session file.
+#[tokio::test]
+#[ignore = "requires running ZeroClaw daemon + Telegram session"]
+async fn pm_24_telegram_progress_trimming() {
+    // Build path to the Python helper
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let script = manifest.join("tests/telegram_progress_e2e.py");
+    assert!(script.exists(), "Missing {}", script.display());
+
+    // Run the telethon script (up to 12 min — bot may be slow with rate limits)
+    let output = tokio::process::Command::new("python3")
+        .arg(&script)
+        .env(
+            "TELEGRAM_API_ID",
+            std::env::var("TELEGRAM_API_ID").expect("TELEGRAM_API_ID not set"),
+        )
+        .env(
+            "TELEGRAM_API_HASH",
+            std::env::var("TELEGRAM_API_HASH").expect("TELEGRAM_API_HASH not set"),
+        )
+        .output()
+        .await
+        .expect("Failed to run telegram_progress_e2e.py");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        output.status.success(),
+        "Script failed (exit={}):\nstdout: {stdout}\nstderr: {stderr}",
+        output.status
+    );
+
+    // Parse JSON result
+    let result: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("Failed to parse script output as JSON: {e}\nstdout: {stdout}\nstderr: {stderr}")
+    });
+
+    // Check for script-level errors
+    if let Some(err) = result["error"].as_str() {
+        panic!("Telegram script error: {err}");
+    }
+
+    let progress_edits = result["progress_edits"].as_u64().unwrap_or(0);
+    let total_edits = result["total_edits"].as_u64().unwrap_or(0);
+    eprintln!(
+        "pm_24: progress_edits={progress_edits}, total_edits={total_edits}, \
+         max_progress_lines={}, saw_plus_marker={}",
+        result["max_progress_lines"], result["saw_plus_marker"]
+    );
+
+    // Must have seen progress edits (tool call notifications)
+    assert!(
+        progress_edits >= 3,
+        "Expected at least 3 progress edits, got {progress_edits}. \
+         Bot may not have used enough tools."
+    );
+
+    // The key assertion: progress was trimmed (saw "... +N действий" marker)
+    assert!(
+        result["progress_trimmed"].as_bool().unwrap_or(false),
+        "Progress message was NOT trimmed (no '... +N' marker seen). \
+         max_progress_lines={}, progress_edits={progress_edits}",
+        result["max_progress_lines"]
+    );
 }
 
 #[tokio::test]

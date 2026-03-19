@@ -4145,7 +4145,7 @@ pub async fn process_message(
     let autonomy_for_session = {
         let mut ac = config.autonomy.clone();
         if let Some(sid) = session_id {
-            let username = sid.splitn(2, '_').nth(1).unwrap_or("");
+            let username = sid.split_once('_').map(|x| x.1).unwrap_or("");
             if let Some(&override_level) = ac.user_overrides.get(username) {
                 tracing::info!(
                     username = username,

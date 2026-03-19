@@ -2610,7 +2610,20 @@ async fn process_channel_message(
                             *last = last.replacen('\u{23f3}', "\u{2705}", 1);
                         }
                         accumulated_lines.push(format!("\u{23f3} {text}"));
-                        let status_text = accumulated_lines.join("\n");
+                        let max_visible = 8;
+                        let display_lines = if accumulated_lines.len() > max_visible {
+                            let hidden = accumulated_lines.len() - max_visible;
+                            let mut dl = vec![format!("... +{hidden} действий")];
+                            dl.extend(
+                                accumulated_lines[accumulated_lines.len() - max_visible..]
+                                    .iter()
+                                    .cloned(),
+                            );
+                            dl
+                        } else {
+                            accumulated_lines.clone()
+                        };
+                        let status_text = display_lines.join("\n");
 
                         if let Some(ref mid) = status_msg_id {
                             // Update existing status message

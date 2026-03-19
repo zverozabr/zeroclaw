@@ -8407,6 +8407,7 @@ default_temperature = 0.7
                 always_ask: vec![],
                 allowed_roots: vec![],
                 non_cli_excluded_tools: vec![],
+                user_overrides: HashMap::new(),
             },
             backup: BackupConfig::default(),
             data_retention: DataRetentionConfig::default(),
