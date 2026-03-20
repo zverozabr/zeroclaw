@@ -1257,7 +1257,10 @@ fn build_compact_tool_xml(tools_registry: &[Box<dyn Tool>]) -> String {
 /// Filters tools to [`COMPACT_CORE_TOOLS`], uses compact skill injection,
 /// and limits bootstrap files to 2 KB.
 fn build_compact_system_prompt(ctx: &ChannelRuntimeContext, native_tools: bool) -> String {
-    tracing::debug!("Using compact system prompt for small-context provider");
+    tracing::debug!(
+        native_tools,
+        "Using compact system prompt for small-context provider"
+    );
 
     // 1. Extract tool descriptions, keeping only core tools
     let all_descs: Vec<(String, String)> = ctx
@@ -10985,6 +10988,39 @@ This is an example JSON object for profile settings."#;
         assert!(
             !xml.contains("**content_search**"),
             "Should NOT contain content_search (not a compact core tool)"
+        );
+    }
+
+    #[test]
+    fn full_system_prompt_for_normal_provider() {
+        // Normal providers (minimax, openai) should NOT trigger compact mode
+        assert!(!is_small_context_provider("minimax"));
+        assert!(!is_small_context_provider("openai"));
+        assert!(!is_small_context_provider("anthropic"));
+        assert!(!is_small_context_provider("deepseek"));
+        assert!(!is_small_context_provider("openrouter"));
+    }
+
+    #[test]
+    fn compact_tool_xml_appended_for_non_native_provider() {
+        // Verify that build_compact_tool_xml produces XML with tool_call tags
+        // This is what gets appended for Ollama (non-native-tools provider)
+        use crate::security::SecurityPolicy;
+        let security = std::sync::Arc::new(SecurityPolicy::from_config(
+            &crate::config::AutonomyConfig::default(),
+            std::path::Path::new("/tmp"),
+        ));
+        let tools = crate::tools::default_tools(security);
+        let xml = build_compact_tool_xml(&tools);
+
+        // XML block must be present (this is what Ollama needs)
+        assert!(
+            xml.contains("<tool_call>"),
+            "Non-native provider needs XML tool_call instructions"
+        );
+        assert!(
+            xml.contains("Parameters:"),
+            "XML should include parameter schemas for tools"
         );
     }
 }
