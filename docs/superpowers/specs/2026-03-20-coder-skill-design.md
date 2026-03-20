@@ -81,7 +81,8 @@ Exposes one tool: `code`
 
 **Parameters:**
 - `message` (String) — task description, bug report, or code question
-- `thread_id` (String, internal) — Telegram chat/thread ID for session continuity; passed automatically by ZeroClaw routing, not user-facing
+
+`thread_id` is **not** a tool parameter. It is read from the `ZC_THREAD_ID` environment variable injected by ZeroClaw (see §ZeroClaw Rust Changes below).
 
 **Routing hint in description:** triggers on coding tasks — file editing, bug fixing, reading logs, writing scripts, explaining code, refactoring.
 
@@ -111,6 +112,7 @@ Wraps Pi's stdin/stdout JSONL RPC protocol. Key operations:
 
 - `new_session()` → sends `{"type": "new_session"}`, reads `get_state` response, returns `session_file` (full path to `~/.pi/agent/sessions/.../timestamp_uuid.jsonl`)
 - `switch_session(session_file)` → sends `{"type": "switch_session", "sessionPath": "..."}` — **always called before `prompt` when restoring an existing session after Pi restart**
+- `set_system_prompt(text)` → sends `{"type": "set_system_prompt", "prompt": "..."}` — called once after `new_session()` to inject log access context; **not** called on `switch_session` (system prompt is already saved in the session JSONL)
 - `prompt(message)` → sends `{"type": "prompt", "text": "..."}`, reads events until `agent_end` or timeout
 - `set_model(provider, model_id)` → sends `{"type": "set_model", "provider": "...", "modelId": "..."}` — used by `/model` command handler in `coder.py`
 - Auto-cancels `extension_ui_request` events: responds `{"type": "extension_ui_response", "id": "...", "cancelled": true}` immediately — Pi is headless in this context
@@ -122,15 +124,18 @@ Wraps Pi's stdin/stdout JSONL RPC protocol. Key operations:
 
 ### 4. `coder.py` — Entrypoint
 
-1. Parse `{message, thread_id}` from ZeroClaw skill args
-2. Handle `/reset` command: delete `thread_id` mapping from `sessions.json`, reply "Session reset."
-3. Handle `/model <provider> <model>` command: call `rpc_client.set_model(provider, model)`, reply "Switched to `provider/model`."
-4. Call `pi_manager.ensure_running()`
-5. Lock `sessions.json`, look up `thread_id`
-6. If found: `rpc_client.switch_session(session_file)`; if not: `rpc_client.new_session()` → save `session_file`
-7. Release lock
-8. `rpc_client.prompt(message)` → collect response (with 60s heartbeat)
-9. Return response text to ZeroClaw
+1. Read `thread_id = os.environ["ZC_THREAD_ID"]` (see §ZeroClaw Rust Changes)
+2. Parse `message` from ZeroClaw skill args
+3. Handle `/reset` command: delete `thread_id` mapping from `sessions.json`, reply "Session reset."
+4. Handle `/model <provider> <model>` command: call `rpc_client.set_model(provider, model)`, reply "Switched to `provider/model`."
+5. Call `pi_manager.ensure_running()`
+6. Lock `sessions.json` (`fcntl.flock`), look up `thread_id`
+7. If found and `session_file` exists: `rpc_client.switch_session(session_file)`
+   If found but `session_file` missing (deleted externally): log warning, fall through to create new
+   If not found: `rpc_client.new_session()` → `rpc_client.set_system_prompt(LOG_ACCESS_PROMPT)` → save `session_file`, update mapping
+8. Release lock
+9. `rpc_client.prompt(message)` → collect response (with 60s heartbeat)
+10. Return response text to ZeroClaw
 
 ### 5. Log Access
 
@@ -186,13 +191,45 @@ Pi starts with `--provider minimax --model MiniMax-M2.7-highspeed`. To switch mi
 |---|---|
 | Pi process dead | `pi_manager` respawns with `--no-session`, re-issues `switch_session`, retries |
 | Pi PID stale (OS reuse) | `/proc/pid/cmdline` check catches this → respawn |
-| Pi session JSONL missing | Log warning, create new session, inform user: "Previous context unavailable, starting fresh." |
+| Pi session JSONL missing | Log warning, create new session via `new_session()`, replace stale `sessions.json` entry with new `session_file`, inform user: "Previous context unavailable, starting fresh." |
 | `extension_ui_request` event | Auto-cancelled via `extension_ui_response(cancelled=true)` |
 | RPC heartbeat (>60s no end) | Send "Pi is still working…" to Telegram |
 | RPC hard timeout (>300s) | Return error, leave Pi running for next request |
 | Unknown thread_id | Create new session automatically |
 | `MINIMAX_API_KEY` missing | Skill returns: "MiniMax key not in environment. Add to shell_env_passthrough." |
 | Pi binary missing | Skill returns: `npm install -g @badlogic/pi@<pinned-version>` |
+
+---
+
+## ZeroClaw Rust Changes
+
+The skill requires `ZC_THREAD_ID` to be injected into skill subprocess env. This env var does not currently exist. Required changes:
+
+**`src/agent/loop_.rs`** — add a new task-local alongside `TOOL_LOOP_REPLY_TO_MESSAGE_ID`:
+
+```rust
+tokio::task_local! {
+    pub(crate) static TOOL_LOOP_THREAD_ID: Option<String>;
+}
+
+pub(crate) async fn scope_thread_id<F>(thread_id: Option<String>, future: F) -> F::Output
+where F: Future
+{
+    TOOL_LOOP_THREAD_ID.scope(thread_id, future).await
+}
+```
+
+**`src/channels/mod.rs`** — wrap agent invocation with `scope_thread_id`, passing the stable per-thread identifier: `interruption_scope_id.or(thread_ts).or(Some(msg.id.clone()))`.
+
+**`src/skills/tool_handler.rs`** — inject into subprocess env alongside `ZC_REPLY_TO_MESSAGE_ID`:
+
+```rust
+if let Ok(Some(thread_id)) = crate::agent::loop_::TOOL_LOOP_THREAD_ID.try_with(|v| v.clone()) {
+    cmd.env("ZC_THREAD_ID", thread_id);
+}
+```
+
+These changes are **prerequisites** for the skill to function. They must be implemented as part of this feature, not as a follow-up.
 
 ---
 
