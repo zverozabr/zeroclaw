@@ -2809,7 +2809,9 @@ async fn process_channel_message(
         }
     }
 
-    let base_system_prompt = if had_prior_history {
+    let base_system_prompt = if is_small_context_provider(&route.provider) {
+        build_compact_system_prompt(ctx.as_ref(), active_provider.supports_native_tools())
+    } else if had_prior_history {
         ctx.system_prompt.as_str().to_string()
     } else {
         refreshed_new_session_system_prompt(ctx.as_ref())
