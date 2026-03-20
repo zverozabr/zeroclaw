@@ -276,3 +276,70 @@ These changes are **prerequisites** for the skill to function. They must be impl
 - `/reset` clears session for that thread only
 - `/model gemini gemini-2.0-flash` switches model mid-session
 - Model is MiniMax by default
+
+---
+
+## E2E Test Plan (Live Telegram, Real Files)
+
+**Mandatory before declaring done.** Run via Telethon as `zverozabr` (same pattern as existing `telegram_reader_e2e` tests). All tests use the live bot `@zGsR_bot`.
+
+### Test c1 — Basic file write
+
+1. Create Telegram topic/thread "coder-test-c1"
+2. Send: `"create a file /tmp/coder_e2e_c1.txt with the content: hello from Pi"`
+3. Assert: file `/tmp/coder_e2e_c1.txt` exists with expected content
+4. Assert: bot reply contains confirmation of file creation
+
+### Test c2 — Context continuity within thread
+
+1. Reuse thread "coder-test-c1" (same thread as c1)
+2. Send: `"append a second line to that file: line 2"`
+3. Assert: `/tmp/coder_e2e_c1.txt` now has 2 lines — Pi remembered the filename from c1
+
+### Test c3 — Context isolation between threads
+
+1. Create a **new** topic/thread "coder-test-c3"
+2. Send: `"what file did we create earlier?"`
+3. Assert: Pi does **not** mention `coder_e2e_c1.txt` — no context bleed from thread c1
+4. Assert: bot reply says no previous files or context in this session
+
+### Test c4 — Shell action in repo
+
+1. Create thread "coder-test-c4"
+2. Send: `"in the zeroclaws repo, run: cargo fmt --check and tell me the result"`
+3. Assert: bot reply contains actual cargo output (exit code, any formatting issues)
+4. Assert: Pi ran the command in `$DAEMON_CWD` (zeroclaws repo)
+
+### Test c5 — Log reading
+
+1. Create thread "coder-test-c5"
+2. Send: `"read the last 20 lines of the ZeroClaw daemon log and summarize what happened"`
+3. Assert: bot reply contains content from `/tmp/zeroclaw_daemon.log`
+4. Assert: reply is a coherent summary, not raw log dump
+
+### Test c6 — Daemon restart session recovery
+
+1. Use thread "coder-test-c1", confirm Pi session exists (c1 + c2 ran)
+2. Kill and restart Pi process manually (simulate crash): `pkill -f "pi --mode rpc"`
+3. In thread "coder-test-c1", send: `"what file did we create?"`
+4. Assert: Pi restored session from JSONL → still knows about `coder_e2e_c1.txt`
+5. Assert: no "previous context unavailable" warning (session JSONL intact)
+
+### Test c7 — `/reset` clears only that thread
+
+1. In thread "coder-test-c1", send: `/reset`
+2. Assert: bot replies "Session reset."
+3. Send: `"what file did we create?"`
+4. Assert: Pi has no memory of c1 files (fresh session)
+5. Switch to thread "coder-test-c4", send: `"what did we run earlier?"`
+6. Assert: Pi still remembers cargo fmt from c4 (other thread unaffected)
+
+### Running the tests
+
+```bash
+source ~/.zeroclaw/.env && \
+python3 ~/.zeroclaw/workspace/skills/coder/tests/test_e2e.py \
+  --test-threads=1
+```
+
+Tests must pass with real Telegram messages before any "done" claim. No mocking of Pi or Telegram.
