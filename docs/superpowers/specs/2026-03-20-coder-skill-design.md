@@ -34,6 +34,9 @@ The goal is to add a dedicated coding assistant accessible from Telegram that ha
 
 Pi is wrapped as a ZeroClaw skill. ZeroClaw routes coding requests to the skill, which manages a Pi process and maps Telegram threads to Pi sessions.
 
+**npm package:** `@mariozechner/pi-coding-agent` (binary: `pi`), current version `0.61.0`.
+**Key RPC events emitted during agent execution:** `tool_execution_start` (toolName + args), `tool_execution_end`, `message_update` (streaming LLM text), `agent_end`.
+
 ---
 
 ## Architecture
@@ -112,7 +115,7 @@ Wraps Pi's stdin/stdout JSONL RPC protocol. Key operations:
 
 - `new_session()` → sends `{"type": "new_session"}`, reads `get_state` response, returns `session_file` (full path to `~/.pi/agent/sessions/.../timestamp_uuid.jsonl`)
 - `switch_session(session_file)` → sends `{"type": "switch_session", "sessionPath": "..."}` — **always called before `prompt` when restoring an existing session after Pi restart**
-- `set_system_prompt(text)` → sends `{"type": "set_system_prompt", "prompt": "..."}` — called once after `new_session()` to inject log access context; **not** called on `switch_session` (system prompt is already saved in the session JSONL)
+- *(no `set_system_prompt` RPC — does not exist in Pi protocol)*
 - `prompt(message)` → sends `{"type": "prompt", "text": "..."}`, reads events until `agent_end` or timeout; emits structured progress events for each Pi action
 - `set_model(provider, model_id)` → sends `{"type": "set_model", "provider": "...", "modelId": "..."}` — used by `/model` command handler in `coder.py`
 - Auto-cancels `extension_ui_request` events: responds `{"type": "extension_ui_response", "id": "...", "cancelled": true}` immediately — Pi is headless in this context
@@ -132,7 +135,8 @@ Wraps Pi's stdin/stdout JSONL RPC protocol. Key operations:
 6. Lock `sessions.json` (`fcntl.flock`), look up `thread_id`
 7. If found and `session_file` exists: `rpc_client.switch_session(session_file)`
    If found but `session_file` missing (deleted externally): log warning, fall through to create new
-   If not found: `rpc_client.new_session()` → `rpc_client.set_system_prompt(LOG_ACCESS_PROMPT)` → save `session_file`, update mapping
+   If not found: `rpc_client.new_session()` → save `session_file`, update mapping
+   *(System prompt/log context comes from `AGENTS.md` in `--cwd` — see §Log Access)*
 8. Release lock
 9. Post initial status message via gateway API → receive `status_msg_id`
 10. `rpc_client.prompt(message)` → for each Pi event: edit status message (see §Progress via Status Message)
@@ -140,21 +144,26 @@ Wraps Pi's stdin/stdout JSONL RPC protocol. Key operations:
 
 ### 5. Log Access
 
-Pi's system prompt is injected at `new_session()` via a `set_system_prompt` RPC call:
+Pi automatically loads `AGENTS.md` (or `CLAUDE.md`) from its `--cwd` directory into the system prompt on every session start and restore. Since the daemon's CWD is the ZeroClaw repo (`~/work/erp/zeroclaws`), the existing `CLAUDE.md` is already loaded.
 
-```
-You are a coding assistant operating on the ZeroClaw codebase.
+Log access context is added by appending a section to the repo's `CLAUDE.md` (or a separate `AGENTS.md` if preferred):
+
+```markdown
+## Coder Skill: Log & Workspace Access
+
+You are also a live coding assistant accessible via Telegram.
 
 You have access to:
-  - ZeroClaw daemon log: /tmp/zeroclaw_daemon.log
-  - ZeroClaw config and workspace: ~/.zeroclaw/
-  - Current repo: {DAEMON_CWD}
+- ZeroClaw daemon log: /tmp/zeroclaw_daemon.log
+- ZeroClaw config and workspace: ~/.zeroclaw/
 
 Read logs with your file tools to debug ZeroClaw behavior (errors,
-channel activity, provider failures). Edit code directly in {DAEMON_CWD}.
+channel activity, provider failures). Edit code directly in this repo.
 ```
 
-Pi's file access is unrestricted — it reads `/tmp/zeroclaw_daemon.log` and anything under `~/.zeroclaw/` via its built-in file tools.
+Pi's file tools (`read`, `write`, `edit`, `bash`, `find`, `grep`) are unrestricted — it can read `/tmp/zeroclaw_daemon.log` and any path under `~/.zeroclaw/` directly.
+
+**No RPC call needed** — context is always present because Pi reads `AGENTS.md`/`CLAUDE.md` automatically.
 
 ---
 
@@ -192,16 +201,18 @@ Fixed the formatting issue in channels/mod.rs:
 
 ### Pi event → status text mapping
 
+Pi emits these events (from `packages/agent/src/types.ts`):
+
 | Pi RPC event | Status text shown |
 |---|---|
-| `tool_call` with `read_file` | `⚙ reading {path}` |
-| `tool_call` with `write_file` | `⚙ writing {path}` |
-| `tool_call` with `edit_file` | `⚙ editing {path}` |
-| `tool_call` with `run_command` / `bash` | `⚙ running: {command[:60]}` |
-| `tool_call` with `search` / `glob` | `⚙ searching {pattern}` |
-| `tool_call` (other) | `⚙ {tool_name}` |
-| `thinking` / `assistant_message` chunk | `⚙ Pi is thinking…` |
-| `agent_end` | replace with final answer text |
+| `tool_execution_start` / `toolName=read` | `⚙ reading {args.path}` |
+| `tool_execution_start` / `toolName=write` | `⚙ writing {args.path}` |
+| `tool_execution_start` / `toolName=edit` | `⚙ editing {args.path}` |
+| `tool_execution_start` / `toolName=bash` | `⚙ running: {args.command[:60]}` |
+| `tool_execution_start` / `toolName=find` or `grep` | `⚙ searching {args.pattern or args.path}` |
+| `tool_execution_start` (other) | `⚙ {toolName}` |
+| `message_update` (LLM streaming) | `⚙ Pi is thinking…` |
+| `agent_end` | fetch final text via `get_last_assistant_text`, replace status with it |
 | timeout (300s) | `✗ Pi timed out after 300s` |
 | error | `✗ Error: {message}` |
 
@@ -245,7 +256,7 @@ Pi starts with `--provider minimax --model MiniMax-M2.7-highspeed`. To switch mi
 |---|---|
 | Pi process dead | `pi_manager` respawns with `--no-session`, re-issues `switch_session`, retries |
 | Pi PID stale (OS reuse) | `/proc/pid/cmdline` check catches this → respawn |
-| Pi session JSONL missing | Log warning, create new session via `new_session()`, replace stale `sessions.json` entry with new `session_file`, inform user: "Previous context unavailable, starting fresh." |
+| Pi session JSONL missing | Log warning, call `new_session()`, replace stale entry in `sessions.json` with new `session_file`, inform user: "Previous context unavailable, starting fresh." |
 | `extension_ui_request` event | Auto-cancelled via `extension_ui_response(cancelled=true)` |
 | RPC heartbeat (>60s no end) | Send "Pi is still working…" to Telegram |
 | RPC hard timeout (>300s) | Return error, leave Pi running for next request |
@@ -289,9 +300,10 @@ These changes are **prerequisites** for the skill to function. They must be impl
 
 ## Installation
 
-1. **Install Pi** (version pinned after confirming compatibility with this RPC protocol design):
+1. **Install Pi**:
    ```bash
-   npm install -g @badlogic/pi@1.2.x   # pin exact version after testing
+   npm install -g @mariozechner/pi-coding-agent@0.61.0
+   # binary installed as: pi
    ```
 
 2. **Add `MINIMAX_API_KEY` to ZeroClaw passthrough** in `~/.zeroclaw/config.toml`:
