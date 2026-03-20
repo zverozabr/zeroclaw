@@ -1547,7 +1547,7 @@ impl SecurityPolicy {
         // Rate limit
         let _ = writeln!(
             out,
-            "**Rate limit**: max {} actions per hour.",
+            "**Rate limit**: max {} actions per hour per chat (each conversation has its own independent budget).",
             self.max_actions_per_hour
         );
 
