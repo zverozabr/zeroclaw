@@ -29,8 +29,7 @@ impl Tool for ModelSwitchTool {
          for a provider, or 'set' to switch to a different model. In messaging \
          channels (Telegram, Discord, Slack) the switch applies only to this \
          specific chat and persists across restarts. Other chats are not affected. \
-         The new model is used starting from the next message. \
-         Conversation history is cleared on switch to avoid context-window errors."
+         The new model is used starting from the next message."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -158,7 +157,7 @@ impl ModelSwitchTool {
                 "message": "Model switch requested",
                 "provider": provider,
                 "model": model,
-                "note": "Model switch requested. The new model will be used starting from the next message in this chat. Other chats are not affected. Conversation history will be cleared."
+                "note": "Model switch requested. The new model will be used starting from the next message in this chat. Other chats are not affected."
             }))?,
             error: None,
         })
