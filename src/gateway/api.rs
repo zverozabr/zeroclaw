@@ -1205,6 +1205,42 @@ pub async fn handle_api_session_delete(
     }
 }
 
+/// DELETE /api/history/{sender_key} — clear in-memory conversation history for a sender.
+///
+/// This is used by external skills (e.g. the coder skill `/reset` command) to ensure
+/// ZeroClaw's per-sender history is wiped so the LLM starts fresh on the next message.
+/// The `sender_key` format matches the internal channel key:
+/// `{channel}_{reply_target}_{thread_id}_{sender}` (Telegram forum topics) or
+/// `{channel}_{reply_target}_{sender}` (direct chats).
+pub async fn handle_api_history_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(sender_key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let cleared = if let Some(ref histories) = state.conversation_histories {
+        let mut map = histories.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(&sender_key).is_some()
+    } else {
+        false
+    };
+
+    // Also mark sender for a fresh session so the next message gets a clean system prompt.
+    if let Some(ref pending) = state.pending_new_sessions {
+        let mut set = pending.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(sender_key.clone());
+    }
+
+    Json(serde_json::json!({
+        "cleared": cleared,
+        "sender_key": sender_key,
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

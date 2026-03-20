@@ -223,6 +223,26 @@ impl Observer for ChannelNotifyObserver {
 type ConversationHistoryMap = Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>;
 /// Senders that requested `/new` and must force a fresh prompt on their next message.
 type PendingNewSessionSet = Arc<Mutex<HashSet<String>>>;
+
+/// Process-wide shared conversation history map.
+/// Used by all channel instances and exposed to the gateway for external clearing
+/// (e.g. the coder skill `/reset` command).
+static GLOBAL_CONVERSATION_HISTORIES: std::sync::LazyLock<ConversationHistoryMap> =
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// Process-wide shared pending-new-session set.
+static GLOBAL_PENDING_NEW_SESSIONS: std::sync::LazyLock<PendingNewSessionSet> =
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(HashSet::new())));
+
+/// Return a clone of the global conversation-history Arc so the gateway can clear entries.
+pub fn global_conversation_histories() -> ConversationHistoryMap {
+    Arc::clone(&GLOBAL_CONVERSATION_HISTORIES)
+}
+
+/// Return a clone of the global pending-new-sessions Arc so the gateway can insert entries.
+pub fn global_pending_new_sessions() -> PendingNewSessionSet {
+    Arc::clone(&GLOBAL_PENDING_NEW_SESSIONS)
+}
 /// Maximum history messages to keep per sender.
 const MAX_CHANNEL_HISTORY: usize = 50;
 /// Minimum user-message length (in chars) for auto-save to memory.
@@ -3107,6 +3127,7 @@ async fn process_channel_message(
                 msg.interruption_scope_id.clone()
                     .or_else(|| msg.thread_ts.clone())
                     .or_else(|| Some(msg.id.clone())),
+                Some(history_key.clone()),
                 scope_reply_to_message_id(
                     msg.reply_to_message_id.clone(),
                     run_tool_call_loop(
@@ -3730,7 +3751,7 @@ async fn run_message_dispatch_loop(
                 }
             }
 
-            process_channel_message(worker_ctx, msg, cancellation_token).await;
+            Box::pin(process_channel_message(worker_ctx, msg, cancellation_token)).await;
 
             if register_in_flight {
                 let mut active = in_flight.lock().await;
@@ -5294,8 +5315,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
         auto_save_memory: config.memory.auto_save,
         max_tool_iterations: config.agent.max_tool_iterations,
         min_relevance_score: config.memory.min_relevance_score,
-        conversation_histories: Arc::new(Mutex::new(HashMap::new())),
-        pending_new_sessions: Arc::new(Mutex::new(HashSet::new())),
+        conversation_histories: global_conversation_histories(),
+        pending_new_sessions: global_pending_new_sessions(),
         provider_cache: Arc::new(Mutex::new(provider_cache_seed)),
         route_overrides: Arc::new(Mutex::new(HashMap::new())),
         pending_selections: Arc::new(Mutex::new(HashMap::new())),
@@ -6507,7 +6528,7 @@ BTC is currently around $65,000 based on latest tool output."#
             activated_tools: None,
         });
 
-        process_channel_message(
+        Box::pin(process_channel_message(
             runtime_ctx,
             traits::ChannelMessage {
                 id: "msg-1".to_string(),
@@ -6521,7 +6542,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 interruption_scope_id: None,
             },
             CancellationToken::new(),
-        )
+        ))
         .await;
 
         let sent_messages = channel_impl.sent_messages.lock().await;
@@ -6592,7 +6613,7 @@ BTC is currently around $65,000 based on latest tool output."#
             activated_tools: None,
         });
 
-        process_channel_message(
+        Box::pin(process_channel_message(
             runtime_ctx.clone(),
             traits::ChannelMessage {
                 id: "msg-telegram-tool-1".to_string(),
@@ -6606,7 +6627,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 interruption_scope_id: None,
             },
             CancellationToken::new(),
-        )
+        ))
         .await;
 
         let sent_messages = channel_impl.sent_messages.lock().await;

@@ -463,6 +463,14 @@ impl Tool for SkillToolHandler {
             cmd.env("ZC_THREAD_ID", thread_id);
         }
 
+        // Inject the full conversation-history sender key so skill scripts can call
+        // DELETE /api/history/{sender_key} to clear ZeroClaw's in-memory history.
+        if let Ok(Some(sender_key)) =
+            crate::agent::loop_::TOOL_LOOP_SENDER_KEY.try_with(|v| v.clone())
+        {
+            cmd.env("ZC_SENDER_KEY", sender_key);
+        }
+
         let output = cmd
             .output()
             .await
@@ -932,7 +940,7 @@ mod tests {
     async fn test_zc_thread_id_injected() {
         use crate::agent::loop_::{scope_thread_id, TOOL_LOOP_THREAD_ID};
         let thread_id = Some("tg_thread_42".to_string());
-        let result = scope_thread_id(thread_id.clone(), async {
+        let result = scope_thread_id(thread_id.clone(), None, async {
             TOOL_LOOP_THREAD_ID.try_with(|v| v.clone()).unwrap()
         })
         .await;

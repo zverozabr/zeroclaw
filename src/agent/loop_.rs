@@ -238,6 +238,11 @@ tokio::task_local! {
     /// Used by skill tools to pass to subprocess env (ZC_THREAD_ID).
     /// Set from interruption_scope_id, thread_ts, or message id (in that priority).
     pub(crate) static TOOL_LOOP_THREAD_ID: Option<String>;
+    /// Full conversation-history key for the current sender.
+    /// Used by skill tools to pass to subprocess env (ZC_SENDER_KEY) so that
+    /// external calls (e.g. DELETE /api/history/{sender_key}) can target the
+    /// correct history entry.
+    pub(crate) static TOOL_LOOP_SENDER_KEY: Option<String>;
 }
 
 /// Run a future with the session report directory set in task-local storage.
@@ -266,13 +271,21 @@ where
     TOOL_LOOP_REPLY_TO_MESSAGE_ID.scope(reply_to, future).await
 }
 
-/// Run a future with the thread ID set in task-local storage.
-/// Skill tools read this to inject `ZC_THREAD_ID` into subprocess env.
-pub(crate) async fn scope_thread_id<F>(thread_id: Option<String>, future: F) -> F::Output
+/// Run a future with the thread ID and sender key set in task-local storage.
+/// Skill tools read these to inject `ZC_THREAD_ID` and `ZC_SENDER_KEY` into
+/// subprocess env.  Both are set in a single combined scope to avoid adding an
+/// extra nesting level that would grow the future size past the clippy limit.
+pub(crate) async fn scope_thread_id<F>(
+    thread_id: Option<String>,
+    sender_key: Option<String>,
+    future: F,
+) -> F::Output
 where
     F: std::future::Future,
 {
-    TOOL_LOOP_THREAD_ID.scope(thread_id, future).await
+    TOOL_LOOP_THREAD_ID
+        .scope(thread_id, TOOL_LOOP_SENDER_KEY.scope(sender_key, future))
+        .await
 }
 
 /// Keep this many most-recent non-system messages after compaction.

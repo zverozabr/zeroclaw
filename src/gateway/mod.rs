@@ -59,6 +59,13 @@ pub const RATE_LIMIT_MAX_KEYS_DEFAULT: usize = 10_000;
 /// Fallback max distinct idempotency keys retained in gateway memory.
 pub const IDEMPOTENCY_MAX_KEYS_DEFAULT: usize = 10_000;
 
+/// Shared type for per-sender conversation histories (channel subsystem).
+type SharedHistoryMap =
+    Arc<std::sync::Mutex<HashMap<String, Vec<crate::providers::ChatMessage>>>>;
+/// Shared type for the pending-new-session set (channel subsystem).
+type SharedPendingNewSessions =
+    Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
 fn webhook_memory_key() -> String {
     format!("webhook_msg_{}", Uuid::new_v4())
 }
@@ -355,6 +362,11 @@ pub struct AppState {
     pub device_registry: Option<Arc<api_pairing::DeviceRegistry>>,
     /// Pending pairing request store
     pub pending_pairings: Option<Arc<api_pairing::PairingStore>>,
+    /// Shared per-sender conversation histories (from channel subsystem).
+    /// Used by DELETE /api/history/{sender_key} to clear in-memory history.
+    pub conversation_histories: Option<SharedHistoryMap>,
+    /// Shared set of senders pending a fresh session (from channel subsystem).
+    pub pending_new_sessions: Option<SharedPendingNewSessions>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -776,6 +788,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         session_backend,
         device_registry,
         pending_pairings,
+        conversation_histories: Some(crate::channels::global_conversation_histories()),
+        pending_new_sessions: Some(crate::channels::global_pending_new_sessions()),
     };
 
     // Config PUT needs larger body limit (1MB)
@@ -829,6 +843,10 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/health", get(api::handle_api_health))
         .route("/api/sessions", get(api::handle_api_sessions_list))
         .route("/api/sessions/{id}", delete(api::handle_api_session_delete))
+        .route(
+            "/api/history/{sender_key}",
+            delete(api::handle_api_history_delete),
+        )
         // ── Pairing + Device management API ──
         .route("/api/pairing/initiate", post(api_pairing::initiate_pairing))
         .route("/api/pair", post(api_pairing::submit_pairing_enhanced))
@@ -1952,6 +1970,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2007,6 +2027,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2388,6 +2410,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2457,6 +2481,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let headers = HeaderMap::new();
@@ -2538,6 +2564,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let response = handle_webhook(
@@ -2591,6 +2619,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2649,6 +2679,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2712,6 +2744,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -2771,6 +2805,8 @@ mod tests {
             session_backend: None,
             device_registry: None,
             pending_pairings: None,
+            conversation_histories: None,
+            pending_new_sessions: None,
         };
 
         let mut headers = HeaderMap::new();
