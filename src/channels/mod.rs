@@ -2647,6 +2647,13 @@ async fn process_channel_message(
 
     let history_key = conversation_history_key(&msg);
     let mut route = get_route_selection(ctx.as_ref(), &history_key);
+    tracing::debug!(
+        provider = %route.provider,
+        model = %route.model,
+        sender_key = %history_key,
+        is_small_ctx = is_small_context_provider(&route.provider),
+        "Route selection for channel message"
+    );
 
     // ── Query classification: override route when a rule matches ──
     if let Some(hint) = crate::agent::classifier::classify(&ctx.query_classification, &msg.content)
@@ -3055,6 +3062,42 @@ async fn process_channel_message(
         }
     };
 
+    // For small-context providers, exclude all tools NOT in COMPACT_CORE_TOOLS
+    // so that native JSON tool schemas don't blow up the provider's context window.
+    let compact_excluded: Vec<String> = if is_small_context_provider(&route.provider) {
+        let mut excluded: Vec<String> = ctx
+            .tools_registry
+            .iter()
+            .filter(|t| !COMPACT_CORE_TOOLS.contains(&t.name()))
+            .map(|t| t.name().to_string())
+            .collect();
+        // Also include non-CLI exclusions
+        if msg.channel != "cli" && ctx.autonomy_level != AutonomyLevel::Full {
+            for ex in ctx.non_cli_excluded_tools.iter() {
+                if !excluded.contains(ex) {
+                    excluded.push(ex.clone());
+                }
+            }
+        }
+        tracing::info!(
+            provider = %route.provider,
+            kept_tools = COMPACT_CORE_TOOLS.len(),
+            excluded_tools = excluded.len(),
+            "Filtering tools for small-context provider"
+        );
+        excluded
+    } else {
+        Vec::new()
+    };
+
+    let effective_excluded: &[String] = if !compact_excluded.is_empty() {
+        &compact_excluded
+    } else if msg.channel == "cli" || ctx.autonomy_level == AutonomyLevel::Full {
+        &[]
+    } else {
+        ctx.non_cli_excluded_tools.as_ref()
+    };
+
     clear_model_switch_request();
     let llm_result = tokio::select! {
         () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
@@ -3079,13 +3122,7 @@ async fn process_channel_message(
                     Some(cancellation_token.clone()),
                     delta_tx,
                     ctx.hooks.as_deref(),
-                    if msg.channel == "cli"
-                        || ctx.autonomy_level == AutonomyLevel::Full
-                    {
-                        &[]
-                    } else {
-                        ctx.non_cli_excluded_tools.as_ref()
-                    },
+                    effective_excluded,
                     ctx.tool_call_dedup_exempt.as_ref(),
                     ctx.max_parallel_tool_calls,
                     ctx.max_tool_result_chars,

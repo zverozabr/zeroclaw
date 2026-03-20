@@ -1231,6 +1231,7 @@ impl OpenAiCompatibleProvider {
             "tool_choice",
             "tool call validation failed",
             "was not in request",
+            "failed to call a function",
         ]
         .iter()
         .any(|hint| lower.contains(hint))

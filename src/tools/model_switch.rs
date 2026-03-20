@@ -24,7 +24,13 @@ impl Tool for ModelSwitchTool {
     }
 
     fn description(&self) -> &str {
-        "Switch the AI model at runtime. Use 'get' to see current model, 'list_providers' to see available providers, 'list_models' to see models for a provider, or 'set' to switch to a different model. The switch takes effect immediately for the current conversation."
+        "Switch the AI model for this chat. Use 'get' to see current model, \
+         'list_providers' to see available providers, 'list_models' to see models \
+         for a provider, or 'set' to switch to a different model. In messaging \
+         channels (Telegram, Discord, Slack) the switch applies only to this \
+         specific chat and persists across restarts. Other chats are not affected. \
+         The new model is used starting from the next message. \
+         Conversation history is cleared on switch to avoid context-window errors."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -152,7 +158,7 @@ impl ModelSwitchTool {
                 "message": "Model switch requested",
                 "provider": provider,
                 "model": model,
-                "note": "The agent will switch to this model on the next turn. Use 'get' to check pending switch."
+                "note": "Model switch requested. The new model will be used starting from the next message in this chat. Other chats are not affected. Conversation history will be cleared."
             }))?,
             error: None,
         })
