@@ -91,7 +91,7 @@ pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::{
     build_tool_instructions, clear_model_switch_request, get_model_switch_state,
-    run_tool_call_loop, scope_reply_to_message_id, scrub_credentials,
+    run_tool_call_loop, scope_reply_to_message_id, scope_thread_id, scrub_credentials,
 };
 use crate::approval::ApprovalManager;
 use crate::config::Config;
@@ -3103,34 +3103,39 @@ async fn process_channel_message(
         () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
         result = tokio::time::timeout(
             Duration::from_secs(timeout_budget_secs),
-            scope_reply_to_message_id(
-                msg.reply_to_message_id.clone(),
-                run_tool_call_loop(
-                    active_provider.as_ref(),
-                    &mut history,
-                    ctx.tools_registry.as_ref(),
-                    notify_observer.as_ref() as &dyn Observer,
-                    route.provider.as_str(),
-                    route.model.as_str(),
-                    runtime_defaults.temperature,
-                    true,
-                    Some(effective_approval),
-                    msg.channel.as_str(),
-                    Some(msg.reply_target.as_str()),
-                    &ctx.multimodal,
-                    ctx.max_tool_iterations,
-                    Some(cancellation_token.clone()),
-                    delta_tx,
-                    ctx.hooks.as_deref(),
-                    effective_excluded,
-                    ctx.tool_call_dedup_exempt.as_ref(),
-                    ctx.max_parallel_tool_calls,
-                    ctx.max_tool_result_chars,
-                    0,
-                    session_recorder.as_ref(),
-                    session_debug,
-                    ctx.activated_tools.as_ref(),
-                    None,
+            scope_thread_id(
+                msg.interruption_scope_id.clone()
+                    .or_else(|| msg.thread_ts.clone())
+                    .or_else(|| Some(msg.id.clone())),
+                scope_reply_to_message_id(
+                    msg.reply_to_message_id.clone(),
+                    run_tool_call_loop(
+                        active_provider.as_ref(),
+                        &mut history,
+                        ctx.tools_registry.as_ref(),
+                        notify_observer.as_ref() as &dyn Observer,
+                        route.provider.as_str(),
+                        route.model.as_str(),
+                        runtime_defaults.temperature,
+                        true,
+                        Some(effective_approval),
+                        msg.channel.as_str(),
+                        Some(msg.reply_target.as_str()),
+                        &ctx.multimodal,
+                        ctx.max_tool_iterations,
+                        Some(cancellation_token.clone()),
+                        delta_tx,
+                        ctx.hooks.as_deref(),
+                        effective_excluded,
+                        ctx.tool_call_dedup_exempt.as_ref(),
+                        ctx.max_parallel_tool_calls,
+                        ctx.max_tool_result_chars,
+                        0,
+                        session_recorder.as_ref(),
+                        session_debug,
+                        ctx.activated_tools.as_ref(),
+                        None,
+                    ),
                 ),
             ),
         ) => LlmExecutionResult::Completed(result),

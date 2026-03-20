@@ -234,6 +234,10 @@ tokio::task_local! {
     /// Reply-to message ID from the incoming channel message.
     /// Used by skill tools to pass to subprocess env (ZC_REPLY_TO_MESSAGE_ID).
     pub(crate) static TOOL_LOOP_REPLY_TO_MESSAGE_ID: Option<String>;
+    /// Stable thread identifier from the incoming channel message.
+    /// Used by skill tools to pass to subprocess env (ZC_THREAD_ID).
+    /// Set from interruption_scope_id, thread_ts, or message id (in that priority).
+    pub(crate) static TOOL_LOOP_THREAD_ID: Option<String>;
 }
 
 /// Run a future with the session report directory set in task-local storage.
@@ -260,6 +264,15 @@ where
     F: std::future::Future,
 {
     TOOL_LOOP_REPLY_TO_MESSAGE_ID.scope(reply_to, future).await
+}
+
+/// Run a future with the thread ID set in task-local storage.
+/// Skill tools read this to inject `ZC_THREAD_ID` into subprocess env.
+pub(crate) async fn scope_thread_id<F>(thread_id: Option<String>, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    TOOL_LOOP_THREAD_ID.scope(thread_id, future).await
 }
 
 /// Keep this many most-recent non-system messages after compaction.

@@ -455,6 +455,14 @@ impl Tool for SkillToolHandler {
             cmd.env("ZC_REPLY_TO_MESSAGE_ID", reply_to);
         }
 
+        // Inject thread ID from channel context so skill scripts
+        // can route replies to the correct Telegram thread.
+        if let Ok(Some(thread_id)) =
+            crate::agent::loop_::TOOL_LOOP_THREAD_ID.try_with(|v| v.clone())
+        {
+            cmd.env("ZC_THREAD_ID", thread_id);
+        }
+
         let output = cmd
             .output()
             .await
@@ -918,5 +926,24 @@ mod tests {
             "Should NOT contain gateway token: {}",
             result.output
         );
+    }
+
+    #[tokio::test]
+    async fn test_zc_thread_id_injected() {
+        use crate::agent::loop_::{scope_thread_id, TOOL_LOOP_THREAD_ID};
+        let thread_id = Some("tg_thread_42".to_string());
+        let result = scope_thread_id(thread_id.clone(), async {
+            TOOL_LOOP_THREAD_ID.try_with(|v| v.clone()).unwrap()
+        })
+        .await;
+        assert_eq!(result, thread_id);
+    }
+
+    #[tokio::test]
+    async fn test_zc_thread_id_none_when_unset() {
+        use crate::agent::loop_::TOOL_LOOP_THREAD_ID;
+        // Outside any scope, try_with returns Err (not set), so env injection is skipped
+        let result = TOOL_LOOP_THREAD_ID.try_with(|v| v.clone());
+        assert!(result.is_err());
     }
 }
