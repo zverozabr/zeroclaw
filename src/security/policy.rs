@@ -86,6 +86,10 @@ impl Clone for ActionTracker {
 /// Each unique sender key (Telegram thread ID, Discord channel, etc.) gets
 /// its own independent [`ActionTracker`] bucket. When no sender is in scope
 /// (cron jobs, CLI), the [`GLOBAL_KEY`] bucket is used.
+///
+/// Note: sender buckets accumulate for the daemon lifetime with no eviction.
+/// This is acceptable for bounded sets of chat IDs; in high-cardinality deployments,
+/// consider periodic cleanup.
 #[derive(Debug)]
 pub struct PerSenderTracker {
     buckets: parking_lot::Mutex<HashMap<String, ActionTracker>>,
@@ -95,6 +99,7 @@ impl PerSenderTracker {
     /// Bucket key used when no per-sender context is available (cron, CLI).
     pub const GLOBAL_KEY: &'static str = "__global__";
 
+    /// Create an empty tracker with no sender buckets.
     pub fn new() -> Self {
         Self {
             buckets: parking_lot::Mutex::new(HashMap::new()),
@@ -117,7 +122,8 @@ impl PerSenderTracker {
         self.record_within(&key, max)
     }
 
-    /// Record one action for `key`. Returns `true` if count <= max.
+    /// Record one action for `key`. Allows the action when count == max (≤ max);
+    /// blocks and returns false when count > max.
     pub fn record_within(&self, key: &str, max: u32) -> bool {
         let mut buckets = self.buckets.lock();
         let tracker = buckets.entry(key.to_string()).or_insert_with(ActionTracker::new);
@@ -134,6 +140,9 @@ impl PerSenderTracker {
     /// Check if `key` is at or over `max` (without recording).
     /// Does NOT insert a bucket for unseen keys.
     /// A max of 0 is always exhausted (zero budget means no actions allowed).
+    /// Returns true when count has reached or exceeded max. Note: acquires write lock
+    /// because ActionTracker::count prunes stale entries internally. Also note: returns
+    /// true one count earlier than record_within would block.
     pub fn is_exhausted(&self, key: &str, max: u32) -> bool {
         if max == 0 {
             return true;
