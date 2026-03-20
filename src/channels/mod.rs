@@ -10992,13 +10992,54 @@ This is an example JSON object for profile settings."#;
     }
 
     #[test]
-    fn full_system_prompt_for_normal_provider() {
-        // Normal providers (minimax, openai) should NOT trigger compact mode
-        assert!(!is_small_context_provider("minimax"));
-        assert!(!is_small_context_provider("openai"));
-        assert!(!is_small_context_provider("anthropic"));
-        assert!(!is_small_context_provider("deepseek"));
-        assert!(!is_small_context_provider("openrouter"));
+    fn full_system_prompt_larger_than_compact() {
+        // Normal providers produce a larger prompt than compact mode
+        let workspace = std::env::temp_dir();
+        let config = crate::config::Config::default();
+        let all_tools: Vec<(&str, &str)> = vec![
+            ("shell", "Execute terminal commands."),
+            ("file_read", "Read file contents."),
+            ("file_write", "Write file contents."),
+            ("memory_store", "Save to memory."),
+            ("memory_recall", "Search memory."),
+            ("gpio_read", "Read GPIO pin."),
+            ("browser_open", "Open URL in browser."),
+            ("git_status", "Show git status."),
+        ];
+        let compact_tools: Vec<(&str, &str)> = all_tools
+            .iter()
+            .filter(|(name, _)| COMPACT_CORE_TOOLS.contains(name))
+            .copied()
+            .collect();
+
+        let full = build_system_prompt_with_mode_and_autonomy(
+            &workspace,
+            "test",
+            &all_tools,
+            &[],
+            Some(&config.identity),
+            None, // no bootstrap limit
+            Some(&config.autonomy),
+            true,
+            crate::config::SkillsPromptInjectionMode::Full,
+        );
+        let compact = build_system_prompt_with_mode_and_autonomy(
+            &workspace,
+            "test",
+            &compact_tools,
+            &[],
+            Some(&config.identity),
+            Some(2000),
+            Some(&config.autonomy),
+            true,
+            crate::config::SkillsPromptInjectionMode::Compact,
+        );
+        assert!(
+            full.len() > compact.len(),
+            "Full prompt ({}) should be larger than compact ({})",
+            full.len(),
+            compact.len()
+        );
     }
 
     #[test]
