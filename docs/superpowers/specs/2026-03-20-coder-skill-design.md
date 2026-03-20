@@ -113,12 +113,12 @@ Wraps Pi's stdin/stdout JSONL RPC protocol. Key operations:
 - `new_session()` → sends `{"type": "new_session"}`, reads `get_state` response, returns `session_file` (full path to `~/.pi/agent/sessions/.../timestamp_uuid.jsonl`)
 - `switch_session(session_file)` → sends `{"type": "switch_session", "sessionPath": "..."}` — **always called before `prompt` when restoring an existing session after Pi restart**
 - `set_system_prompt(text)` → sends `{"type": "set_system_prompt", "prompt": "..."}` — called once after `new_session()` to inject log access context; **not** called on `switch_session` (system prompt is already saved in the session JSONL)
-- `prompt(message)` → sends `{"type": "prompt", "text": "..."}`, reads events until `agent_end` or timeout
+- `prompt(message)` → sends `{"type": "prompt", "text": "..."}`, reads events until `agent_end` or timeout; emits structured progress events for each Pi action
 - `set_model(provider, model_id)` → sends `{"type": "set_model", "provider": "...", "modelId": "..."}` — used by `/model` command handler in `coder.py`
 - Auto-cancels `extension_ui_request` events: responds `{"type": "extension_ui_response", "id": "...", "cancelled": true}` immediately — Pi is headless in this context
 - Retry on broken pipe: calls `pi_manager.restart()` then re-issues `switch_session` before retrying the failed `prompt`
 
-**Timeout:** 300 seconds. After 60 seconds without an `agent_end`, send a "Pi is still working…" status message to Telegram (requires `coder.py` to support incremental output). Hard abort at 300s returns error without killing Pi.
+**Timeout:** 300 seconds hard abort. No soft heartbeat — progress is shown via live status message editing (see §Progress via Status Message).
 
 **Concurrency / file locking:** `sessions.json` is read-modify-written under `fcntl.flock(LOCK_EX)` to prevent races when two Telegram messages arrive simultaneously for different threads.
 
@@ -134,8 +134,9 @@ Wraps Pi's stdin/stdout JSONL RPC protocol. Key operations:
    If found but `session_file` missing (deleted externally): log warning, fall through to create new
    If not found: `rpc_client.new_session()` → `rpc_client.set_system_prompt(LOG_ACCESS_PROMPT)` → save `session_file`, update mapping
 8. Release lock
-9. `rpc_client.prompt(message)` → collect response (with 60s heartbeat)
-10. Return response text to ZeroClaw
+9. Post initial status message via gateway API → receive `status_msg_id`
+10. `rpc_client.prompt(message)` → for each Pi event: edit status message (see §Progress via Status Message)
+11. On `agent_end`: edit status message to final response text, return to ZeroClaw
 
 ### 5. Log Access
 
@@ -154,6 +155,59 @@ channel activity, provider failures). Edit code directly in {DAEMON_CWD}.
 ```
 
 Pi's file access is unrestricted — it reads `/tmp/zeroclaw_daemon.log` and anything under `~/.zeroclaw/` via its built-in file tools.
+
+---
+
+## Progress via Status Message
+
+Same pattern as ZeroClaw's tool-call progress display: send one status message, edit it in place as Pi works.
+
+### Mechanism
+
+`coder.py` uses the ZeroClaw gateway API (available as `ZEROCLAW_GATEWAY_URL` + `ZEROCLAW_GATEWAY_TOKEN` in env):
+
+```
+POST  {GATEWAY_URL}/v1/messages          → send initial status, returns msg_id
+PATCH {GATEWAY_URL}/v1/messages/{msg_id} → edit in place
+```
+
+### Status message lifecycle
+
+```
+[send]   ⚙ Pi is working...
+
+[edit]   ⚙ reading src/channels/mod.rs
+
+[edit]   ⚙ running: cargo fmt --check
+
+[edit]   ⚙ writing src/channels/mod.rs
+
+[edit]   ⚙ running: cargo clippy
+
+[edit → final answer]
+Fixed the formatting issue in channels/mod.rs:
+- line 42: removed trailing whitespace
+- ...
+```
+
+### Pi event → status text mapping
+
+| Pi RPC event | Status text shown |
+|---|---|
+| `tool_call` with `read_file` | `⚙ reading {path}` |
+| `tool_call` with `write_file` | `⚙ writing {path}` |
+| `tool_call` with `edit_file` | `⚙ editing {path}` |
+| `tool_call` with `run_command` / `bash` | `⚙ running: {command[:60]}` |
+| `tool_call` with `search` / `glob` | `⚙ searching {pattern}` |
+| `tool_call` (other) | `⚙ {tool_name}` |
+| `thinking` / `assistant_message` chunk | `⚙ Pi is thinking…` |
+| `agent_end` | replace with final answer text |
+| timeout (300s) | `✗ Pi timed out after 300s` |
+| error | `✗ Error: {message}` |
+
+### Rate limiting
+
+Telegram allows ~1 edit/second per message. `rpc_client` debounces edits: coalesce rapid tool events, emit at most 1 edit/second. On `agent_end`, always emit final edit regardless of debounce.
 
 ---
 
@@ -272,7 +326,7 @@ These changes are **prerequisites** for the skill to function. They must be impl
 - Same thread → Pi remembers previous context across messages and daemon restarts
 - Different thread → isolated session, no context bleed
 - Pi can read `/tmp/zeroclaw_daemon.log` and report ZeroClaw errors from it
-- Tasks taking >60s send a heartbeat "still working" message
+- Status message appears immediately and updates live as Pi reads/writes/runs commands
 - `/reset` clears session for that thread only
 - `/model gemini gemini-2.0-flash` switches model mid-session
 - Model is MiniMax by default
