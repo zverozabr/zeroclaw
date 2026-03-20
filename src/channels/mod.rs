@@ -90,7 +90,8 @@ pub use whatsapp::WhatsAppChannel;
 pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::{
-    build_tool_instructions, run_tool_call_loop, scope_reply_to_message_id, scrub_credentials,
+    build_tool_instructions, clear_model_switch_request, get_model_switch_state,
+    run_tool_call_loop, scope_reply_to_message_id, scrub_credentials,
 };
 use crate::approval::ApprovalManager;
 use crate::config::Config;
@@ -1202,6 +1203,103 @@ fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: Chan
     } else {
         routes.insert(sender_key.to_string(), next);
     }
+}
+
+/// Tools retained in the compact system prompt for small-context providers.
+const COMPACT_CORE_TOOLS: &[&str] = &[
+    "shell",
+    "file_read",
+    "file_write",
+    "memory_store",
+    "memory_recall",
+    "memory_forget",
+    "model_switch",
+    "web_search",
+    "http_request",
+    "read_skill",
+];
+
+/// Returns `true` for providers known to have small context windows
+/// (e.g. Groq free tier ~8K tokens, Ollama local models).
+fn is_small_context_provider(provider: &str) -> bool {
+    matches!(provider.to_ascii_lowercase().as_str(), "groq" | "ollama")
+}
+
+/// Builds XML tool-calling instructions for only the compact core tools.
+/// Extracted as a separate function so it can be unit-tested without
+/// constructing a full `ChannelRuntimeContext`.
+fn build_compact_tool_xml(tools_registry: &[Box<dyn Tool>]) -> String {
+    let mut xml = String::new();
+    xml.push_str("\n## Tool Use Protocol\n\n");
+    xml.push_str("To use a tool, wrap a JSON object in <tool_call></tool_call> tags:\n\n");
+    xml.push_str(
+        "```\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n```\n\n",
+    );
+    xml.push_str(
+        "CRITICAL: Output actual <tool_call> tags—never describe steps or give examples.\n\n",
+    );
+    xml.push_str("### Available Tools\n\n");
+    for tool in tools_registry {
+        if COMPACT_CORE_TOOLS.contains(&tool.name()) {
+            let _ = writeln!(
+                xml,
+                "**{}**: {}\nParameters: `{}`\n",
+                tool.name(),
+                tool.description(),
+                tool.parameters_schema()
+            );
+        }
+    }
+    xml
+}
+
+/// Builds a compact system prompt for small-context providers.
+///
+/// Filters tools to [`COMPACT_CORE_TOOLS`], uses compact skill injection,
+/// and limits bootstrap files to 2 KB.
+fn build_compact_system_prompt(ctx: &ChannelRuntimeContext, native_tools: bool) -> String {
+    tracing::debug!(
+        native_tools,
+        "Using compact system prompt for small-context provider"
+    );
+
+    // 1. Extract tool descriptions, keeping only core tools
+    let all_descs: Vec<(String, String)> = ctx
+        .tools_registry
+        .iter()
+        .map(|t| (t.name().to_string(), t.description().to_string()))
+        .collect();
+    let tool_descs: Vec<(&str, &str)> = all_descs
+        .iter()
+        .filter(|(name, _)| COMPACT_CORE_TOOLS.contains(&name.as_str()))
+        .map(|(n, d)| (n.as_str(), d.as_str()))
+        .collect();
+
+    // 2. Reload skills in compact mode
+    let skills = crate::skills::load_skills_with_config(
+        ctx.workspace_dir.as_ref(),
+        ctx.prompt_config.as_ref(),
+    );
+
+    // 3. Build prompt with aggressive limits
+    let mut prompt = build_system_prompt_with_mode_and_autonomy(
+        ctx.workspace_dir.as_ref(),
+        ctx.model.as_str(),
+        &tool_descs,
+        &skills,
+        Some(&ctx.prompt_config.identity),
+        Some(2000), // ~500 tokens bootstrap budget
+        Some(&ctx.prompt_config.autonomy),
+        native_tools,
+        crate::config::SkillsPromptInjectionMode::Compact,
+    );
+
+    // 4. Append XML tool instructions only when provider lacks native tool calling.
+    if !native_tools {
+        prompt.push_str(&build_compact_tool_xml(ctx.tools_registry.as_ref()));
+    }
+
+    prompt
 }
 
 fn clear_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) {
@@ -2549,6 +2647,13 @@ async fn process_channel_message(
 
     let history_key = conversation_history_key(&msg);
     let mut route = get_route_selection(ctx.as_ref(), &history_key);
+    tracing::debug!(
+        provider = %route.provider,
+        model = %route.model,
+        sender_key = %history_key,
+        is_small_ctx = is_small_context_provider(&route.provider),
+        "Route selection for channel message"
+    );
 
     // ── Query classification: override route when a rule matches ──
     if let Some(hint) = crate::agent::classifier::classify(&ctx.query_classification, &msg.content)
@@ -2715,7 +2820,9 @@ async fn process_channel_message(
         }
     }
 
-    let base_system_prompt = if had_prior_history {
+    let base_system_prompt = if is_small_context_provider(&route.provider) {
+        build_compact_system_prompt(ctx.as_ref(), active_provider.supports_native_tools())
+    } else if had_prior_history {
         ctx.system_prompt.as_str().to_string()
     } else {
         refreshed_new_session_system_prompt(ctx.as_ref())
@@ -2955,6 +3062,43 @@ async fn process_channel_message(
         }
     };
 
+    // For small-context providers, exclude all tools NOT in COMPACT_CORE_TOOLS
+    // so that native JSON tool schemas don't blow up the provider's context window.
+    let compact_excluded: Vec<String> = if is_small_context_provider(&route.provider) {
+        let mut excluded: Vec<String> = ctx
+            .tools_registry
+            .iter()
+            .filter(|t| !COMPACT_CORE_TOOLS.contains(&t.name()))
+            .map(|t| t.name().to_string())
+            .collect();
+        // Also include non-CLI exclusions
+        if msg.channel != "cli" && ctx.autonomy_level != AutonomyLevel::Full {
+            for ex in ctx.non_cli_excluded_tools.iter() {
+                if !excluded.contains(ex) {
+                    excluded.push(ex.clone());
+                }
+            }
+        }
+        tracing::info!(
+            provider = %route.provider,
+            kept_tools = COMPACT_CORE_TOOLS.len(),
+            excluded_tools = excluded.len(),
+            "Filtering tools for small-context provider"
+        );
+        excluded
+    } else {
+        Vec::new()
+    };
+
+    let effective_excluded: &[String] = if !compact_excluded.is_empty() {
+        &compact_excluded
+    } else if msg.channel == "cli" || ctx.autonomy_level == AutonomyLevel::Full {
+        &[]
+    } else {
+        ctx.non_cli_excluded_tools.as_ref()
+    };
+
+    clear_model_switch_request();
     let llm_result = tokio::select! {
         () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
         result = tokio::time::timeout(
@@ -2978,13 +3122,7 @@ async fn process_channel_message(
                     Some(cancellation_token.clone()),
                     delta_tx,
                     ctx.hooks.as_deref(),
-                    if msg.channel == "cli"
-                        || ctx.autonomy_level == AutonomyLevel::Full
-                    {
-                        &[]
-                    } else {
-                        ctx.non_cli_excluded_tools.as_ref()
-                    },
+                    effective_excluded,
                     ctx.tool_call_dedup_exempt.as_ref(),
                     ctx.max_parallel_tool_calls,
                     ctx.max_tool_result_chars,
@@ -2997,6 +3135,28 @@ async fn process_channel_message(
             ),
         ) => LlmExecutionResult::Completed(result),
     };
+
+    // Per-chat model switch: pick up request left by model_switch tool
+    {
+        let pending = get_model_switch_state().lock().unwrap().take();
+        if let Some((new_provider, new_model)) = pending {
+            tracing::info!(
+                sender_key = %history_key,
+                new_provider, new_model,
+                "Applying model_switch tool request as per-chat route override"
+            );
+            set_route_selection(
+                ctx.as_ref(),
+                &history_key,
+                ChannelRouteSelection {
+                    provider: new_provider,
+                    model: new_model,
+                    api_key: None,
+                },
+            );
+            clear_sender_history(ctx.as_ref(), &history_key);
+        }
+    }
 
     if let Some(handle) = draft_updater {
         let _ = handle.await;
@@ -10780,6 +10940,189 @@ This is an example JSON object for profile settings."#;
             sent_messages.len(),
             2,
             "both Slack thread messages should complete, got: {sent_messages:?}"
+        );
+    }
+
+    #[test]
+    fn is_small_context_provider_matches_known() {
+        assert!(is_small_context_provider("groq"));
+        assert!(is_small_context_provider("Groq"));
+        assert!(is_small_context_provider("OLLAMA"));
+        assert!(is_small_context_provider("ollama"));
+        assert!(!is_small_context_provider("minimax"));
+        assert!(!is_small_context_provider("openai"));
+        assert!(!is_small_context_provider("anthropic"));
+    }
+
+    #[test]
+    fn compact_system_prompt_is_small_and_has_core_tools() {
+        let workspace = std::env::temp_dir();
+        let config = crate::config::Config::default();
+
+        let tools_for_prompt: Vec<(&str, &str)> = vec![
+            ("shell", "Execute terminal commands."),
+            ("file_read", "Read file contents."),
+            ("file_write", "Write file contents."),
+            ("memory_store", "Save to memory."),
+            ("memory_recall", "Search memory."),
+            ("memory_forget", "Delete a memory entry."),
+            ("model_switch", "Switch model."),
+            ("web_search", "Web search."),
+            ("http_request", "HTTP requests."),
+            ("read_skill", "Load skill source."),
+        ];
+
+        let prompt = build_system_prompt_with_mode_and_autonomy(
+            &workspace,
+            "test-model",
+            &tools_for_prompt,
+            &[],
+            Some(&config.identity),
+            Some(2000),
+            Some(&config.autonomy),
+            true,
+            crate::config::SkillsPromptInjectionMode::Compact,
+        );
+
+        assert!(
+            prompt.len() < 5000,
+            "Compact prompt too large: {} bytes",
+            prompt.len()
+        );
+        assert!(prompt.contains("shell"));
+        assert!(prompt.contains("model_switch"));
+        assert!(!prompt.contains("gpio_read"));
+        assert!(!prompt.contains("arduino_upload"));
+    }
+
+    #[test]
+    fn compact_prompt_no_xml_for_native_tools_provider() {
+        let workspace = std::env::temp_dir();
+        let config = crate::config::Config::default();
+        let tools: Vec<(&str, &str)> = vec![("shell", "Execute commands.")];
+        let prompt = build_system_prompt_with_mode_and_autonomy(
+            &workspace,
+            "test",
+            &tools,
+            &[],
+            Some(&config.identity),
+            Some(2000),
+            Some(&config.autonomy),
+            true,
+            crate::config::SkillsPromptInjectionMode::Compact,
+        );
+        assert!(
+            !prompt.contains("tool_call"),
+            "Native tools prompt should not contain XML tool_call instructions"
+        );
+    }
+
+    #[test]
+    fn compact_tool_xml_contains_only_core_tools() {
+        use crate::security::SecurityPolicy;
+        let security = std::sync::Arc::new(SecurityPolicy::from_config(
+            &crate::config::AutonomyConfig::default(),
+            std::path::Path::new("/tmp"),
+        ));
+        let tools = crate::tools::default_tools(security);
+        let xml = build_compact_tool_xml(&tools);
+
+        assert!(
+            xml.contains("<tool_call>"),
+            "Should contain XML tool_call tags"
+        );
+        assert!(
+            xml.contains("## Tool Use Protocol"),
+            "Should contain protocol header"
+        );
+        // default_tools includes shell, file_read, file_write — all in COMPACT_CORE_TOOLS
+        assert!(xml.contains("**shell**"), "Should contain shell tool");
+        assert!(
+            xml.contains("**file_read**"),
+            "Should contain file_read tool"
+        );
+        // default_tools also includes glob_search and content_search which are NOT core tools
+        assert!(
+            !xml.contains("**glob_search**"),
+            "Should NOT contain glob_search (not a compact core tool)"
+        );
+        assert!(
+            !xml.contains("**content_search**"),
+            "Should NOT contain content_search (not a compact core tool)"
+        );
+    }
+
+    #[test]
+    fn full_system_prompt_larger_than_compact() {
+        // Normal providers produce a larger prompt than compact mode
+        let workspace = std::env::temp_dir();
+        let config = crate::config::Config::default();
+        let all_tools: Vec<(&str, &str)> = vec![
+            ("shell", "Execute terminal commands."),
+            ("file_read", "Read file contents."),
+            ("file_write", "Write file contents."),
+            ("memory_store", "Save to memory."),
+            ("memory_recall", "Search memory."),
+            ("gpio_read", "Read GPIO pin."),
+            ("browser_open", "Open URL in browser."),
+            ("git_status", "Show git status."),
+        ];
+        let compact_tools: Vec<(&str, &str)> = all_tools
+            .iter()
+            .filter(|(name, _)| COMPACT_CORE_TOOLS.contains(name))
+            .copied()
+            .collect();
+
+        let full = build_system_prompt_with_mode_and_autonomy(
+            &workspace,
+            "test",
+            &all_tools,
+            &[],
+            Some(&config.identity),
+            None, // no bootstrap limit
+            Some(&config.autonomy),
+            true,
+            crate::config::SkillsPromptInjectionMode::Full,
+        );
+        let compact = build_system_prompt_with_mode_and_autonomy(
+            &workspace,
+            "test",
+            &compact_tools,
+            &[],
+            Some(&config.identity),
+            Some(2000),
+            Some(&config.autonomy),
+            true,
+            crate::config::SkillsPromptInjectionMode::Compact,
+        );
+        assert!(
+            full.len() > compact.len(),
+            "Full prompt ({}) should be larger than compact ({})",
+            full.len(),
+            compact.len()
+        );
+    }
+
+    #[test]
+    fn compact_tool_xml_appended_for_non_native_provider() {
+        // Verify that build_compact_tool_xml produces XML with tool_call tags
+        // This is what gets appended for Ollama (non-native-tools provider)
+        use crate::security::SecurityPolicy;
+        let security = std::sync::Arc::new(SecurityPolicy::from_config(
+            &crate::config::AutonomyConfig::default(),
+            std::path::Path::new("/tmp"),
+        ));
+        let tools = crate::tools::default_tools(security);
+        let xml = build_compact_tool_xml(&tools);
+
+        // XML block must be present (this is what Ollama needs)
+        assert!(
+            xml.contains("<tool_call>"),
+            "Non-native provider needs XML tool_call instructions"
+        );
+        assert!(
+            xml.contains("Parameters:"),
+            "XML should include parameter schemas for tools"
         );
     }
 }
