@@ -90,7 +90,8 @@ pub use whatsapp::WhatsAppChannel;
 pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::{
-    build_tool_instructions, run_tool_call_loop, scope_reply_to_message_id, scrub_credentials,
+    build_tool_instructions, clear_model_switch_request, get_model_switch_state,
+    run_tool_call_loop, scope_reply_to_message_id, scrub_credentials,
 };
 use crate::approval::ApprovalManager;
 use crate::config::Config;
@@ -3054,6 +3055,7 @@ async fn process_channel_message(
         }
     };
 
+    clear_model_switch_request();
     let llm_result = tokio::select! {
         () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
         result = tokio::time::timeout(
@@ -3096,6 +3098,28 @@ async fn process_channel_message(
             ),
         ) => LlmExecutionResult::Completed(result),
     };
+
+    // Per-chat model switch: pick up request left by model_switch tool
+    {
+        let pending = get_model_switch_state().lock().unwrap().take();
+        if let Some((new_provider, new_model)) = pending {
+            tracing::info!(
+                sender_key = %history_key,
+                new_provider, new_model,
+                "Applying model_switch tool request as per-chat route override"
+            );
+            set_route_selection(
+                ctx.as_ref(),
+                &history_key,
+                ChannelRouteSelection {
+                    provider: new_provider,
+                    model: new_model,
+                    api_key: None,
+                },
+            );
+            clear_sender_history(ctx.as_ref(), &history_key);
+        }
+    }
 
     if let Some(handle) = draft_updater {
         let _ = handle.await;
