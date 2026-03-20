@@ -1204,6 +1204,26 @@ fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: Chan
     }
 }
 
+/// Tools retained in the compact system prompt for small-context providers.
+const COMPACT_CORE_TOOLS: &[&str] = &[
+    "shell",
+    "file_read",
+    "file_write",
+    "memory_store",
+    "memory_recall",
+    "memory_forget",
+    "model_switch",
+    "web_search",
+    "http_request",
+    "read_skill",
+];
+
+/// Returns `true` for providers known to have small context windows
+/// (e.g. Groq free tier ~8K tokens, Ollama local models).
+fn is_small_context_provider(provider: &str) -> bool {
+    matches!(provider.to_ascii_lowercase().as_str(), "groq" | "ollama")
+}
+
 fn clear_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) {
     ctx.conversation_histories
         .lock()
@@ -10781,5 +10801,16 @@ This is an example JSON object for profile settings."#;
             2,
             "both Slack thread messages should complete, got: {sent_messages:?}"
         );
+    }
+
+    #[test]
+    fn is_small_context_provider_matches_known() {
+        assert!(is_small_context_provider("groq"));
+        assert!(is_small_context_provider("Groq"));
+        assert!(is_small_context_provider("OLLAMA"));
+        assert!(is_small_context_provider("ollama"));
+        assert!(!is_small_context_provider("minimax"));
+        assert!(!is_small_context_provider("openai"));
+        assert!(!is_small_context_provider("anthropic"));
     }
 }
