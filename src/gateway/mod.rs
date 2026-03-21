@@ -60,11 +60,9 @@ pub const RATE_LIMIT_MAX_KEYS_DEFAULT: usize = 10_000;
 pub const IDEMPOTENCY_MAX_KEYS_DEFAULT: usize = 10_000;
 
 /// Shared type for per-sender conversation histories (channel subsystem).
-type SharedHistoryMap =
-    Arc<std::sync::Mutex<HashMap<String, Vec<crate::providers::ChatMessage>>>>;
+type SharedHistoryMap = Arc<std::sync::Mutex<HashMap<String, Vec<crate::providers::ChatMessage>>>>;
 /// Shared type for the pending-new-session set (channel subsystem).
-type SharedPendingNewSessions =
-    Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+type SharedPendingNewSessions = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
 
 fn webhook_memory_key() -> String {
     format!("webhook_msg_{}", Uuid::new_v4())
