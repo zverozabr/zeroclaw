@@ -2864,6 +2864,18 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
             history.push(ChatMessage::assistant(response_text.clone()));
+            // Capture any pending model switch (set by model_switch tool in this turn)
+            // into model_switch_callback so post-agent code in channels can persist it.
+            if let Some((sw_provider, sw_model)) = get_model_switch_state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                if let Some(ref cb) = model_switch_callback {
+                    *cb.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((sw_provider, sw_model));
+                }
+            }
             return Ok(display_text);
         }
 

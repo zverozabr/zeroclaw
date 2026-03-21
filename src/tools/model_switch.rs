@@ -142,15 +142,26 @@ impl ModelSwitchTool {
             });
         }
 
+        // Normalize provider name to canonical (lowercase) form so that
+        // comparisons with default_route_selection work correctly.
+        let canonical_provider = known_providers
+            .iter()
+            .find(|p| {
+                p.name.eq_ignore_ascii_case(provider)
+                    || p.aliases.iter().any(|a| a.eq_ignore_ascii_case(provider))
+            })
+            .map(|p| p.name.to_string())
+            .unwrap_or_else(|| provider.to_lowercase());
+
         // Set the global model switch request
         let switch_state = get_model_switch_state();
-        *switch_state.lock().unwrap() = Some((provider.to_string(), model.to_string()));
+        *switch_state.lock().unwrap() = Some((canonical_provider.clone(), model.to_string()));
 
         Ok(ToolResult {
             success: true,
             output: serde_json::to_string_pretty(&json!({
                 "message": "Model switch requested",
-                "provider": provider,
+                "provider": canonical_provider,
                 "model": model,
                 "note": "The agent will switch to this model on the next turn. Use 'get' to check pending switch."
             }))?,
