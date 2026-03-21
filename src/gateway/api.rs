@@ -1228,7 +1228,14 @@ pub async fn handle_api_history_delete(
         false
     };
 
-    // Also mark sender for a fresh session so the next message gets a clean system prompt.
+    // Also clear the on-disk JSONL session store so history doesn't resurface after restart.
+    if let Some(ref store) = state.session_store {
+        if let Err(e) = store.delete_session(&sender_key) {
+            tracing::warn!("Failed to delete persisted session for {sender_key}: {e}");
+        }
+    }
+
+    // Mark sender for a fresh session so the next message gets a clean system prompt.
     if let Some(ref pending) = state.pending_new_sessions {
         let mut set = pending.lock().unwrap_or_else(|e| e.into_inner());
         set.insert(sender_key.clone());

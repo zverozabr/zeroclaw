@@ -234,6 +234,11 @@ static GLOBAL_CONVERSATION_HISTORIES: std::sync::LazyLock<ConversationHistoryMap
 static GLOBAL_PENDING_NEW_SESSIONS: std::sync::LazyLock<PendingNewSessionSet> =
     std::sync::LazyLock::new(|| Arc::new(Mutex::new(HashSet::new())));
 
+/// Process-wide shared session store (optional — set once at startup if persistence is enabled).
+/// Exposed to the gateway so DELETE /api/history/{key} can clear both in-memory and on-disk.
+static GLOBAL_SESSION_STORE: Mutex<Option<Arc<session_store::SessionStore>>> =
+    Mutex::new(None);
+
 /// Return a clone of the global conversation-history Arc so the gateway can clear entries.
 pub fn global_conversation_histories() -> ConversationHistoryMap {
     Arc::clone(&GLOBAL_CONVERSATION_HISTORIES)
@@ -242,6 +247,16 @@ pub fn global_conversation_histories() -> ConversationHistoryMap {
 /// Return a clone of the global pending-new-sessions Arc so the gateway can insert entries.
 pub fn global_pending_new_sessions() -> PendingNewSessionSet {
     Arc::clone(&GLOBAL_PENDING_NEW_SESSIONS)
+}
+
+/// Return the global session store if session persistence is enabled.
+pub fn global_session_store() -> Option<Arc<session_store::SessionStore>> {
+    GLOBAL_SESSION_STORE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Register the session store globally so the gateway can call delete_session.
+pub(crate) fn set_global_session_store(store: Arc<session_store::SessionStore>) {
+    *GLOBAL_SESSION_STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
 }
 /// Maximum history messages to keep per sender.
 const MAX_CHANNEL_HISTORY: usize = 50;
@@ -5360,7 +5375,9 @@ pub async fn start_channels(config: Config) -> Result<()> {
             match session_store::SessionStore::new(&config.workspace_dir) {
                 Ok(store) => {
                     tracing::info!("📂 Session persistence enabled");
-                    Some(Arc::new(store))
+                    let store = Arc::new(store);
+                    set_global_session_store(Arc::clone(&store));
+                    Some(store)
                 }
                 Err(e) => {
                     tracing::warn!("Session persistence disabled: {e}");

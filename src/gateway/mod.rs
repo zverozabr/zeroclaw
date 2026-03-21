@@ -367,6 +367,9 @@ pub struct AppState {
     pub conversation_histories: Option<SharedHistoryMap>,
     /// Shared set of senders pending a fresh session (from channel subsystem).
     pub pending_new_sessions: Option<SharedPendingNewSessions>,
+    /// Session persistence store (from channel subsystem).
+    /// Used by DELETE /api/history/{sender_key} to also clear the on-disk JSONL.
+    pub session_store: Option<Arc<crate::channels::session_store::SessionStore>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -790,6 +793,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         pending_pairings,
         conversation_histories: Some(crate::channels::global_conversation_histories()),
         pending_new_sessions: Some(crate::channels::global_pending_new_sessions()),
+        session_store: crate::channels::global_session_store(),
     };
 
     // Config PUT needs larger body limit (1MB)
@@ -1972,6 +1976,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2029,6 +2034,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2412,6 +2418,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2483,6 +2490,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let headers = HeaderMap::new();
@@ -2566,6 +2574,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let response = handle_webhook(
@@ -2621,6 +2630,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2681,6 +2691,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2746,6 +2757,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -2807,6 +2819,7 @@ mod tests {
             pending_pairings: None,
             conversation_histories: None,
             pending_new_sessions: None,
+            session_store: None,
         };
 
         let mut headers = HeaderMap::new();
