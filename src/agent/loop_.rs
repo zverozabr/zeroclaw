@@ -3098,7 +3098,8 @@ pub(crate) async fn run_tool_call_loop(
                 .take()
             {
                 if let Some(ref cb) = model_switch_callback {
-                    *cb.lock().unwrap_or_else(|e| e.into_inner()) = Some((sw_provider, sw_model));
+                    *cb.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((sw_provider, sw_model));
                 }
             }
             return Ok(display_text);

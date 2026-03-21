@@ -3397,15 +3397,24 @@ async fn process_channel_message(
                 sanitized_response
             };
 
-            // Append fallback notice when a different provider served the request.
+            // Append fallback notice when a different provider family served the request.
+            // Suppress for intra-family fallbacks (e.g. minimax → minimax-cn:mm-1)
+            // since they're transparent retries on equivalent infrastructure.
             if let Some(fb) = crate::providers::reliable::take_last_provider_fallback() {
-                use std::fmt::Write as _;
-                write!(
-                    delivered_response,
-                    "\n\n---\n\u{26A1} `{}` unavailable — response from **{}** (`{}`)\nSwitch model: /models",
-                    fb.requested_provider, fb.actual_provider, fb.actual_model,
-                )
-                .ok();
+                let req_base = fb.requested_provider.split(':').next().unwrap_or("");
+                let act_base = fb.actual_provider.split(':').next().unwrap_or("");
+                let same_family = req_base == act_base
+                    || req_base.starts_with(act_base)
+                    || act_base.starts_with(req_base);
+                if !same_family {
+                    use std::fmt::Write as _;
+                    write!(
+                        delivered_response,
+                        "\n\n---\n\u{26A1} `{}` unavailable — response from **{}** (`{}`)\nSwitch model: /models",
+                        fb.requested_provider, fb.actual_provider, fb.actual_model,
+                    )
+                    .ok();
+                }
             }
             runtime_trace::record_event(
                 "channel_message_outbound",
