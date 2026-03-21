@@ -44,23 +44,9 @@ pub type ModelSwitchCallback = Arc<Mutex<Option<(String, String)>>>;
 static MODEL_SWITCH_REQUEST: LazyLock<Arc<Mutex<Option<(String, String)>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
 
-/// Last model switch that was actually applied by the agent loop.
-/// Written when the loop applies a switch, read by post-agent code in channels to persist it.
-#[allow(clippy::type_complexity)]
-pub(crate) static LAST_APPLIED_MODEL_SWITCH: LazyLock<Arc<Mutex<Option<(String, String)>>>> =
-    LazyLock::new(|| Arc::new(Mutex::new(None)));
-
 /// Get the global model switch request state
 pub fn get_model_switch_state() -> ModelSwitchCallback {
     Arc::clone(&MODEL_SWITCH_REQUEST)
-}
-
-/// Take (consume) the last applied model switch, resetting it to None.
-pub fn take_last_applied_model_switch() -> Option<(String, String)> {
-    LAST_APPLIED_MODEL_SWITCH
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take()
 }
 
 /// Clear any pending model switch request
@@ -3105,16 +3091,15 @@ pub(crate) async fn run_tool_call_loop(
             }
             history.push(ChatMessage::assistant(response_text.clone()));
             // Capture any pending model switch (set by model_switch tool in this turn)
-            // into LAST_APPLIED_MODEL_SWITCH so post-agent code in channels can persist it.
+            // into model_switch_callback so post-agent code in channels can persist it.
             if let Some((sw_provider, sw_model)) = get_model_switch_state()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
             {
-                *LAST_APPLIED_MODEL_SWITCH
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) =
-                    Some((sw_provider, sw_model));
+                if let Some(ref cb) = model_switch_callback {
+                    *cb.lock().unwrap_or_else(|e| e.into_inner()) = Some((sw_provider, sw_model));
+                }
             }
             return Ok(display_text);
         }
@@ -4229,7 +4214,7 @@ pub async fn run(
                         model_name = new_model;
 
                         // Record the applied switch so post-agent code can persist it.
-                        *LAST_APPLIED_MODEL_SWITCH
+                        *model_switch_callback
                             .lock()
                             .unwrap_or_else(|e2| e2.into_inner()) =
                             Some((provider_name.clone(), model_name.clone()));
@@ -4463,7 +4448,7 @@ pub async fn run(
                             model_name = new_model;
 
                             // Record the applied switch so post-agent code can persist it.
-                            *LAST_APPLIED_MODEL_SWITCH
+                            *model_switch_callback
                                 .lock()
                                 .unwrap_or_else(|e3| e3.into_inner()) =
                                 Some((provider_name.clone(), model_name.clone()));

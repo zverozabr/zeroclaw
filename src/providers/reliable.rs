@@ -37,6 +37,13 @@ pub fn take_last_provider_fallback() -> Option<ProviderFallbackInfo> {
         .take()
 }
 
+/// Clear any pending provider fallback info (call before each request).
+pub fn clear_provider_fallback() {
+    *LAST_PROVIDER_FALLBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// Record a provider fallback event.
 fn record_provider_fallback(
     requested_provider: &str,
@@ -515,8 +522,17 @@ impl Provider for ReliableProvider {
                                     original_model = model,
                                     "Provider recovered (failover/retry)"
                                 );
-                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
-                                record_provider_fallback(primary, model, provider_name, current_model);
+                                let primary = self
+                                    .providers
+                                    .first()
+                                    .map(|(n, _)| n.as_str())
+                                    .unwrap_or("");
+                                record_provider_fallback(
+                                    primary,
+                                    model,
+                                    provider_name,
+                                    current_model,
+                                );
                             }
                             return Ok(resp);
                         }
@@ -670,8 +686,17 @@ impl Provider for ReliableProvider {
                                     context_truncated,
                                     "Provider recovered (failover/retry)"
                                 );
-                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
-                                record_provider_fallback(primary, model, provider_name, current_model);
+                                let primary = self
+                                    .providers
+                                    .first()
+                                    .map(|(n, _)| n.as_str())
+                                    .unwrap_or("");
+                                record_provider_fallback(
+                                    primary,
+                                    model,
+                                    provider_name,
+                                    current_model,
+                                );
                             }
                             return Ok(resp);
                         }
@@ -827,8 +852,17 @@ impl Provider for ReliableProvider {
                                     context_truncated,
                                     "Provider recovered (failover/retry)"
                                 );
-                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
-                                record_provider_fallback(primary, model, provider_name, current_model);
+                                let primary = self
+                                    .providers
+                                    .first()
+                                    .map(|(n, _)| n.as_str())
+                                    .unwrap_or("");
+                                record_provider_fallback(
+                                    primary,
+                                    model,
+                                    provider_name,
+                                    current_model,
+                                );
                             }
                             return Ok(resp);
                         }
@@ -971,8 +1005,17 @@ impl Provider for ReliableProvider {
                                     context_truncated,
                                     "Provider recovered (failover/retry)"
                                 );
-                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
-                                record_provider_fallback(primary, model, provider_name, current_model);
+                                let primary = self
+                                    .providers
+                                    .first()
+                                    .map(|(n, _)| n.as_str())
+                                    .unwrap_or("");
+                                record_provider_fallback(
+                                    primary,
+                                    model,
+                                    provider_name,
+                                    current_model,
+                                );
                             }
                             return Ok(resp);
                         }

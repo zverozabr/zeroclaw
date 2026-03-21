@@ -92,7 +92,6 @@ pub use whatsapp_web::WhatsAppWebChannel;
 use crate::agent::loop_::{
     build_tool_instructions, clear_model_switch_request, get_model_switch_state,
     run_tool_call_loop, scope_reply_to_message_id, scope_thread_id, scrub_credentials,
-    take_last_applied_model_switch,
 };
 use crate::approval::ApprovalManager;
 use crate::config::Config;
@@ -279,14 +278,13 @@ fn global_route_overrides() -> RouteSelectionMap {
 /// Set the routes.json path and load any persisted overrides from disk.
 fn init_route_overrides(workspace_dir: &std::path::Path) {
     let routes_file = workspace_dir.join("routes.json");
-    *GLOBAL_ROUTES_FILE.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(routes_file.clone());
+    *GLOBAL_ROUTES_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(routes_file.clone());
 
     if let Ok(text) = std::fs::read_to_string(&routes_file) {
-        if let Ok(map) =
-            serde_json::from_str::<HashMap<String, ChannelRouteSelection>>(&text)
-        {
-            let mut overrides = GLOBAL_ROUTE_OVERRIDES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(map) = serde_json::from_str::<HashMap<String, ChannelRouteSelection>>(&text) {
+            let mut overrides = GLOBAL_ROUTE_OVERRIDES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *overrides = map;
             tracing::info!(
                 path = %routes_file.display(),
@@ -427,8 +425,7 @@ fn channel_message_timeout_budget_secs(
     message_timeout_secs.saturating_mul(scale)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ChannelRouteSelection {
     provider: String,
     model: String,
@@ -3198,6 +3195,8 @@ async fn process_channel_message(
     };
 
     clear_model_switch_request();
+    crate::providers::reliable::clear_provider_fallback();
+    let model_switch_slot: crate::agent::loop_::ModelSwitchCallback = Arc::new(Mutex::new(None));
     let llm_result = tokio::select! {
         () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
         result = tokio::time::timeout(
@@ -3234,7 +3233,7 @@ async fn process_channel_message(
                         session_recorder.as_ref(),
                         session_debug,
                         ctx.activated_tools.as_ref(),
-                        None,
+                        Some(model_switch_slot.clone()),
                     ),
                 ),
             ),
@@ -3242,11 +3241,13 @@ async fn process_channel_message(
     };
 
     // Per-chat model switch: persist switch applied by the agent loop.
-    // The agent loop applies model switches inline (for multi-turn) and records the last
-    // applied switch in LAST_APPLIED_MODEL_SWITCH before clearing MODEL_SWITCH_REQUEST.
+    // The agent loop writes into the per-request model_switch_slot callback.
     // Fall back to MODEL_SWITCH_REQUEST for the case where the loop exits before applying.
     {
-        let pending = take_last_applied_model_switch()
+        let pending = model_switch_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
             .or_else(|| get_model_switch_state().lock().unwrap().take());
         if let Some((new_provider, new_model)) = pending {
             tracing::info!(
@@ -11309,8 +11310,7 @@ This is an example JSON object for profile settings."#;
         *global = Some(("groq".to_string(), "llama-3-8b".to_string()));
 
         // Build a minimal context with an empty route_overrides map.
-        let route_overrides: RouteSelectionMap =
-            Arc::new(Mutex::new(HashMap::new()));
+        let route_overrides: RouteSelectionMap = Arc::new(Mutex::new(HashMap::new()));
         let ctx = ChannelRuntimeContext {
             channels_by_name: Arc::new(HashMap::new()),
             provider: Arc::new(DummyProvider),
@@ -11379,13 +11379,18 @@ This is an example JSON object for profile settings."#;
         }
 
         // Global must be cleared (take() above cleared it).
-        assert!(global.is_none(), "Global model_switch state must be cleared after apply");
+        assert!(
+            global.is_none(),
+            "Global model_switch state must be cleared after apply"
+        );
         drop(global); // release lock before assertions on route_overrides
 
         // Route override must be written to the global (set_route_selection now uses global).
         let global = global_route_overrides();
         let routes = global.lock().unwrap();
-        let entry = routes.get(sender_key).expect("Route override must be present");
+        let entry = routes
+            .get(sender_key)
+            .expect("Route override must be present");
         assert_eq!(entry.provider, "groq");
         assert_eq!(entry.model, "llama-3-8b");
 
@@ -11413,27 +11418,22 @@ This is an example JSON object for profile settings."#;
         assert!(state_mutex.lock().unwrap().is_none());
     }
 
-    /// take_last_applied_model_switch returns the value and clears it.
+    /// Per-request model_switch_slot returns the value and clears it.
     #[test]
-    fn take_last_applied_model_switch_returns_and_clears() {
-        use crate::agent::loop_::take_last_applied_model_switch;
+    fn model_switch_slot_returns_and_clears() {
+        use crate::agent::loop_::ModelSwitchCallback;
 
-        // Consume any leftover from other tests.
-        let _ = take_last_applied_model_switch();
+        let slot: ModelSwitchCallback = Arc::new(Mutex::new(None));
 
-        // Write directly into the static to simulate agent loop recording a switch.
-        {
-            use crate::agent::loop_::LAST_APPLIED_MODEL_SWITCH;
-            *LAST_APPLIED_MODEL_SWITCH.lock().unwrap() =
-                Some(("google".to_string(), "gemini-2.0-flash".to_string()));
-        }
+        // Simulate agent loop writing into the slot.
+        *slot.lock().unwrap() = Some(("google".to_string(), "gemini-2.0-flash".to_string()));
 
-        let taken = take_last_applied_model_switch();
+        let taken = slot.lock().unwrap().take();
         assert_eq!(
             taken,
             Some(("google".to_string(), "gemini-2.0-flash".to_string()))
         );
         // Second take must return None.
-        assert!(take_last_applied_model_switch().is_none());
+        assert!(slot.lock().unwrap().is_none());
     }
 }
