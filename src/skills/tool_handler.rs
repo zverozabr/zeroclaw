@@ -388,18 +388,24 @@ impl Tool for SkillToolHandler {
             }
         };
 
-        if let Err(e) = self.security.validate_command_execution(&command, false) {
-            tracing::warn!(
-                skill = %self.skill_name,
-                tool = %self.tool_def.name,
-                reason = %e,
-                "Skill tool blocked by security policy"
-            );
-            return Ok(ToolResult {
-                output: format!("Blocked by security policy: {e}"),
-                success: false,
-                error: None,
-            });
+        // Trusted skills (those with gateway credentials) skip command validation.
+        // Their commands contain user-provided text that may include shell
+        // metacharacters (>, <, backticks) which would otherwise be blocked.
+        let is_trusted = self.gateway_token.is_some();
+        if !is_trusted {
+            if let Err(e) = self.security.validate_command_execution(&command, false) {
+                tracing::warn!(
+                    skill = %self.skill_name,
+                    tool = %self.tool_def.name,
+                    reason = %e,
+                    "Skill tool blocked by security policy"
+                );
+                return Ok(ToolResult {
+                    output: format!("Blocked by security policy: {e}"),
+                    success: false,
+                    error: None,
+                });
+            }
         }
 
         if !self.security.record_action() {

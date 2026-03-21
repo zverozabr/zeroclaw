@@ -915,6 +915,10 @@ impl SecurityPolicy {
     // before any risk or autonomy logic runs.
 
     /// Validate full command execution policy (allowlist + risk gate).
+    ///
+    /// When `approved` is true (e.g. trusted skills, user-approved actions),
+    /// the allowlist and shell-character checks are skipped — only the
+    /// high-risk gate remains.
     pub fn validate_command_execution(
         &self,
         command: &str,
