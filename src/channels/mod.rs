@@ -2779,11 +2779,14 @@ async fn process_channel_message(
     }
 
     let history_key = conversation_history_key(&msg);
+    let default_route = default_route_selection(ctx.as_ref());
     let mut route = get_route_selection(ctx.as_ref(), &history_key);
+    let has_route_override = route != default_route;
     tracing::debug!(
         provider = %route.provider,
         model = %route.model,
         sender_key = %history_key,
+        has_route_override,
         is_small_ctx = is_small_context_provider(&route.provider),
         "Route selection for channel message"
     );
@@ -3731,18 +3734,42 @@ async fn process_channel_message(
                         ChatMessage::assistant("[Task failed — not continuing this request]"),
                     );
                 }
+                // Auto-rollback: if the user had a per-chat route override and
+                // the request failed, reset to default so they aren't stuck.
+                let rollback_notice = if has_route_override {
+                    tracing::warn!(
+                        sender_key = %history_key,
+                        failed_provider = %route.provider,
+                        failed_model = %route.model,
+                        "Auto-rolling back per-chat route override after provider failure"
+                    );
+                    set_route_selection(
+                        ctx.as_ref(),
+                        &history_key,
+                        default_route.clone(),
+                    );
+                    format!(
+                        "\n\n_Auto-reset: `{}/{}` failed, reverted to default (`{}/{}`)._\n/models",
+                        route.provider, route.model,
+                        default_route.provider, default_route.model,
+                    )
+                } else {
+                    String::new()
+                };
+
                 if let Some(channel) = target_channel.as_ref() {
                     let error_str = e.to_string();
                     let user_error = sanitize_provider_errors(&error_str)
                         .unwrap_or_else(|| format!("⚠️ Error: {safe_error}"));
+                    let full_error = format!("{user_error}{rollback_notice}");
                     if let Some(ref draft_id) = draft_message_id {
                         let _ = channel
-                            .finalize_draft(&msg.reply_target, draft_id, &user_error)
+                            .finalize_draft(&msg.reply_target, draft_id, &full_error)
                             .await;
                     } else {
                         let _ = channel
                             .send(
-                                &SendMessage::new(user_error, &msg.reply_target)
+                                &SendMessage::new(full_error, &msg.reply_target)
                                     .in_thread(msg.thread_ts.clone())
                                     .reply_to(msg.reply_to_message_id.clone()),
                             )
