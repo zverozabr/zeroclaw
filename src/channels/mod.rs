@@ -106,7 +106,7 @@ use crate::tools::{self, Tool};
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use portable_atomic::{AtomicU64, Ordering};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -262,6 +262,54 @@ pub(crate) fn set_global_session_store(store: Arc<session_store::SessionStore>) 
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(store);
 }
+
+/// Process-wide shared per-chat route overrides. Persisted to `routes.json` in the workspace.
+static GLOBAL_ROUTE_OVERRIDES: std::sync::LazyLock<RouteSelectionMap> =
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// Path to the routes.json file; set once at startup when the workspace is known.
+static GLOBAL_ROUTES_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// Return a clone of the global route-overrides Arc.
+fn global_route_overrides() -> RouteSelectionMap {
+    Arc::clone(&GLOBAL_ROUTE_OVERRIDES)
+}
+
+/// Set the routes.json path and load any persisted overrides from disk.
+fn init_route_overrides(workspace_dir: &std::path::Path) {
+    let routes_file = workspace_dir.join("routes.json");
+    *GLOBAL_ROUTES_FILE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(routes_file.clone());
+
+    if let Ok(text) = std::fs::read_to_string(&routes_file) {
+        if let Ok(map) =
+            serde_json::from_str::<HashMap<String, ChannelRouteSelection>>(&text)
+        {
+            let mut overrides = GLOBAL_ROUTE_OVERRIDES.lock().unwrap_or_else(|e| e.into_inner());
+            *overrides = map;
+            tracing::info!(
+                path = %routes_file.display(),
+                count = overrides.len(),
+                "Loaded per-chat route overrides from disk"
+            );
+        }
+    }
+}
+
+/// Persist current route overrides to routes.json (best-effort; logs on failure).
+fn save_route_overrides(overrides: &HashMap<String, ChannelRouteSelection>) {
+    let path_guard = GLOBAL_ROUTES_FILE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ref path) = *path_guard else { return };
+    match serde_json::to_string_pretty(overrides) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, json) {
+                tracing::warn!(path = %path.display(), error = %e, "Failed to save route overrides");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "Failed to serialize route overrides"),
+    }
+}
+
 /// Maximum history messages to keep per sender.
 const MAX_CHANNEL_HISTORY: usize = 50;
 /// Minimum user-message length (in chars) for auto-save to memory.
@@ -379,6 +427,7 @@ fn channel_message_timeout_budget_secs(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
 struct ChannelRouteSelection {
     provider: String,
     model: String,
@@ -1223,6 +1272,17 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
 }
 
 fn get_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str) -> ChannelRouteSelection {
+    // Check global (persisted) overrides first, then fall back to ctx-local overrides
+    // (ctx-local is only used in tests that build ChannelRuntimeContext directly).
+    let global = global_route_overrides();
+    if let Some(entry) = global
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(sender_key)
+        .cloned()
+    {
+        return entry;
+    }
     ctx.route_overrides
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1233,15 +1293,14 @@ fn get_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str) -> Channel
 
 fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: ChannelRouteSelection) {
     let default_route = default_route_selection(ctx);
-    let mut routes = ctx
-        .route_overrides
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let global = global_route_overrides();
+    let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
     if next == default_route {
         routes.remove(sender_key);
     } else {
         routes.insert(sender_key.to_string(), next);
     }
+    save_route_overrides(&routes);
 }
 
 /// Tools retained in the compact system prompt for small-context providers.
@@ -5320,6 +5379,9 @@ pub async fn start_channels(config: Config) -> Result<()> {
         .as_ref()
         .is_some_and(|mm| mm.interrupt_on_new_message);
 
+    // Load persisted per-chat route overrides (once per process; idempotent).
+    init_route_overrides(&config.workspace_dir);
+
     let runtime_ctx = Arc::new(ChannelRuntimeContext {
         channels_by_name,
         provider: Arc::clone(&provider),
@@ -6945,8 +7007,9 @@ BTC is currently around $65,000 based on latest tool output."#
         );
 
         let route_key = "telegram_chat-1_alice";
-        let route = runtime_ctx
-            .route_overrides
+        // set_route_selection writes to global, not ctx.route_overrides
+        let global = global_route_overrides();
+        let route = global
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(route_key)
@@ -6954,6 +7017,11 @@ BTC is currently around $65,000 based on latest tool output."#
             .expect("route should be stored for sender");
         assert_eq!(route.provider, "openrouter");
         assert_eq!(route.model, "openrouter-fast");
+        // cleanup global so parallel tests are not affected
+        global
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(route_key);
 
         assert_eq!(default_provider_impl.call_count.load(Ordering::SeqCst), 0);
         assert_eq!(fallback_provider_impl.call_count.load(Ordering::SeqCst), 0);
@@ -6977,9 +7045,21 @@ BTC is currently around $65,000 based on latest tool output."#
         provider_cache_seed.insert("openrouter".to_string(), routed_provider);
 
         let route_key = "telegram_chat-1_alice".to_string();
+        // Seed global (get_route_selection checks global first)
+        {
+            let global = global_route_overrides();
+            global.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                route_key.clone(),
+                ChannelRouteSelection {
+                    provider: "openrouter".to_string(),
+                    model: "route-model".to_string(),
+                    api_key: None,
+                },
+            );
+        }
         let mut route_overrides = HashMap::new();
         route_overrides.insert(
-            route_key,
+            route_key.clone(),
             ChannelRouteSelection {
                 provider: "openrouter".to_string(),
                 model: "route-model".to_string(),
@@ -7065,10 +7145,22 @@ BTC is currently around $65,000 based on latest tool output."#
                 .as_slice(),
             &["route-model".to_string()]
         );
+        // cleanup global so parallel tests are not affected
+        global_route_overrides()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&route_key);
     }
 
     #[tokio::test]
     async fn process_channel_message_prefers_cached_default_provider_instance() {
+        // Guard: ensure no stale global route for this sender from parallel tests
+        let _guard_key = "telegram_chat-1_alice";
+        global_route_overrides()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(_guard_key);
+
         let channel_impl = Arc::new(TelegramRecordingChannel::default());
         let channel: Arc<dyn Channel> = channel_impl.clone();
 
@@ -7157,6 +7249,12 @@ BTC is currently around $65,000 based on latest tool output."#
 
     #[tokio::test]
     async fn process_channel_message_uses_runtime_default_model_from_store() {
+        // Guard: ensure no stale global route for this sender from parallel tests
+        global_route_overrides()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove("telegram_chat-1_alice");
+
         let channel_impl = Arc::new(TelegramRecordingChannel::default());
         let channel: Arc<dyn Channel> = channel_impl.clone();
 
@@ -7672,6 +7770,12 @@ BTC is currently around $65,000 based on latest tool output."#
 
     #[tokio::test]
     async fn message_dispatch_interrupts_in_flight_telegram_request_and_preserves_context() {
+        // Guard: ensure no stale global route for this sender from parallel tests
+        global_route_overrides()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove("telegram_chat-1_alice");
+
         let channel_impl = Arc::new(TelegramRecordingChannel::default());
         let channel: Arc<dyn Channel> = channel_impl.clone();
 
@@ -11262,14 +11366,19 @@ This is an example JSON object for profile settings."#;
         assert!(global.is_none(), "Global model_switch state must be cleared after apply");
         drop(global); // release lock before assertions on route_overrides
 
-        // Route override must be set for this sender only.
-        let routes = route_overrides.lock().unwrap();
+        // Route override must be written to the global (set_route_selection now uses global).
+        let global = global_route_overrides();
+        let routes = global.lock().unwrap();
         let entry = routes.get(sender_key).expect("Route override must be present");
         assert_eq!(entry.provider, "groq");
         assert_eq!(entry.model, "llama-3-8b");
 
         // Other senders must be unaffected.
         assert!(routes.get("telegram_99_other").is_none());
+
+        // Cleanup: remove our test entry so it doesn't affect other tests.
+        drop(routes);
+        global.lock().unwrap().remove(sender_key);
     }
 
     /// clear_model_switch_request must remove any pending switch.
