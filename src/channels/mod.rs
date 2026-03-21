@@ -301,8 +301,34 @@ fn save_route_overrides(overrides: &HashMap<String, ChannelRouteSelection>) {
     let Some(ref path) = *path_guard else { return };
     match serde_json::to_string_pretty(overrides) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(path, json) {
-                tracing::warn!(path = %path.display(), error = %e, "Failed to save route overrides");
+            let file_existed = path.exists();
+            // Ensure parent directory exists (it may have been removed externally).
+            if let Some(parent) = path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    tracing::warn!(
+                        path = %parent.display(),
+                        error = %e,
+                        "Failed to create parent directory for route overrides"
+                    );
+                    return;
+                }
+            }
+            match std::fs::write(path, json) {
+                Ok(()) => {
+                    if !file_existed {
+                        tracing::info!(
+                            path = %path.display(),
+                            "Created routes.json (file was missing)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to save route overrides"
+                    );
+                }
             }
         }
         Err(e) => tracing::warn!(error = %e, "Failed to serialize route overrides"),
@@ -11451,5 +11477,61 @@ This is an example JSON object for profile settings."#;
         );
         // Second take must return None.
         assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn save_route_overrides_creates_file_and_parent_dirs_when_missing() {
+        // This test mutates GLOBAL_ROUTES_FILE, so all assertions live in one
+        // test to avoid races with parallel tests.
+
+        let tmp = TempDir::new().unwrap();
+        let routes_path = tmp.path().join("routes.json");
+
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "telegram_chat-99_test".to_string(),
+            ChannelRouteSelection {
+                provider: "openrouter".to_string(),
+                model: "test-model".to_string(),
+                api_key: None,
+            },
+        );
+
+        // --- Part 1: file does not exist yet, save must create it ---
+        *GLOBAL_ROUTES_FILE.lock().unwrap() = Some(routes_path.clone());
+        save_route_overrides(&overrides);
+        assert!(routes_path.exists(), "File should be created on first save");
+
+        // Delete the file to simulate external removal while daemon runs.
+        std::fs::remove_file(&routes_path).unwrap();
+        assert!(!routes_path.exists(), "File should be deleted");
+
+        // Save again — the file must be recreated.
+        save_route_overrides(&overrides);
+        assert!(
+            routes_path.exists(),
+            "File should be recreated after deletion"
+        );
+
+        // Verify the contents round-trip correctly.
+        let text = std::fs::read_to_string(&routes_path).unwrap();
+        let loaded: HashMap<String, ChannelRouteSelection> =
+            serde_json::from_str(&text).unwrap();
+        assert_eq!(loaded.len(), 1);
+        let entry = loaded.get("telegram_chat-99_test").unwrap();
+        assert_eq!(entry.provider, "openrouter");
+        assert_eq!(entry.model, "test-model");
+
+        // --- Part 2: parent directories missing, save must create them ---
+        let nested_path = tmp.path().join("sub").join("dir").join("routes.json");
+        *GLOBAL_ROUTES_FILE.lock().unwrap() = Some(nested_path.clone());
+        save_route_overrides(&overrides);
+        assert!(
+            nested_path.exists(),
+            "File should be created even when parent dirs are missing"
+        );
+
+        // Cleanup: reset GLOBAL_ROUTES_FILE so other tests are unaffected.
+        *GLOBAL_ROUTES_FILE.lock().unwrap() = None;
     }
 }
