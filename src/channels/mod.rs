@@ -92,6 +92,7 @@ pub use whatsapp_web::WhatsAppWebChannel;
 use crate::agent::loop_::{
     build_tool_instructions, clear_model_switch_request, get_model_switch_state,
     run_tool_call_loop, scope_reply_to_message_id, scope_thread_id, scrub_credentials,
+    take_last_applied_model_switch,
 };
 use crate::approval::ApprovalManager;
 use crate::config::Config;
@@ -3240,9 +3241,13 @@ async fn process_channel_message(
         ) => LlmExecutionResult::Completed(result),
     };
 
-    // Per-chat model switch: pick up request left by model_switch tool
+    // Per-chat model switch: persist switch applied by the agent loop.
+    // The agent loop applies model switches inline (for multi-turn) and records the last
+    // applied switch in LAST_APPLIED_MODEL_SWITCH before clearing MODEL_SWITCH_REQUEST.
+    // Fall back to MODEL_SWITCH_REQUEST for the case where the loop exits before applying.
     {
-        let pending = get_model_switch_state().lock().unwrap().take();
+        let pending = take_last_applied_model_switch()
+            .or_else(|| get_model_switch_state().lock().unwrap().take());
         if let Some((new_provider, new_model)) = pending {
             tracing::info!(
                 sender_key = %history_key,
@@ -11395,5 +11400,29 @@ This is an example JSON object for profile settings."#;
         }
         clear_model_switch_request();
         assert!(state_mutex.lock().unwrap().is_none());
+    }
+
+    /// take_last_applied_model_switch returns the value and clears it.
+    #[test]
+    fn take_last_applied_model_switch_returns_and_clears() {
+        use crate::agent::loop_::take_last_applied_model_switch;
+
+        // Consume any leftover from other tests.
+        let _ = take_last_applied_model_switch();
+
+        // Write directly into the static to simulate agent loop recording a switch.
+        {
+            use crate::agent::loop_::LAST_APPLIED_MODEL_SWITCH;
+            *LAST_APPLIED_MODEL_SWITCH.lock().unwrap() =
+                Some(("google".to_string(), "gemini-2.0-flash".to_string()));
+        }
+
+        let taken = take_last_applied_model_switch();
+        assert_eq!(
+            taken,
+            Some(("google".to_string(), "gemini-2.0-flash".to_string()))
+        );
+        // Second take must return None.
+        assert!(take_last_applied_model_switch().is_none());
     }
 }
