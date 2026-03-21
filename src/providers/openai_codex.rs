@@ -1083,6 +1083,17 @@ impl Provider for OpenAiCodexProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serialize all tests that modify environment variables.
+    /// `std::env::set_var` / `remove_var` is not thread-safe; concurrent
+    /// modifications cause data races that surface as flaky assertions.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned")
+    }
 
     struct EnvGuard {
         key: &'static str,
@@ -1090,6 +1101,10 @@ mod tests {
     }
 
     impl EnvGuard {
+        /// Set an env var for the duration of a test.
+        ///
+        /// The caller MUST hold the `env_lock()` guard for the entire test
+        /// to prevent concurrent env mutations from other test threads.
         fn set(key: &'static str, value: Option<&str>) -> Self {
             let original = std::env::var(key).ok();
             match value {
@@ -1161,6 +1176,7 @@ mod tests {
 
     #[test]
     fn resolve_responses_url_prefers_explicit_endpoint_env() {
+        let _lock = env_lock();
         let _endpoint_guard = EnvGuard::set(
             CODEX_RESPONSES_URL_ENV,
             Some("https://env.example.com/v1/responses"),
@@ -1176,6 +1192,7 @@ mod tests {
 
     #[test]
     fn resolve_responses_url_uses_provider_api_url_override() {
+        let _lock = env_lock();
         let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
         let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
 
@@ -1279,6 +1296,7 @@ mod tests {
 
     #[test]
     fn resolve_reasoning_effort_prefers_configured_override() {
+        let _lock = env_lock();
         let _guard = EnvGuard::set("ZEROCLAW_CODEX_REASONING_EFFORT", Some("low"));
         assert_eq!(
             resolve_reasoning_effort("gpt-5-codex", Some("high")),
@@ -1288,6 +1306,7 @@ mod tests {
 
     #[test]
     fn resolve_reasoning_effort_uses_legacy_env_when_unconfigured() {
+        let _lock = env_lock();
         let _guard = EnvGuard::set("ZEROCLAW_CODEX_REASONING_EFFORT", Some("minimal"));
         assert_eq!(
             resolve_reasoning_effort("gpt-5-codex", None),
