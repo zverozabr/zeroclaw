@@ -126,7 +126,9 @@ impl PerSenderTracker {
     /// blocks and returns false when count > max.
     pub fn record_within(&self, key: &str, max: u32) -> bool {
         let mut buckets = self.buckets.lock();
-        let tracker = buckets.entry(key.to_string()).or_insert_with(ActionTracker::new);
+        let tracker = buckets
+            .entry(key.to_string())
+            .or_insert_with(ActionTracker::new);
         let count = tracker.record();
         count <= max as usize
     }
@@ -1393,7 +1395,8 @@ impl SecurityPolicy {
 
     /// Check if the current sender would be rate-limited without recording.
     pub fn is_rate_limited(&self) -> bool {
-        self.tracker.is_limited_for_current(self.max_actions_per_hour)
+        self.tracker
+            .is_limited_for_current(self.max_actions_per_hour)
     }
 
     /// Resolve a user-provided path for tool use.
@@ -3166,12 +3169,12 @@ mod tests {
     fn per_sender_tracker_isolates_counts() {
         let t = PerSenderTracker::new();
         // sender A hits limit=2 on 3rd call
-        assert!(t.record_within("chat_a", 2));  // count=1 ≤ 2 → ok
-        assert!(t.record_within("chat_a", 2));  // count=2 ≤ 2 → ok
+        assert!(t.record_within("chat_a", 2)); // count=1 ≤ 2 → ok
+        assert!(t.record_within("chat_a", 2)); // count=2 ≤ 2 → ok
         assert!(!t.record_within("chat_a", 2)); // count=3 > 2 → blocked
-        // sender B is unaffected — its bucket is empty
-        assert!(t.record_within("chat_b", 2));  // count=1 ≤ 2 → ok
-        assert!(t.record_within("chat_b", 2));  // count=2 ≤ 2 → ok
+                                                // sender B is unaffected — its bucket is empty
+        assert!(t.record_within("chat_b", 2)); // count=1 ≤ 2 → ok
+        assert!(t.record_within("chat_b", 2)); // count=2 ≤ 2 → ok
         assert!(!t.record_within("chat_b", 2)); // count=3 > 2 → blocked
     }
 
