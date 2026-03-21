@@ -316,6 +316,10 @@ pub(crate) const PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 /// Used before streaming the final answer so progress lines are replaced by the clean response.
 pub(crate) const DRAFT_CLEAR_SENTINEL: &str = "\x00CLEAR\x00";
 
+tokio::task_local! {
+    pub(crate) static TOOL_CHOICE_OVERRIDE: Option<String>;
+}
+
 /// Extract a short hint from tool call arguments for progress display.
 fn truncate_tool_args_for_progress(name: &str, args: &serde_json::Value, max_len: usize) -> String {
     let hint = match name {
@@ -2541,6 +2545,14 @@ fn should_execute_tools_in_parallel(
     approval: Option<&ApprovalManager>,
 ) -> bool {
     if tool_calls.len() <= 1 {
+        return false;
+    }
+
+    // tool_search activates deferred MCP tools into ActivatedToolSet.
+    // Running tool_search in parallel with the tools it activates causes a
+    // race condition where the tool lookup happens before activation completes.
+    // Force sequential execution whenever tool_search is in the batch.
+    if tool_calls.iter().any(|call| call.name == "tool_search") {
         return false;
     }
 

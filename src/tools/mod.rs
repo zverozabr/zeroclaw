@@ -76,9 +76,12 @@ pub mod screenshot;
 pub mod security_ops;
 pub mod shell;
 pub mod swarm;
+pub mod text_browser;
 pub mod tool_search;
 pub mod traits;
+pub mod verifiable_intent;
 pub mod web_fetch;
+mod web_search_provider_routing;
 pub mod web_search_tool;
 pub mod workspace_tool;
 
@@ -141,10 +144,12 @@ pub use screenshot::ScreenshotTool;
 pub use security_ops::SecurityOpsTool;
 pub use shell::ShellTool;
 pub use swarm::SwarmTool;
+pub use text_browser::TextBrowserTool;
 pub use tool_search::ToolSearchTool;
 pub use traits::Tool;
 #[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
+pub use verifiable_intent::VerifiableIntentTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search_tool::WebSearchTool;
 pub use workspace_tool::WorkspaceTool;
@@ -432,6 +437,15 @@ pub fn all_tools_with_runtime(
         )));
     }
 
+    // Text browser tool (headless text-based browser rendering)
+    if root_config.text_browser.enabled {
+        tool_arcs.push(Arc::new(TextBrowserTool::new(
+            security.clone(),
+            root_config.text_browser.preferred_browser.clone(),
+            root_config.text_browser.timeout_secs,
+        )));
+    }
+
     // Web search tool (enabled by default for GLM and other models)
     if root_config.web_search.enabled {
         tool_arcs.push(Arc::new(WebSearchTool::new_with_config(
@@ -530,6 +544,7 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(GoogleWorkspaceTool::new(
             security.clone(),
             root_config.google_workspace.allowed_services.clone(),
+            root_config.google_workspace.allowed_operations.clone(),
             root_config.google_workspace.credentials_path.clone(),
             root_config.google_workspace.default_account.clone(),
             root_config.google_workspace.rate_limit_per_minute,
@@ -727,6 +742,18 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(WorkspaceTool::new(
             Arc::new(tokio::sync::RwLock::new(ws_manager)),
             security.clone(),
+        )));
+    }
+
+    // Verifiable Intent tool (opt-in via config)
+    if root_config.verifiable_intent.enabled {
+        let strictness = match root_config.verifiable_intent.strictness.as_str() {
+            "permissive" => crate::verifiable_intent::StrictnessMode::Permissive,
+            _ => crate::verifiable_intent::StrictnessMode::Strict,
+        };
+        tool_arcs.push(Arc::new(VerifiableIntentTool::new(
+            security.clone(),
+            strictness,
         )));
     }
 
