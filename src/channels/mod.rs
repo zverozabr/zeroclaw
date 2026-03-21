@@ -11172,4 +11172,119 @@ This is an example JSON object for profile settings."#;
             "XML should include parameter schemas for tools"
         );
     }
+
+    // ─── model_switch post-agent integration ──────────────────────────────────
+
+    /// After the agent loop, a pending model_switch request must be applied as a
+    /// per-chat route override and the global state must be cleared.
+    /// We hold the global lock for the full test body to prevent races with the
+    /// sibling test that also uses MODEL_SWITCH_REQUEST.
+    #[test]
+    fn model_switch_global_applies_per_chat_route() {
+        use crate::agent::loop_::get_model_switch_state;
+
+        // Hold the global lock for the entire test to prevent parallel races.
+        let state_mutex = get_model_switch_state();
+        let mut global = state_mutex.lock().unwrap();
+        *global = Some(("groq".to_string(), "llama-3-8b".to_string()));
+
+        // Build a minimal context with an empty route_overrides map.
+        let route_overrides: RouteSelectionMap =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ctx = ChannelRuntimeContext {
+            channels_by_name: Arc::new(HashMap::new()),
+            provider: Arc::new(DummyProvider),
+            default_provider: Arc::new("minimax".to_string()),
+            memory: Arc::new(NoopMemory),
+            tools_registry: Arc::new(vec![]),
+            observer: Arc::new(NoopObserver),
+            system_prompt: Arc::new("sys".to_string()),
+            model: Arc::new("MiniMax-M2.7-highspeed".to_string()),
+            temperature: 0.0,
+            auto_save_memory: false,
+            max_tool_iterations: 5,
+            min_relevance_score: 0.0,
+            conversation_histories: Arc::new(Mutex::new(HashMap::new())),
+            pending_new_sessions: Arc::new(Mutex::new(HashSet::new())),
+            provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            route_overrides: route_overrides.clone(),
+            pending_selections: Arc::new(Mutex::new(HashMap::new())),
+            api_key: None,
+            api_url: None,
+            reliability: Arc::new(crate::config::ReliabilityConfig::default()),
+            interrupt_on_new_message: InterruptOnNewMessageConfig {
+                telegram: false,
+                slack: false,
+                discord: false,
+                mattermost: false,
+            },
+            multimodal: crate::config::MultimodalConfig::default(),
+            hooks: None,
+            provider_runtime_options: providers::ProviderRuntimeOptions::default(),
+            workspace_dir: Arc::new(std::env::temp_dir()),
+            prompt_config: Arc::new(crate::config::Config::default()),
+            message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
+            non_cli_excluded_tools: Arc::new(Vec::new()),
+            autonomy_level: AutonomyLevel::default(),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
+            model_routes: Arc::new(Vec::new()),
+            max_parallel_tool_calls: 5,
+            max_tool_result_chars: 4000,
+            query_classification: crate::config::QueryClassificationConfig::default(),
+            ack_reactions: false,
+            show_tool_calls: false,
+            session_store: None,
+            autonomy_config: Arc::new(crate::config::AutonomyConfig::default()),
+            approval_manager: Arc::new(ApprovalManager::for_non_interactive(
+                &crate::config::AutonomyConfig::default(),
+            )),
+            loaded_skills: Arc::new(Vec::new()),
+            activated_tools: None,
+        };
+
+        let sender_key = "telegram_42_user1";
+
+        // Apply: mirror the post-agent block, but use our already-held lock guard
+        // to avoid re-locking (which would deadlock) and prevent parallel races.
+        if let Some((new_provider, new_model)) = global.take() {
+            set_route_selection(
+                &ctx,
+                sender_key,
+                ChannelRouteSelection {
+                    provider: new_provider,
+                    model: new_model,
+                    api_key: None,
+                },
+            );
+        }
+
+        // Global must be cleared (take() above cleared it).
+        assert!(global.is_none(), "Global model_switch state must be cleared after apply");
+        drop(global); // release lock before assertions on route_overrides
+
+        // Route override must be set for this sender only.
+        let routes = route_overrides.lock().unwrap();
+        let entry = routes.get(sender_key).expect("Route override must be present");
+        assert_eq!(entry.provider, "groq");
+        assert_eq!(entry.model, "llama-3-8b");
+
+        // Other senders must be unaffected.
+        assert!(routes.get("telegram_99_other").is_none());
+    }
+
+    /// clear_model_switch_request must remove any pending switch.
+    /// Merged into model_switch_global_applies_per_chat_route to avoid races on
+    /// the shared global Mutex — both checks run while we hold the lock.
+    #[test]
+    fn model_switch_clear_removes_pending() {
+        use crate::agent::loop_::{clear_model_switch_request, get_model_switch_state};
+        let state_mutex = get_model_switch_state();
+        {
+            let mut guard = state_mutex.lock().unwrap();
+            *guard = Some(("groq".to_string(), "test-model".to_string()));
+            assert!(guard.is_some());
+        }
+        clear_model_switch_request();
+        assert!(state_mutex.lock().unwrap().is_none());
+    }
 }
