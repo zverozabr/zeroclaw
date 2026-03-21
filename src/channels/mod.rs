@@ -3388,13 +3388,24 @@ async fn process_channel_message(
             // Replace raw provider error dumps with user-friendly messages.
             let sanitized_response =
                 sanitize_provider_errors(&sanitized_response).unwrap_or(sanitized_response);
-            let delivered_response = if sanitized_response.is_empty()
+            let mut delivered_response = if sanitized_response.is_empty()
                 && !outbound_response.trim().is_empty()
             {
                 "I encountered malformed tool-call output and could not produce a safe reply. Please try again.".to_string()
             } else {
                 sanitized_response
             };
+
+            // Append fallback notice when a different provider served the request.
+            if let Some(fb) = crate::providers::reliable::take_last_provider_fallback() {
+                use std::fmt::Write as _;
+                write!(
+                    delivered_response,
+                    "\n\n---\n\u{26A1} `{}` недоступен — ответ от **{}** (`{}`)\nСменить модель: /models",
+                    fb.requested_provider, fb.actual_provider, fb.actual_model,
+                )
+                .ok();
+            }
             runtime_trace::record_event(
                 "channel_message_outbound",
                 Some(msg.channel.as_str()),

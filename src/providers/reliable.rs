@@ -6,8 +6,53 @@ use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
+
+// ── Provider Fallback Notification ──────────────────────────────────────
+// When ReliableProvider uses a fallback (different provider or model than
+// requested), it records the details here so channel code can notify the user.
+
+/// Info about a provider fallback that occurred during a request.
+#[derive(Debug, Clone)]
+pub struct ProviderFallbackInfo {
+    /// Provider that was originally requested.
+    pub requested_provider: String,
+    /// Model that was originally requested.
+    pub requested_model: String,
+    /// Provider that actually served the request.
+    pub actual_provider: String,
+    /// Model that actually served the request.
+    pub actual_model: String,
+}
+
+static LAST_PROVIDER_FALLBACK: LazyLock<std::sync::Arc<Mutex<Option<ProviderFallbackInfo>>>> =
+    LazyLock::new(|| std::sync::Arc::new(Mutex::new(None)));
+
+/// Take (consume) the last provider fallback info, if any.
+pub fn take_last_provider_fallback() -> Option<ProviderFallbackInfo> {
+    LAST_PROVIDER_FALLBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
+/// Record a provider fallback event.
+fn record_provider_fallback(
+    requested_provider: &str,
+    requested_model: &str,
+    actual_provider: &str,
+    actual_model: &str,
+) {
+    *LAST_PROVIDER_FALLBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(ProviderFallbackInfo {
+        requested_provider: requested_provider.to_string(),
+        requested_model: requested_model.to_string(),
+        actual_provider: actual_provider.to_string(),
+        actual_model: actual_model.to_string(),
+    });
+}
 
 // ── Error Classification ─────────────────────────────────────────────────
 // Errors are split into retryable (transient server/network failures) and
@@ -470,6 +515,8 @@ impl Provider for ReliableProvider {
                                     original_model = model,
                                     "Provider recovered (failover/retry)"
                                 );
+                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
+                                record_provider_fallback(primary, model, provider_name, current_model);
                             }
                             return Ok(resp);
                         }
@@ -623,6 +670,8 @@ impl Provider for ReliableProvider {
                                     context_truncated,
                                     "Provider recovered (failover/retry)"
                                 );
+                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
+                                record_provider_fallback(primary, model, provider_name, current_model);
                             }
                             return Ok(resp);
                         }
@@ -778,6 +827,8 @@ impl Provider for ReliableProvider {
                                     context_truncated,
                                     "Provider recovered (failover/retry)"
                                 );
+                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
+                                record_provider_fallback(primary, model, provider_name, current_model);
                             }
                             return Ok(resp);
                         }
@@ -920,6 +971,8 @@ impl Provider for ReliableProvider {
                                     context_truncated,
                                     "Provider recovered (failover/retry)"
                                 );
+                                let primary = self.providers.first().map(|(n, _)| n.as_str()).unwrap_or("");
+                                record_provider_fallback(primary, model, provider_name, current_model);
                             }
                             return Ok(resp);
                         }
@@ -2519,5 +2572,49 @@ mod tests {
         // A regular 400 error (e.g. invalid API key) should still be non-retryable.
         let err = anyhow::anyhow!("400 Bad Request: invalid api key provided");
         assert!(is_non_retryable(&err));
+    }
+
+    #[tokio::test]
+    async fn fallback_records_provider_fallback_info() {
+        // Consume any stale fallback from other tests.
+        let _ = take_last_provider_fallback();
+
+        let provider = ReliableProvider::new(
+            vec![
+                (
+                    "broken".into(),
+                    Box::new(MockProvider {
+                        calls: Arc::new(AtomicUsize::new(0)),
+                        fail_until_attempt: 99, // always fail
+                        response: "unused",
+                        error: "401 Unauthorized",
+                    }),
+                ),
+                (
+                    "working".into(),
+                    Box::new(MockProvider {
+                        calls: Arc::new(AtomicUsize::new(0)),
+                        fail_until_attempt: 0,
+                        response: "hello from working",
+                        error: "unused",
+                    }),
+                ),
+            ],
+            2,
+            1,
+        );
+
+        let resp = provider.simple_chat("hi", "test-model", 0.0).await.unwrap();
+        assert_eq!(resp, "hello from working");
+
+        let fb = take_last_provider_fallback();
+        assert!(fb.is_some(), "fallback info should be recorded");
+        let fb = fb.unwrap();
+        assert_eq!(fb.requested_provider, "broken");
+        assert_eq!(fb.actual_provider, "working");
+        assert_eq!(fb.actual_model, "test-model");
+
+        // Second take should be None.
+        assert!(take_last_provider_fallback().is_none());
     }
 }
