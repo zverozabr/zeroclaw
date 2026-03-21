@@ -7172,11 +7172,11 @@ BTC is currently around $65,000 based on latest tool output."#
     #[tokio::test]
     async fn process_channel_message_prefers_cached_default_provider_instance() {
         // Guard: ensure no stale global route for this sender from parallel tests
-        let _guard_key = "telegram_chat-1_alice";
+        let guard_key = "telegram_chat-1_alice";
         global_route_overrides()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(_guard_key);
+            .remove(guard_key);
 
         let channel_impl = Arc::new(TelegramRecordingChannel::default());
         let channel: Arc<dyn Channel> = channel_impl.clone();
