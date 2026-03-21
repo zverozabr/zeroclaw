@@ -3401,7 +3401,7 @@ async fn process_channel_message(
                 use std::fmt::Write as _;
                 write!(
                     delivered_response,
-                    "\n\n---\n\u{26A1} `{}` недоступен — ответ от **{}** (`{}`)\nСменить модель: /models",
+                    "\n\n---\n\u{26A1} `{}` unavailable — response from **{}** (`{}`)\nSwitch model: /models",
                     fb.requested_provider, fb.actual_provider, fb.actual_model,
                 )
                 .ok();
