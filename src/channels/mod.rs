@@ -3195,78 +3195,85 @@ async fn process_channel_message(
     };
 
     clear_model_switch_request();
-    crate::providers::reliable::clear_provider_fallback();
     let model_switch_slot: crate::agent::loop_::ModelSwitchCallback = Arc::new(Mutex::new(None));
-    let llm_result = tokio::select! {
-        () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
-        result = tokio::time::timeout(
-            Duration::from_secs(timeout_budget_secs),
-            scope_thread_id(
-                msg.interruption_scope_id.clone()
-                    .or_else(|| msg.thread_ts.clone())
-                    .or_else(|| Some(msg.id.clone())),
-                Some(history_key.clone()),
-                scope_reply_to_message_id(
-                    msg.reply_to_message_id.clone(),
-                    run_tool_call_loop(
-                        active_provider.as_ref(),
-                        &mut history,
-                        ctx.tools_registry.as_ref(),
-                        notify_observer.as_ref() as &dyn Observer,
-                        route.provider.as_str(),
-                        route.model.as_str(),
-                        runtime_defaults.temperature,
-                        true,
-                        Some(effective_approval),
-                        msg.channel.as_str(),
-                        Some(msg.reply_target.as_str()),
-                        &ctx.multimodal,
-                        ctx.max_tool_iterations,
-                        Some(cancellation_token.clone()),
-                        delta_tx,
-                        ctx.hooks.as_deref(),
-                        effective_excluded,
-                        ctx.tool_call_dedup_exempt.as_ref(),
-                        ctx.max_parallel_tool_calls,
-                        ctx.max_tool_result_chars,
-                        0,
-                        session_recorder.as_ref(),
-                        session_debug,
-                        ctx.activated_tools.as_ref(),
-                        Some(model_switch_slot.clone()),
+    let (llm_result, fallback_info) =
+        crate::providers::reliable::scope_provider_fallback(Box::pin(async {
+            let llm_result = tokio::select! {
+                () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
+                result = tokio::time::timeout(
+                    Duration::from_secs(timeout_budget_secs),
+                    scope_thread_id(
+                        msg.interruption_scope_id.clone()
+                            .or_else(|| msg.thread_ts.clone())
+                            .or_else(|| Some(msg.id.clone())),
+                        Some(history_key.clone()),
+                        scope_reply_to_message_id(
+                            msg.reply_to_message_id.clone(),
+                            run_tool_call_loop(
+                                active_provider.as_ref(),
+                                &mut history,
+                                ctx.tools_registry.as_ref(),
+                                notify_observer.as_ref() as &dyn Observer,
+                                route.provider.as_str(),
+                                route.model.as_str(),
+                                runtime_defaults.temperature,
+                                true,
+                                Some(effective_approval),
+                                msg.channel.as_str(),
+                                Some(msg.reply_target.as_str()),
+                                &ctx.multimodal,
+                                ctx.max_tool_iterations,
+                                Some(cancellation_token.clone()),
+                                delta_tx,
+                                ctx.hooks.as_deref(),
+                                effective_excluded,
+                                ctx.tool_call_dedup_exempt.as_ref(),
+                                ctx.max_parallel_tool_calls,
+                                ctx.max_tool_result_chars,
+                                0,
+                                session_recorder.as_ref(),
+                                session_debug,
+                                ctx.activated_tools.as_ref(),
+                                Some(model_switch_slot.clone()),
+                            ),
+                        ),
                     ),
-                ),
-            ),
-        ) => LlmExecutionResult::Completed(result),
-    };
+                ) => LlmExecutionResult::Completed(result),
+            };
 
-    // Per-chat model switch: persist switch applied by the agent loop.
-    // The agent loop writes into the per-request model_switch_slot callback.
-    // Fall back to MODEL_SWITCH_REQUEST for the case where the loop exits before applying.
-    {
-        let pending = model_switch_slot
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .or_else(|| get_model_switch_state().lock().unwrap().take());
-        if let Some((new_provider, new_model)) = pending {
-            tracing::info!(
-                sender_key = %history_key,
-                new_provider, new_model,
-                "Applying model_switch tool request as per-chat route override"
-            );
-            set_route_selection(
-                ctx.as_ref(),
-                &history_key,
-                ChannelRouteSelection {
-                    provider: new_provider,
-                    model: new_model,
-                    api_key: None,
-                },
-            );
-            clear_sender_history(ctx.as_ref(), &history_key);
-        }
-    }
+            // Per-chat model switch: persist switch applied by the agent loop.
+            // The agent loop writes into the per-request model_switch_slot callback.
+            // Fall back to MODEL_SWITCH_REQUEST for the case where the loop exits before applying.
+            {
+                let pending = model_switch_slot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .or_else(|| get_model_switch_state().lock().unwrap().take());
+                if let Some((new_provider, new_model)) = pending {
+                    tracing::info!(
+                        sender_key = %history_key,
+                        new_provider, new_model,
+                        "Applying model_switch tool request as per-chat route override"
+                    );
+                    set_route_selection(
+                        ctx.as_ref(),
+                        &history_key,
+                        ChannelRouteSelection {
+                            provider: new_provider,
+                            model: new_model,
+                            api_key: None,
+                        },
+                    );
+                    clear_sender_history(ctx.as_ref(), &history_key);
+                }
+            }
+
+            // Extract fallback info while still inside the task_local scope.
+            let fb = crate::providers::reliable::take_last_provider_fallback();
+            (llm_result, fb)
+        }))
+        .await;
 
     if let Some(handle) = draft_updater {
         let _ = handle.await;
@@ -3400,7 +3407,7 @@ async fn process_channel_message(
             // Append fallback notice when a different provider family served the request.
             // Suppress for intra-family fallbacks (e.g. minimax → minimax-cn:mm-1)
             // since they're transparent retries on equivalent infrastructure.
-            if let Some(fb) = crate::providers::reliable::take_last_provider_fallback() {
+            if let Some(fb) = fallback_info.as_ref() {
                 let req_base = fb.requested_provider.split(':').next().unwrap_or("");
                 let act_base = fb.actual_provider.split(':').next().unwrap_or("");
                 let same_family = req_base == act_base

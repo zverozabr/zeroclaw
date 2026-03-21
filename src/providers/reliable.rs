@@ -6,12 +6,14 @@ use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 // ── Provider Fallback Notification ──────────────────────────────────────
 // When ReliableProvider uses a fallback (different provider or model than
 // requested), it records the details here so channel code can notify the user.
+// Uses tokio::task_local to avoid cross-request leakage between concurrent
+// users (the old global static had a race window).
 
 /// Info about a provider fallback that occurred during a request.
 #[derive(Debug, Clone)]
@@ -26,22 +28,27 @@ pub struct ProviderFallbackInfo {
     pub actual_model: String,
 }
 
-static LAST_PROVIDER_FALLBACK: LazyLock<std::sync::Arc<Mutex<Option<ProviderFallbackInfo>>>> =
-    LazyLock::new(|| std::sync::Arc::new(Mutex::new(None)));
-
-/// Take (consume) the last provider fallback info, if any.
-pub fn take_last_provider_fallback() -> Option<ProviderFallbackInfo> {
-    LAST_PROVIDER_FALLBACK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take()
+tokio::task_local! {
+    static PROVIDER_FALLBACK: std::cell::RefCell<Option<ProviderFallbackInfo>>;
 }
 
-/// Clear any pending provider fallback info (call before each request).
-pub fn clear_provider_fallback() {
-    *LAST_PROVIDER_FALLBACK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = None;
+/// Take (consume) the last provider fallback info, if any.
+/// Must be called within a `scope_provider_fallback` scope.
+pub fn take_last_provider_fallback() -> Option<ProviderFallbackInfo> {
+    PROVIDER_FALLBACK
+        .try_with(|cell| cell.borrow_mut().take())
+        .ok()
+        .flatten()
+}
+
+/// Run the given future within a provider-fallback scope.
+/// Both `record_provider_fallback` (inside ReliableProvider) and
+/// `take_last_provider_fallback` (post-loop channel code) must execute
+/// within this scope for the data to be visible.
+pub async fn scope_provider_fallback<F: std::future::Future>(future: F) -> F::Output {
+    PROVIDER_FALLBACK
+        .scope(std::cell::RefCell::new(None), future)
+        .await
 }
 
 /// Record a provider fallback event.
@@ -51,13 +58,13 @@ fn record_provider_fallback(
     actual_provider: &str,
     actual_model: &str,
 ) {
-    *LAST_PROVIDER_FALLBACK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(ProviderFallbackInfo {
-        requested_provider: requested_provider.to_string(),
-        requested_model: requested_model.to_string(),
-        actual_provider: actual_provider.to_string(),
-        actual_model: actual_model.to_string(),
+    let _ = PROVIDER_FALLBACK.try_with(|cell| {
+        *cell.borrow_mut() = Some(ProviderFallbackInfo {
+            requested_provider: requested_provider.to_string(),
+            requested_model: requested_model.to_string(),
+            actual_provider: actual_provider.to_string(),
+            actual_model: actual_model.to_string(),
+        });
     });
 }
 
@@ -2619,45 +2626,45 @@ mod tests {
 
     #[tokio::test]
     async fn fallback_records_provider_fallback_info() {
-        // Consume any stale fallback from other tests.
-        let _ = take_last_provider_fallback();
+        scope_provider_fallback(async {
+            let provider = ReliableProvider::new(
+                vec![
+                    (
+                        "broken".into(),
+                        Box::new(MockProvider {
+                            calls: Arc::new(AtomicUsize::new(0)),
+                            fail_until_attempt: 99, // always fail
+                            response: "unused",
+                            error: "401 Unauthorized",
+                        }),
+                    ),
+                    (
+                        "working".into(),
+                        Box::new(MockProvider {
+                            calls: Arc::new(AtomicUsize::new(0)),
+                            fail_until_attempt: 0,
+                            response: "hello from working",
+                            error: "unused",
+                        }),
+                    ),
+                ],
+                2,
+                1,
+            );
 
-        let provider = ReliableProvider::new(
-            vec![
-                (
-                    "broken".into(),
-                    Box::new(MockProvider {
-                        calls: Arc::new(AtomicUsize::new(0)),
-                        fail_until_attempt: 99, // always fail
-                        response: "unused",
-                        error: "401 Unauthorized",
-                    }),
-                ),
-                (
-                    "working".into(),
-                    Box::new(MockProvider {
-                        calls: Arc::new(AtomicUsize::new(0)),
-                        fail_until_attempt: 0,
-                        response: "hello from working",
-                        error: "unused",
-                    }),
-                ),
-            ],
-            2,
-            1,
-        );
+            let resp = provider.simple_chat("hi", "test-model", 0.0).await.unwrap();
+            assert_eq!(resp, "hello from working");
 
-        let resp = provider.simple_chat("hi", "test-model", 0.0).await.unwrap();
-        assert_eq!(resp, "hello from working");
+            let fb = take_last_provider_fallback();
+            assert!(fb.is_some(), "fallback info should be recorded");
+            let fb = fb.unwrap();
+            assert_eq!(fb.requested_provider, "broken");
+            assert_eq!(fb.actual_provider, "working");
+            assert_eq!(fb.actual_model, "test-model");
 
-        let fb = take_last_provider_fallback();
-        assert!(fb.is_some(), "fallback info should be recorded");
-        let fb = fb.unwrap();
-        assert_eq!(fb.requested_provider, "broken");
-        assert_eq!(fb.actual_provider, "working");
-        assert_eq!(fb.actual_model, "test-model");
-
-        // Second take should be None.
-        assert!(take_last_provider_fallback().is_none());
+            // Second take should be None.
+            assert!(take_last_provider_fallback().is_none());
+        })
+        .await;
     }
 }
