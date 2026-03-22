@@ -250,7 +250,12 @@ impl ModelSwitchTool {
                 "mistral-small-latest",
                 "mistral-nemo",
             ],
-            "google" | "gemini" => vec!["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-3-flash-preview"],
+            "google" | "gemini" => vec![
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash-lite",
+                "gemini-3-flash-preview",
+            ],
             "xai" | "grok" => vec!["grok-2", "grok-2-vision", "grok-beta"],
             _ => vec![],
         };

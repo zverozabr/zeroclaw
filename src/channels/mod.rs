@@ -993,6 +993,193 @@ fn strip_reply_quote(content: &str) -> &str {
     content
 }
 
+/// Detect a "пи"/"pi" prefix (any case) followed by comma or space.
+/// Returns the message body after the prefix, or `None` if not a Pi command.
+fn detect_pi_prefix(content: &str) -> Option<String> {
+    let trimmed = strip_reply_quote(content).trim_start();
+    for prefix in &["пи", "Пи", "ПИ", "пИ", "pi", "Pi", "PI", "pI"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            if rest.starts_with(',') || rest.starts_with(' ') {
+                let msg = rest[1..].trim_start();
+                if !msg.is_empty() {
+                    return Some(msg.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build environment variables for the coder.py subprocess.
+fn build_coder_env(
+    workspace_dir: &Path,
+    history_key: &str,
+    thread_id: &str,
+    reply_to: Option<&str>,
+    reply_target: &str,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+
+    env.insert(
+        "SKILL_DIR".to_string(),
+        workspace_dir
+            .join("skills/coder")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    env.insert("ZC_THREAD_ID".to_string(), thread_id.to_string());
+    env.insert("ZC_SENDER_KEY".to_string(), history_key.to_string());
+    if let Some(reply_id) = reply_to {
+        env.insert("ZC_REPLY_TO_MESSAGE_ID".to_string(), reply_id.to_string());
+    }
+    env.insert(
+        "TELEGRAM_OPERATOR_CHAT_ID".to_string(),
+        reply_target.to_string(),
+    );
+
+    // Forward essential process env vars.
+    for var in &["PATH", "HOME", "LANG", "TELEGRAM_BOT_TOKEN"] {
+        if let Ok(val) = std::env::var(var) {
+            env.insert(var.to_string(), val);
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        env.insert(
+            "ZEROCLAW_CWD".to_string(),
+            cwd.to_string_lossy().into_owned(),
+        );
+    }
+
+    // Inject gateway credentials if coder is a trusted skill.
+    if let Some((token, url)) = crate::skills::get_gateway_creds_for_skill("coder") {
+        env.insert("ZEROCLAW_GATEWAY_TOKEN".to_string(), token);
+        env.insert("ZEROCLAW_GATEWAY_URL".to_string(), url);
+    }
+
+    env
+}
+
+/// Record both user and Pi assistant turns into conversation history.
+fn record_pi_turn(
+    ctx: &ChannelRuntimeContext,
+    history_key: &str,
+    user_message: &str,
+    pi_response: &str,
+) {
+    append_sender_turn(ctx, history_key, ChatMessage::user(user_message));
+    append_sender_turn(
+        ctx,
+        history_key,
+        ChatMessage::assistant(format!("[Pi] {pi_response}")),
+    );
+}
+
+/// Spawn the coder.py subprocess with the given env and message.
+async fn spawn_coder_subprocess(
+    workspace_dir: &Path,
+    env: &HashMap<String, String>,
+    message: &str,
+) -> Result<String, String> {
+    let skill_dir = workspace_dir.join("skills/coder");
+    let python = workspace_dir.join(".venv/bin/python3");
+    let script = skill_dir.join("scripts/coder.py");
+
+    let escaped_msg = format!("'{}'", message.replace('\'', "'\\''"));
+    let command = format!(
+        "{} {} --message {}",
+        python.display(),
+        script.display(),
+        escaped_msg
+    );
+
+    let mut cmd = tokio::process::Command::new("bash");
+    cmd.arg("-c").arg(&command);
+    cmd.env_clear();
+    for (key, val) in env {
+        cmd.env(key, val);
+    }
+
+    let result = tokio::time::timeout(Duration::from_secs(360), cmd.output()).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if output.status.success() {
+                if stdout.trim().is_empty() {
+                    Ok("[Pi completed — no output]".to_string())
+                } else {
+                    Ok(stdout)
+                }
+            } else {
+                Err(format!(
+                    "coder.py exited with {}: {}",
+                    output.status,
+                    if stderr.is_empty() { &stdout } else { &stderr }
+                ))
+            }
+        }
+        Ok(Err(e)) => Err(format!("Failed to spawn coder.py: {e}")),
+        Err(_) => Err("coder.py timed out after 360s".to_string()),
+    }
+}
+
+/// Orchestrator: detect Pi prefix, spawn coder subprocess, record history.
+/// Returns `true` if the message was handled as a Pi bypass.
+async fn handle_pi_bypass_if_needed(
+    ctx: &ChannelRuntimeContext,
+    msg: &traits::ChannelMessage,
+    channel: Option<&Arc<dyn Channel>>,
+) -> bool {
+    let pi_message = match detect_pi_prefix(&msg.content) {
+        Some(m) => m,
+        None => return false,
+    };
+
+    tracing::info!(
+        sender = %msg.sender,
+        channel = %msg.channel,
+        "Pi bypass: routing to coder.py"
+    );
+
+    let history_key = conversation_history_key(msg);
+    let thread_id = msg.thread_ts.clone().unwrap_or_else(|| msg.id.clone());
+
+    let env = build_coder_env(
+        &ctx.workspace_dir,
+        &history_key,
+        &thread_id,
+        msg.reply_to_message_id.as_deref(),
+        &msg.reply_target,
+    );
+
+    match spawn_coder_subprocess(&ctx.workspace_dir, &env, &pi_message).await {
+        Ok(response) => {
+            record_pi_turn(ctx, &history_key, &msg.content, &response);
+            // coder.py sends its own Telegram reply; no channel send needed.
+            tracing::info!("Pi bypass completed successfully");
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "Pi bypass coder.py failed");
+            record_pi_turn(ctx, &history_key, &msg.content, &format!("[Error] {err}"));
+            // Notify user of failure via channel.
+            if let Some(ch) = channel {
+                let error_msg = format!("⚠️ Pi error: {}", truncate_with_ellipsis(&err, 500));
+                let _ = ch
+                    .send(
+                        &SendMessage::new(error_msg, &msg.reply_target)
+                            .in_thread(msg.thread_ts.clone())
+                            .reply_to(msg.reply_to_message_id.clone()),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    true
+}
+
 fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRuntimeCommand> {
     if !supports_runtime_model_switch(channel_name) {
         return None;
@@ -2773,6 +2960,11 @@ async fn process_channel_message(
         return;
     }
 
+    // ── Pi bypass: route "пи, ..."/"pi, ..." directly to coder.py ──
+    if handle_pi_bypass_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await {
+        return;
+    }
+
     // Rewrite `/skill_name args` → `[Skill: skill-name] args` so LLM gets a hint
     if let Some(rewritten) = try_rewrite_skill_command(&msg.content, &ctx.loaded_skills) {
         msg.content = rewritten;
@@ -3743,15 +3935,10 @@ async fn process_channel_message(
                         failed_model = %route.model,
                         "Auto-rolling back per-chat route override after provider failure"
                     );
-                    set_route_selection(
-                        ctx.as_ref(),
-                        &history_key,
-                        default_route.clone(),
-                    );
+                    set_route_selection(ctx.as_ref(), &history_key, default_route.clone());
                     format!(
                         "\n\n_Auto-reset: `{}/{}` failed, reverted to default (`{}/{}`)._\n/models",
-                        route.provider, route.model,
-                        default_route.provider, default_route.model,
+                        route.provider, route.model, default_route.provider, default_route.model,
                     )
                 } else {
                     String::new()
@@ -11646,8 +11833,7 @@ This is an example JSON object for profile settings."#;
 
         // Verify the contents round-trip correctly.
         let text = std::fs::read_to_string(&routes_path).unwrap();
-        let loaded: HashMap<String, ChannelRouteSelection> =
-            serde_json::from_str(&text).unwrap();
+        let loaded: HashMap<String, ChannelRouteSelection> = serde_json::from_str(&text).unwrap();
         assert_eq!(loaded.len(), 1);
         let entry = loaded.get("telegram_chat-99_test").unwrap();
         assert_eq!(entry.provider, "openrouter");
@@ -11664,5 +11850,71 @@ This is an example JSON object for profile settings."#;
 
         // Cleanup: reset GLOBAL_ROUTES_FILE so other tests are unaffected.
         *GLOBAL_ROUTES_FILE.lock().unwrap() = None;
+    }
+
+    // ── Pi bypass unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn detect_pi_prefix_matches_cyrillic_and_latin() {
+        assert_eq!(
+            detect_pi_prefix("пи, напиши функцию"),
+            Some("напиши функцию".into())
+        );
+        assert_eq!(
+            detect_pi_prefix("pi, write func"),
+            Some("write func".into())
+        );
+        assert_eq!(
+            detect_pi_prefix("Пи прочитай файл"),
+            Some("прочитай файл".into())
+        );
+        assert_eq!(detect_pi_prefix("PI fix bug"), Some("fix bug".into()));
+    }
+
+    #[test]
+    fn detect_pi_prefix_rejects_false_positives() {
+        assert_eq!(detect_pi_prefix("пирожки вкусные"), None);
+        assert_eq!(detect_pi_prefix("pipeline failed"), None);
+        assert_eq!(detect_pi_prefix("hello pi"), None);
+        assert_eq!(detect_pi_prefix("пи,"), None);
+        assert_eq!(detect_pi_prefix("пи, "), None);
+        assert_eq!(detect_pi_prefix("pin something"), None);
+    }
+
+    #[test]
+    fn detect_pi_prefix_handles_reply_quotes() {
+        assert_eq!(
+            detect_pi_prefix("> @user:\n> quoted\n\nпи, fix it"),
+            Some("fix it".into())
+        );
+    }
+
+    #[test]
+    fn build_coder_env_contains_required_vars() {
+        let env = build_coder_env(
+            &std::path::PathBuf::from("/workspace"),
+            "telegram_123_alice",
+            "thread-42",
+            Some("msg-99"),
+            "123456789",
+        );
+        assert_eq!(env.get("SKILL_DIR").unwrap(), "/workspace/skills/coder");
+        assert_eq!(env.get("ZC_THREAD_ID").unwrap(), "thread-42");
+        assert_eq!(env.get("ZC_SENDER_KEY").unwrap(), "telegram_123_alice");
+        assert_eq!(env.get("ZC_REPLY_TO_MESSAGE_ID").unwrap(), "msg-99");
+        assert_eq!(env.get("TELEGRAM_OPERATOR_CHAT_ID").unwrap(), "123456789");
+        assert!(env.contains_key("PATH"));
+    }
+
+    #[test]
+    fn build_coder_env_omits_reply_to_when_none() {
+        let env = build_coder_env(
+            &std::path::PathBuf::from("/workspace"),
+            "key",
+            "tid",
+            None,
+            "chat",
+        );
+        assert!(!env.contains_key("ZC_REPLY_TO_MESSAGE_ID"));
     }
 }

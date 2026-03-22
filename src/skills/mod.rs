@@ -32,7 +32,7 @@ pub fn set_service_token_context(ctx: ServiceTokenContext) {
 }
 
 /// Get gateway credentials for a skill if it is trusted.
-fn get_gateway_creds_for_skill(skill_name: &str) -> Option<(String, String)> {
+pub(crate) fn get_gateway_creds_for_skill(skill_name: &str) -> Option<(String, String)> {
     let guard = SERVICE_TOKEN_CTX.read().unwrap();
     let ctx = guard.as_ref()?;
     if ctx.trusted_skills.contains(skill_name) {
