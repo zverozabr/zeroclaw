@@ -994,6 +994,10 @@ fn strip_reply_quote(content: &str) -> &str {
 }
 
 /// Detect a "пи"/"pi" prefix (any case) followed by comma or space.
+/// Senders currently in "Pi mode" — all messages route to Pi until "пи стоп".
+static PI_MODE_SENDERS: std::sync::LazyLock<Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
 /// Returns the message body after the prefix, or `None` if not a Pi command.
 fn detect_pi_prefix(content: &str) -> Option<String> {
     let trimmed = strip_reply_quote(content).trim_start();
@@ -1008,6 +1012,17 @@ fn detect_pi_prefix(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Check if this is a "пи стоп" / "pi stop" command to exit Pi mode.
+fn is_pi_stop(content: &str) -> bool {
+    let trimmed = strip_reply_quote(content).trim().to_lowercase();
+    matches!(
+        trimmed.as_str(),
+        "пи стоп" | "пи, стоп" | "пи stop" | "пи, stop"
+            | "pi stop" | "pi, stop" | "pi стоп" | "pi, стоп"
+            | "стоп пи" | "stop pi"
+    )
 }
 
 /// Build environment variables for the coder.py subprocess.
@@ -1125,16 +1140,59 @@ async fn spawn_coder_subprocess(
     }
 }
 
-/// Orchestrator: detect Pi prefix, spawn coder subprocess, record history.
-/// Returns `true` if the message was handled as a Pi bypass.
+/// Orchestrator: detect Pi prefix or Pi mode, spawn coder subprocess, record history.
+///
+/// Pi mode: once activated with "пи, ...", ALL subsequent messages from this
+/// sender route to Pi until "пи стоп". This avoids repeating the prefix.
 async fn handle_pi_bypass_if_needed(
     ctx: &ChannelRuntimeContext,
     msg: &traits::ChannelMessage,
     channel: Option<&Arc<dyn Channel>>,
 ) -> bool {
-    let pi_message = match detect_pi_prefix(&msg.content) {
-        Some(m) => m,
-        None => return false,
+    let history_key = conversation_history_key(msg);
+
+    // "пи стоп" — exit Pi mode
+    if is_pi_stop(&msg.content) {
+        let was_active = PI_MODE_SENDERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&history_key);
+        if was_active {
+            if let Some(ch) = channel {
+                let _ = ch
+                    .send(
+                        &SendMessage::new(
+                            "Pi mode off. Messages go to main assistant.".to_string(),
+                            &msg.reply_target,
+                        )
+                        .in_thread(msg.thread_ts.clone())
+                        .reply_to(msg.reply_to_message_id.clone()),
+                    )
+                    .await;
+            }
+        }
+        return was_active;
+    }
+
+    // Determine the message for Pi:
+    // 1. Explicit prefix "пи, ..." → strip prefix, activate Pi mode
+    // 2. Already in Pi mode → use full message as-is
+    let pi_message = if let Some(stripped) = detect_pi_prefix(&msg.content) {
+        // Activate Pi mode for this sender
+        PI_MODE_SENDERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(history_key.clone());
+        stripped
+    } else if PI_MODE_SENDERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&history_key)
+    {
+        // In Pi mode — send full message
+        msg.content.clone()
+    } else {
+        return false;
     };
 
     tracing::info!(
@@ -1143,7 +1201,6 @@ async fn handle_pi_bypass_if_needed(
         "Pi bypass: routing to coder.py"
     );
 
-    let history_key = conversation_history_key(msg);
     let thread_id = msg.thread_ts.clone().unwrap_or_else(|| msg.id.clone());
 
     let env = build_coder_env(
@@ -11887,6 +11944,36 @@ This is an example JSON object for profile settings."#;
             detect_pi_prefix("> @user:\n> quoted\n\nпи, fix it"),
             Some("fix it".into())
         );
+    }
+
+    #[test]
+    fn is_pi_stop_matches_variants() {
+        assert!(is_pi_stop("пи стоп"));
+        assert!(is_pi_stop("пи, стоп"));
+        assert!(is_pi_stop("pi stop"));
+        assert!(is_pi_stop("Pi, stop"));
+        assert!(is_pi_stop("стоп пи"));
+        assert!(is_pi_stop("stop pi"));
+        // False positives
+        assert!(!is_pi_stop("пи, сделай стоп-кран"));
+        assert!(!is_pi_stop("pipeline stop"));
+        assert!(!is_pi_stop("стоп"));
+    }
+
+    #[test]
+    fn pi_mode_activate_and_deactivate() {
+        let key = "test_pi_mode_sender";
+        // Clean state
+        PI_MODE_SENDERS.lock().unwrap().remove(key);
+        assert!(!PI_MODE_SENDERS.lock().unwrap().contains(key));
+
+        // Activate
+        PI_MODE_SENDERS.lock().unwrap().insert(key.to_string());
+        assert!(PI_MODE_SENDERS.lock().unwrap().contains(key));
+
+        // Deactivate
+        PI_MODE_SENDERS.lock().unwrap().remove(key);
+        assert!(!PI_MODE_SENDERS.lock().unwrap().contains(key));
     }
 
     #[test]
