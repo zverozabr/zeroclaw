@@ -748,6 +748,16 @@ enum MemoryCommands {
     },
     /// Get a specific memory entry by key
     Get { key: String },
+    /// Store a new memory entry
+    Store {
+        /// Unique key for this memory
+        key: String,
+        /// The information to remember
+        content: String,
+        /// Memory category: 'core' (permanent), 'daily' (session), 'conversation' (chat), or custom.
+        #[arg(long, default_value = "core")]
+        category: String,
+    },
     /// Show memory backend statistics and health
     Stats,
     /// Clear memories by category, by key, or clear all

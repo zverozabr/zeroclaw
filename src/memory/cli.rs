@@ -19,6 +19,11 @@ pub async fn handle_command(command: crate::MemoryCommands, config: &Config) -> 
             offset,
         } => handle_list(config, category, session, limit, offset).await,
         crate::MemoryCommands::Get { key } => handle_get(config, &key).await,
+        crate::MemoryCommands::Store {
+            key,
+            content,
+            category,
+        } => handle_store(config, &key, &content, &category).await,
         crate::MemoryCommands::Stats => handle_stats(config).await,
         crate::MemoryCommands::Clear { key, category, yes } => {
             handle_clear(config, key, category, yes).await
@@ -161,6 +166,26 @@ fn print_entry(entry: &super::traits::MemoryEntry) {
         println!("Session:   {sid}");
     }
     println!("\n{}", entry.content);
+}
+
+async fn handle_store(
+    config: &Config,
+    key: &str,
+    content: &str,
+    category: &str,
+) -> Result<()> {
+    let mem = create_cli_memory(config)?;
+    let cat = parse_category(category);
+
+    mem.store(key, content, cat, None).await?;
+
+    println!(
+        "{} Stored memory: {}",
+        style("✓").green().bold(),
+        style(key).white().bold()
+    );
+
+    Ok(())
 }
 
 async fn handle_stats(config: &Config) -> Result<()> {
