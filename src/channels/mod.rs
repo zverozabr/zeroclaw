@@ -459,6 +459,9 @@ struct ChannelRouteSelection {
     /// the global `api_key` in [`ChannelRuntimeContext`] when creating the
     /// provider for this route.
     api_key: Option<String>,
+    /// When true, all messages from this sender route directly to Pi (coder skill).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pi_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -994,10 +997,6 @@ fn strip_reply_quote(content: &str) -> &str {
 }
 
 /// Detect a "пи"/"pi" prefix (any case) followed by comma or space.
-/// Senders currently in "Pi mode" — all messages route to Pi until "пи стоп".
-static PI_MODE_SENDERS: std::sync::LazyLock<Mutex<HashSet<String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
-
 /// Returns the message body after the prefix, or `None` if not a Pi command.
 fn detect_pi_prefix(content: &str) -> Option<String> {
     let trimmed = strip_reply_quote(content).trim_start();
@@ -1151,13 +1150,25 @@ async fn handle_pi_bypass_if_needed(
 ) -> bool {
     let history_key = conversation_history_key(msg);
 
-    // "пи стоп" — exit Pi mode
+    // Check persistent Pi mode from global route overrides.
+    let is_in_pi_mode = global_route_overrides()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&history_key)
+        .is_some_and(|r| r.pi_mode);
+
+    // "пи стоп" / "pi stop" — exit Pi mode
     if is_pi_stop(&msg.content) {
-        let was_active = PI_MODE_SENDERS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&history_key);
-        if was_active {
+        if is_in_pi_mode {
+            // Clear pi_mode flag (drop lock before await)
+            {
+                let global = global_route_overrides();
+                let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(entry) = routes.get_mut(&history_key) {
+                    entry.pi_mode = false;
+                }
+                save_route_overrides(&routes);
+            }
             if let Some(ch) = channel {
                 let _ = ch
                     .send(
@@ -1171,25 +1182,34 @@ async fn handle_pi_bypass_if_needed(
                     .await;
             }
         }
-        return was_active;
+        return is_in_pi_mode;
     }
 
     // Determine the message for Pi:
     // 1. Explicit prefix "пи, ..." → strip prefix, activate Pi mode
     // 2. Already in Pi mode → use full message as-is
     let pi_message = if let Some(stripped) = detect_pi_prefix(&msg.content) {
-        // Activate Pi mode for this sender
-        PI_MODE_SENDERS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(history_key.clone());
+        // Activate persistent Pi mode (drop lock immediately)
+        {
+            let global = global_route_overrides();
+            let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
+            routes
+                .entry(history_key.clone())
+                .and_modify(|r| r.pi_mode = true)
+                .or_insert_with(|| {
+                    let default = default_route_selection(ctx);
+                    ChannelRouteSelection {
+                        provider: default.provider,
+                        model: default.model,
+                        api_key: None,
+                        pi_mode: true,
+                    }
+                });
+            save_route_overrides(&routes);
+        }
         stripped
-    } else if PI_MODE_SENDERS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(&history_key)
-    {
-        // In Pi mode — send full message
+    } else if is_in_pi_mode {
+        // In Pi mode — pass full message
         msg.content.clone()
     } else {
         return false;
@@ -1547,6 +1567,7 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
         provider: defaults.default_provider,
         model: defaults.model,
         api_key: None,
+        pi_mode: false,
     }
 }
 
@@ -3060,6 +3081,7 @@ async fn process_channel_message(
                 provider: matched_route.provider.clone(),
                 model: matched_route.model.clone(),
                 api_key: matched_route.api_key.clone(),
+                pi_mode: false,
             };
         }
     }
@@ -3589,6 +3611,7 @@ async fn process_channel_message(
                             provider: new_provider,
                             model: new_model,
                             api_key: None,
+                            pi_mode: false,
                         },
                     );
                     clear_sender_history(ctx.as_ref(), &history_key);
@@ -7456,6 +7479,7 @@ BTC is currently around $65,000 based on latest tool output."#
                     provider: "openrouter".to_string(),
                     model: "route-model".to_string(),
                     api_key: None,
+                    pi_mode: false,
                 },
             );
         }
@@ -7465,7 +7489,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ChannelRouteSelection {
                 provider: "openrouter".to_string(),
                 model: "route-model".to_string(),
-                api_key: None,
+                api_key: None, pi_mode: false,
             },
         );
 
@@ -11791,6 +11815,7 @@ This is an example JSON object for profile settings."#;
                     provider: new_provider,
                     model: new_model,
                     api_key: None,
+                    pi_mode: false,
                 },
             );
         }
@@ -11868,7 +11893,7 @@ This is an example JSON object for profile settings."#;
             ChannelRouteSelection {
                 provider: "openrouter".to_string(),
                 model: "test-model".to_string(),
-                api_key: None,
+                api_key: None, pi_mode: false,
             },
         );
 
@@ -11961,19 +11986,30 @@ This is an example JSON object for profile settings."#;
     }
 
     #[test]
-    fn pi_mode_activate_and_deactivate() {
-        let key = "test_pi_mode_sender";
-        // Clean state
-        PI_MODE_SENDERS.lock().unwrap().remove(key);
-        assert!(!PI_MODE_SENDERS.lock().unwrap().contains(key));
+    fn pi_mode_persisted_in_route_overrides() {
+        let key = "test_pi_mode_sender_persistent";
+        let global = global_route_overrides();
+        // Clean
+        global.lock().unwrap().remove(key);
 
-        // Activate
-        PI_MODE_SENDERS.lock().unwrap().insert(key.to_string());
-        assert!(PI_MODE_SENDERS.lock().unwrap().contains(key));
+        // Activate: insert with pi_mode=true
+        global.lock().unwrap().insert(
+            key.to_string(),
+            ChannelRouteSelection {
+                provider: "test".into(),
+                model: "test".into(),
+                api_key: None,
+                pi_mode: true,
+            },
+        );
+        assert!(global.lock().unwrap().get(key).unwrap().pi_mode);
 
         // Deactivate
-        PI_MODE_SENDERS.lock().unwrap().remove(key);
-        assert!(!PI_MODE_SENDERS.lock().unwrap().contains(key));
+        global.lock().unwrap().get_mut(key).unwrap().pi_mode = false;
+        assert!(!global.lock().unwrap().get(key).unwrap().pi_mode);
+
+        // Cleanup
+        global.lock().unwrap().remove(key);
     }
 
     #[test]
