@@ -1,0 +1,178 @@
+/// Renders Pi events into Telegram-friendly status text.
+/// Pure, testable, no I/O.
+pub struct StatusBuilder {
+    sections: Vec<(String, String)>,
+    response: String,
+}
+
+impl StatusBuilder {
+    pub fn new() -> Self {
+        Self {
+            sections: Vec::new(),
+            response: String::new(),
+        }
+    }
+
+    /// Record a thinking block. Prefix with the thought-bubble icon and
+    /// truncate to 200 characters.
+    pub fn on_thinking_end(&mut self, text: &str) {
+        let truncated = truncate(text, 200);
+        self.sections.push(("\u{1f4ad}".to_string(), truncated));
+    }
+
+    /// Record the start of a tool invocation with an appropriate icon.
+    pub fn on_tool_start(&mut self, name: &str, args: &serde_json::Value) {
+        let icon = tool_icon(name);
+        let summary = match name {
+            "bash" | "shell" => args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or(name)
+                .to_string(),
+            _ => {
+                let compact = serde_json::to_string(args).unwrap_or_default();
+                if compact.len() > 120 {
+                    format!("{}\u{2026}", &compact[..120])
+                } else {
+                    compact
+                }
+            }
+        };
+        self.sections.push((icon.to_string(), summary));
+    }
+
+    /// Record the end of a tool invocation. Prefix with the page icon and
+    /// truncate to 150 characters.
+    pub fn on_tool_end(&mut self, _name: &str, output: &str) {
+        let truncated = truncate(output, 150);
+        self.sections.push(("\u{1f4c4}".to_string(), truncated));
+    }
+
+    /// Set the final response text.
+    pub fn on_response_text(&mut self, text: &str) {
+        self.response = text.to_string();
+    }
+
+    /// Render all accumulated sections into a single string suitable for
+    /// Telegram. The total output is capped at 3800 characters, keeping the
+    /// tail (most recent events) when truncation is necessary.
+    pub fn render(&self) -> String {
+        if self.sections.is_empty() && self.response.is_empty() {
+            return "\u{2699} Pi is working\u{2026}".to_string();
+        }
+
+        let mut parts: Vec<String> = self
+            .sections
+            .iter()
+            .map(|(icon, text)| format!("{icon} {text}"))
+            .collect();
+
+        if !self.response.is_empty() {
+            parts.push(self.response.clone());
+        }
+
+        let joined = parts.join("\n");
+
+        if joined.len() <= 3800 {
+            joined
+        } else {
+            // Keep the tail (most recent events).
+            let start = joined.len() - 3800;
+            // Find next newline to avoid cutting a line in the middle.
+            let cut = joined[start..]
+                .find('\n')
+                .map_or(start, |pos| start + pos + 1);
+            joined[cut..].to_string()
+        }
+    }
+}
+
+/// Pick an icon for a tool by name.
+fn tool_icon(name: &str) -> &'static str {
+    match name {
+        "read" | "cat" => "\u{1f4d6}",
+        "write" | "edit" => "\u{270f}\u{fe0f}",
+        "find" | "grep" | "glob" | "search" => "\u{1f50d}",
+        // bash, shell, and everything else get the wrench
+        _ => "\u{1f527}",
+    }
+}
+
+/// Truncate a string to at most `max` characters, appending an ellipsis if
+/// truncated.
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}\u{2026}", &s[..max])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn renders_thinking() {
+        let mut b = StatusBuilder::new();
+        b.on_thinking_end("I need to check the file");
+        let out = b.render();
+        assert!(
+            out.contains('\u{1f4ad}'),
+            "should contain thought-bubble icon"
+        );
+        assert!(out.contains("I need to check the file"));
+    }
+
+    #[test]
+    fn renders_tool_start() {
+        let mut b = StatusBuilder::new();
+        b.on_tool_start("bash", &json!({"command": "ls -la"}));
+        let out = b.render();
+        assert!(out.contains('\u{1f527}'), "should contain wrench icon");
+        assert!(out.contains("ls -la"));
+    }
+
+    #[test]
+    fn renders_tool_output() {
+        let mut b = StatusBuilder::new();
+        b.on_tool_end("bash", "total 42\ndrwxr-xr-x");
+        let out = b.render();
+        assert!(out.contains('\u{1f4c4}'), "should contain page icon");
+        assert!(out.contains("total 42"));
+    }
+
+    #[test]
+    fn truncates_to_limit() {
+        let mut b = StatusBuilder::new();
+        for i in 0..100 {
+            b.on_tool_start(
+                "bash",
+                &json!({"command": format!("command-number-{i}-with-padding-text-here")}),
+            );
+        }
+        let out = b.render();
+        assert!(
+            out.len() <= 3800,
+            "render length {} exceeds 3800",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn empty_renders_fallback() {
+        let b = StatusBuilder::new();
+        assert_eq!(b.render(), "\u{2699} Pi is working\u{2026}");
+    }
+
+    #[test]
+    fn renders_response_text() {
+        let mut b = StatusBuilder::new();
+        b.on_thinking_end("thinking about it");
+        b.on_response_text("Here is the answer.");
+        let out = b.render();
+        assert!(out.contains('\u{1f4ad}'));
+        assert!(out.contains("Here is the answer."));
+    }
+}
