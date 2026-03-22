@@ -54,6 +54,30 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     crate::health::mark_component_ok("daemon");
 
+    // Initialize Pi manager
+    let minimax_key = config
+        .reliability
+        .fallback_api_keys
+        .get("minimax-cn:mm-1")
+        .or_else(|| config.reliability.fallback_api_keys.get("minimax:mm-1"))
+        .or_else(|| config.reliability.fallback_api_keys.get("minimax:mm-fresh"))
+        .cloned()
+        .unwrap_or_default();
+    crate::pi::init_pi_manager(&config.workspace_dir, &minimax_key);
+
+    // Start Pi idle reaper background task
+    if let Some(manager) = crate::pi::pi_manager() {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                manager
+                    .kill_idle(std::time::Duration::from_secs(30 * 60))
+                    .await;
+            }
+        });
+    }
+
     if config.heartbeat.enabled {
         let _ =
             crate::heartbeat::engine::HeartbeatEngine::ensure_heartbeat_file(&config.workspace_dir)
@@ -138,6 +162,11 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     // Wait for shutdown signal (SIGINT or SIGTERM)
     wait_for_shutdown_signal().await?;
     crate::health::mark_component_error("daemon", "shutdown requested");
+
+    // Stop all Pi instances (save sessions before killing)
+    if let Some(mgr) = crate::pi::pi_manager() {
+        mgr.stop_all().await;
+    }
 
     for handle in &handles {
         handle.abort();

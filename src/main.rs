@@ -98,6 +98,7 @@ mod multimodal;
 mod observability;
 mod onboard;
 mod peripherals;
+mod pi;
 #[cfg(feature = "plugins-wasm")]
 mod plugins;
 mod providers;

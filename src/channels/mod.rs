@@ -1018,61 +1018,19 @@ fn is_pi_stop(content: &str) -> bool {
     let trimmed = strip_reply_quote(content).trim().to_lowercase();
     matches!(
         trimmed.as_str(),
-        "пи стоп" | "пи, стоп" | "пи stop" | "пи, stop"
-            | "pi stop" | "pi, stop" | "pi стоп" | "pi, стоп"
-            | "стоп пи" | "stop pi"
+        "пи стоп"
+            | "пи, стоп"
+            | "пи stop"
+            | "пи, stop"
+            | "pi stop"
+            | "pi, stop"
+            | "pi стоп"
+            | "pi, стоп"
+            | "стоп пи"
+            | "stop pi"
     )
 }
 
-/// Build environment variables for the coder.py subprocess.
-fn build_coder_env(
-    workspace_dir: &Path,
-    history_key: &str,
-    thread_id: &str,
-    reply_to: Option<&str>,
-    reply_target: &str,
-) -> HashMap<String, String> {
-    let mut env = HashMap::new();
-
-    env.insert(
-        "SKILL_DIR".to_string(),
-        workspace_dir
-            .join("skills/coder")
-            .to_string_lossy()
-            .into_owned(),
-    );
-    env.insert("ZC_THREAD_ID".to_string(), thread_id.to_string());
-    env.insert("ZC_SENDER_KEY".to_string(), history_key.to_string());
-    if let Some(reply_id) = reply_to {
-        env.insert("ZC_REPLY_TO_MESSAGE_ID".to_string(), reply_id.to_string());
-    }
-    env.insert(
-        "TELEGRAM_OPERATOR_CHAT_ID".to_string(),
-        reply_target.to_string(),
-    );
-
-    // Forward essential process env vars.
-    for var in &["PATH", "HOME", "LANG", "TELEGRAM_BOT_TOKEN"] {
-        if let Ok(val) = std::env::var(var) {
-            env.insert(var.to_string(), val);
-        }
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        env.insert(
-            "ZEROCLAW_CWD".to_string(),
-            cwd.to_string_lossy().into_owned(),
-        );
-    }
-
-    // Inject gateway credentials if coder is a trusted skill.
-    if let Some((token, url)) = crate::skills::get_gateway_creds_for_skill("coder") {
-        env.insert("ZEROCLAW_GATEWAY_TOKEN".to_string(), token);
-        env.insert("ZEROCLAW_GATEWAY_URL".to_string(), url);
-    }
-
-    env
-}
 
 /// Record both user and Pi assistant turns into conversation history.
 fn record_pi_turn(
@@ -1089,57 +1047,8 @@ fn record_pi_turn(
     );
 }
 
-/// Spawn the coder.py subprocess with the given env and message.
-async fn spawn_coder_subprocess(
-    workspace_dir: &Path,
-    env: &HashMap<String, String>,
-    message: &str,
-) -> Result<String, String> {
-    let skill_dir = workspace_dir.join("skills/coder");
-    let python = workspace_dir.join(".venv/bin/python3");
-    let script = skill_dir.join("scripts/coder.py");
 
-    let escaped_msg = format!("'{}'", message.replace('\'', "'\\''"));
-    let command = format!(
-        "{} {} --message {}",
-        python.display(),
-        script.display(),
-        escaped_msg
-    );
-
-    let mut cmd = tokio::process::Command::new("bash");
-    cmd.arg("-c").arg(&command);
-    cmd.env_clear();
-    for (key, val) in env {
-        cmd.env(key, val);
-    }
-
-    let result = tokio::time::timeout(Duration::from_secs(360), cmd.output()).await;
-
-    match result {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if output.status.success() {
-                if stdout.trim().is_empty() {
-                    Ok("[Pi completed — no output]".to_string())
-                } else {
-                    Ok(stdout)
-                }
-            } else {
-                Err(format!(
-                    "coder.py exited with {}: {}",
-                    output.status,
-                    if stderr.is_empty() { &stdout } else { &stderr }
-                ))
-            }
-        }
-        Ok(Err(e)) => Err(format!("Failed to spawn coder.py: {e}")),
-        Err(_) => Err("coder.py timed out after 360s".to_string()),
-    }
-}
-
-/// Orchestrator: detect Pi prefix or Pi mode, spawn coder subprocess, record history.
+/// Orchestrator: detect Pi prefix or Pi mode, route to PiManager, record history.
 ///
 /// Pi mode: once activated with "пи, ...", ALL subsequent messages from this
 /// sender route to Pi until "пи стоп". This avoids repeating the prefix.
@@ -1169,6 +1078,10 @@ async fn handle_pi_bypass_if_needed(
                 }
                 save_route_overrides(&routes);
             }
+            // Stop the Pi instance for this chat
+            if let Some(mgr) = crate::pi::pi_manager() {
+                let _ = mgr.stop(&history_key).await;
+            }
             if let Some(ch) = channel {
                 let _ = ch
                     .send(
@@ -1188,7 +1101,9 @@ async fn handle_pi_bypass_if_needed(
     // Determine the message for Pi:
     // 1. Explicit prefix "пи, ..." → strip prefix, activate Pi mode
     // 2. Already in Pi mode → use full message as-is
+    let first_activation;
     let pi_message = if let Some(stripped) = detect_pi_prefix(&msg.content) {
+        first_activation = !is_in_pi_mode;
         // Activate persistent Pi mode (drop lock immediately)
         {
             let global = global_route_overrides();
@@ -1209,6 +1124,7 @@ async fn handle_pi_bypass_if_needed(
         }
         stripped
     } else if is_in_pi_mode {
+        first_activation = false;
         // In Pi mode — pass full message
         msg.content.clone()
     } else {
@@ -1218,31 +1134,141 @@ async fn handle_pi_bypass_if_needed(
     tracing::info!(
         sender = %msg.sender,
         channel = %msg.channel,
-        "Pi bypass: routing to coder.py"
+        "Pi bypass: routing to PiManager"
     );
 
-    let thread_id = msg.thread_ts.clone().unwrap_or_else(|| msg.id.clone());
+    let Some(mgr) = crate::pi::pi_manager() else {
+        tracing::error!("PiManager not initialized");
+        if let Some(ch) = channel {
+            let _ = ch
+                .send(
+                    &SendMessage::new(
+                        "\u{26a0}\u{fe0f} Pi not available (manager not initialized)".to_string(),
+                        &msg.reply_target,
+                    )
+                    .in_thread(msg.thread_ts.clone())
+                    .reply_to(msg.reply_to_message_id.clone()),
+                )
+                .await;
+        }
+        return true;
+    };
 
-    let env = build_coder_env(
-        &ctx.workspace_dir,
-        &history_key,
-        &thread_id,
-        msg.reply_to_message_id.as_deref(),
+    // Ensure Pi process is running for this chat
+    if let Err(e) = mgr.ensure_running(&history_key).await {
+        tracing::error!(error = %e, "Failed to start Pi");
+        if let Some(ch) = channel {
+            let _ = ch
+                .send(
+                    &SendMessage::new(
+                        format!(
+                            "\u{26a0}\u{fe0f} Failed to start Pi: {}",
+                            truncate_with_ellipsis(&e.to_string(), 300)
+                        ),
+                        &msg.reply_target,
+                    )
+                    .in_thread(msg.thread_ts.clone())
+                    .reply_to(msg.reply_to_message_id.clone()),
+                )
+                .await;
+        }
+        return true;
+    }
+
+    // Inject ZeroClaw conversation history on first activation
+    if first_activation && mgr.needs_history_injection(&history_key).await {
+        let history: Vec<ChatMessage> = ctx
+            .conversation_histories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&history_key)
+            .cloned()
+            .unwrap_or_default();
+        if !history.is_empty() {
+            if let Err(e) = mgr.inject_history(&history_key, &history, 4000).await {
+                tracing::warn!(error = %e, "Failed to inject history into Pi");
+            }
+        }
+    }
+
+    // Set up Telegram status updates
+    let bot_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
+    let notifier = Arc::new(crate::pi::telegram::TelegramNotifier::new(
+        &bot_token,
         &msg.reply_target,
-    );
+    ));
+    let status_msg_id = notifier
+        .send_status("\u{2699} Pi is working\u{2026}")
+        .await;
+    let status = Arc::new(std::sync::Mutex::new(
+        crate::pi::status::StatusBuilder::new(),
+    ));
 
-    match spawn_coder_subprocess(&ctx.workspace_dir, &env, &pi_message).await {
+    let s = status.clone();
+    let n = notifier.clone();
+    let mid = status_msg_id;
+
+    let result = mgr
+        .prompt(&history_key, &pi_message, move |event| {
+            use crate::pi::rpc::PiEvent;
+
+            let mut sb = s.lock().unwrap();
+            match &event {
+                PiEvent::ThinkingEnd(text) => sb.on_thinking_end(text),
+                PiEvent::ToolStart { name, args } => sb.on_tool_start(name, args),
+                PiEvent::ToolEnd { output, .. } => sb.on_tool_end("", output),
+                _ => return,
+            }
+            let rendered = sb.render();
+            drop(sb); // release lock before spawn
+            if let Some(msg_id) = mid {
+                let notifier = n.clone();
+                tokio::spawn(async move {
+                    notifier.edit_status(msg_id, &rendered).await;
+                });
+            }
+        })
+        .await;
+
+    match result {
         Ok(response) => {
+            // Update status with final response
+            let rendered = {
+                let mut sb = status.lock().unwrap();
+                sb.on_response_text(&response);
+                sb.render()
+            };
+            if let Some(msg_id) = status_msg_id {
+                notifier.edit_status(msg_id, &rendered).await;
+            }
             record_pi_turn(ctx, &history_key, &msg.content, &response);
-            // coder.py sends its own Telegram reply; no channel send needed.
             tracing::info!("Pi bypass completed successfully");
         }
         Err(err) => {
-            tracing::error!(error = %err, "Pi bypass coder.py failed");
-            record_pi_turn(ctx, &history_key, &msg.content, &format!("[Error] {err}"));
-            // Notify user of failure via channel.
-            if let Some(ch) = channel {
-                let error_msg = format!("⚠️ Pi error: {}", truncate_with_ellipsis(&err, 500));
+            let err_str = err.to_string();
+            tracing::error!(error = %err_str, "Pi bypass failed");
+            record_pi_turn(
+                ctx,
+                &history_key,
+                &msg.content,
+                &format!("[Error] {err_str}"),
+            );
+            // Edit status message with error, or send new message via channel
+            if let Some(msg_id) = status_msg_id {
+                notifier
+                    .edit_status(
+                        msg_id,
+                        &format!(
+                            "\u{26a0}\u{fe0f} Pi error: {}",
+                            truncate_with_ellipsis(&err_str, 500)
+                        ),
+                    )
+                    .await;
+            } else if let Some(ch) = channel {
+                let error_msg = format!(
+                    "\u{26a0}\u{fe0f} Pi error: {}",
+                    truncate_with_ellipsis(&err_str, 500)
+                );
                 let _ = ch
                     .send(
                         &SendMessage::new(error_msg, &msg.reply_target)
@@ -2374,6 +2400,35 @@ fn handle_models_command(
 ) -> String {
     match arg {
         Some(hint) => {
+            // Special: Pi mode activation
+            if hint.eq_ignore_ascii_case("pi") {
+                current.pi_mode = true;
+                set_route_selection(ctx, sender_key, current.clone());
+                if let Some(mgr) = crate::pi::pi_manager() {
+                    let key = sender_key.to_string();
+                    tokio::spawn(async move {
+                        if let Err(e) = mgr.ensure_running(&key).await {
+                            tracing::error!(error = %e, "Failed to start Pi on /models pi");
+                        }
+                    });
+                }
+                return "\u{2705} Pi mode activated. All messages go to coding agent.\nTo exit: /models minimax"
+                    .to_string();
+            }
+
+            // Deactivate Pi when switching to another model
+            if current.pi_mode {
+                current.pi_mode = false;
+                if let Some(mgr) = crate::pi::pi_manager() {
+                    let key = sender_key.to_string();
+                    tokio::spawn(async move {
+                        if let Err(e) = mgr.stop(&key).await {
+                            tracing::warn!(error = %e, "Failed to stop Pi on model switch");
+                        }
+                    });
+                }
+            }
+
             if let Some(route) = ctx
                 .model_routes
                 .iter()
@@ -7489,7 +7544,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ChannelRouteSelection {
                 provider: "openrouter".to_string(),
                 model: "route-model".to_string(),
-                api_key: None, pi_mode: false,
+                api_key: None,
+                pi_mode: false,
             },
         );
 
@@ -11893,7 +11949,8 @@ This is an example JSON object for profile settings."#;
             ChannelRouteSelection {
                 provider: "openrouter".to_string(),
                 model: "test-model".to_string(),
-                api_key: None, pi_mode: false,
+                api_key: None,
+                pi_mode: false,
             },
         );
 
@@ -12012,32 +12069,4 @@ This is an example JSON object for profile settings."#;
         global.lock().unwrap().remove(key);
     }
 
-    #[test]
-    fn build_coder_env_contains_required_vars() {
-        let env = build_coder_env(
-            &std::path::PathBuf::from("/workspace"),
-            "telegram_123_alice",
-            "thread-42",
-            Some("msg-99"),
-            "123456789",
-        );
-        assert_eq!(env.get("SKILL_DIR").unwrap(), "/workspace/skills/coder");
-        assert_eq!(env.get("ZC_THREAD_ID").unwrap(), "thread-42");
-        assert_eq!(env.get("ZC_SENDER_KEY").unwrap(), "telegram_123_alice");
-        assert_eq!(env.get("ZC_REPLY_TO_MESSAGE_ID").unwrap(), "msg-99");
-        assert_eq!(env.get("TELEGRAM_OPERATOR_CHAT_ID").unwrap(), "123456789");
-        assert!(env.contains_key("PATH"));
-    }
-
-    #[test]
-    fn build_coder_env_omits_reply_to_when_none() {
-        let env = build_coder_env(
-            &std::path::PathBuf::from("/workspace"),
-            "key",
-            "tid",
-            None,
-            "chat",
-        );
-        assert!(!env.contains_key("ZC_REPLY_TO_MESSAGE_ID"));
-    }
 }
