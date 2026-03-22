@@ -186,7 +186,7 @@ where
 
     // 2. Wait for ACK
     let deadline = tokio::time::Instant::now() + dur;
-    let ack = recv_response(reader, "prompt_response", dur)
+    let ack = recv_response(reader, "prompt", dur)
         .await
         .ok_or_else(|| anyhow::anyhow!("timeout waiting for prompt ACK"))?;
 
@@ -251,7 +251,7 @@ pub async fn rpc_new_session(stdin: &mut ChildStdin, reader: &mut BufReader<Chil
     if send(stdin, &msg).await.is_err() {
         return false;
     }
-    recv_response(reader, "new_session_response", Duration::from_secs(10))
+    recv_response(reader, "new_session", Duration::from_secs(10))
         .await
         .and_then(|v| v.get("success")?.as_bool())
         .unwrap_or(false)
@@ -270,7 +270,7 @@ pub async fn rpc_switch_session(
     if send(stdin, &msg).await.is_err() {
         return false;
     }
-    recv_response(reader, "switch_session_response", Duration::from_secs(10))
+    recv_response(reader, "switch_session", Duration::from_secs(10))
         .await
         .and_then(|v| v.get("success")?.as_bool())
         .unwrap_or(false)
@@ -283,7 +283,7 @@ pub async fn rpc_get_session_file(
 ) -> Option<String> {
     let msg = serde_json::json!({ "type": "get_session_file" });
     send(stdin, &msg).await.ok()?;
-    let resp = recv_response(reader, "get_session_file_response", Duration::from_secs(10)).await?;
+    let resp = recv_response(reader, "get_state", Duration::from_secs(10)).await?;
     resp.get("sessionFile")
         .and_then(|v| v.as_str())
         .map(|s| s.to_owned())
