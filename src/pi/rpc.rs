@@ -116,6 +116,13 @@ fn extract_last_assistant_text(event: &serde_json::Value) -> String {
                     }
                 }
             }
+
+            // Fallback: check errorMessage (Pi API error)
+            if let Some(err) = msg.get("errorMessage").and_then(|v| v.as_str()) {
+                if !err.is_empty() {
+                    return format!("[Pi API error] {}", &err[..err.len().min(200)]);
+                }
+            }
         }
     }
 
