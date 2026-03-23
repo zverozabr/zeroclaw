@@ -1195,11 +1195,18 @@ async fn handle_pi_bypass_if_needed(
         }
     }
 
-    // Set up Telegram status updates
+    // Set up Telegram status updates.
+    // reply_target may be "chat_id:thread_id" for forum groups — split for Bot API.
     let bot_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
+    let (tg_chat_id, tg_thread_id) = if let Some((cid, tid)) = msg.reply_target.split_once(':') {
+        (cid.to_string(), Some(tid.to_string()))
+    } else {
+        (msg.reply_target.clone(), msg.thread_ts.clone())
+    };
     let notifier = Arc::new(crate::pi::telegram::TelegramNotifier::new(
         &bot_token,
-        &msg.reply_target,
+        &tg_chat_id,
+        tg_thread_id,
     ));
     let status_msg_id = notifier.send_status("\u{2699} Pi is working\u{2026}").await;
     let status = Arc::new(std::sync::Mutex::new(
