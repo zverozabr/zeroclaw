@@ -169,6 +169,10 @@ pub struct Config {
     #[serde(default)]
     pub skills: SkillsConfig,
 
+    /// Pi coding agent configuration (`[pi]`).
+    #[serde(default)]
+    pub pi: PiConfig,
+
     /// Model routing rules — route `hint:<name>` to specific provider+model combos.
     #[serde(default)]
     pub model_routes: Vec<ModelRouteConfig>,
@@ -1287,6 +1291,40 @@ fn parse_skills_prompt_injection_mode(raw: &str) -> Option<SkillsPromptInjection
         "compact" => Some(SkillsPromptInjectionMode::Compact),
         _ => None,
     }
+}
+
+/// Pi coding agent configuration (`[pi]` section).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PiConfig {
+    /// LLM provider for Pi (e.g. "minimax", "google").
+    #[serde(default = "PiConfig::default_provider")]
+    pub provider: String,
+    /// Model name (e.g. "MiniMax-M2.7-highspeed", "gemini-2.5-flash").
+    #[serde(default = "PiConfig::default_model")]
+    pub model: String,
+    /// Thinking level: off, minimal, low, medium, high, xhigh.
+    #[serde(default = "PiConfig::default_thinking")]
+    pub thinking: String,
+    /// Key profile name in fallback_api_keys (e.g. "minimax:pi-1").
+    #[serde(default)]
+    pub api_key_profile: Option<String>,
+}
+
+impl Default for PiConfig {
+    fn default() -> Self {
+        Self {
+            provider: Self::default_provider(),
+            model: Self::default_model(),
+            thinking: Self::default_thinking(),
+            api_key_profile: None,
+        }
+    }
+}
+
+impl PiConfig {
+    fn default_provider() -> String { "minimax".into() }
+    fn default_model() -> String { "MiniMax-M2.7-highspeed".into() }
+    fn default_thinking() -> String { "high".into() }
 }
 
 /// Skills loading configuration (`[skills]` section).
@@ -6501,6 +6539,7 @@ impl Default for Config {
             scheduler: SchedulerConfig::default(),
             agent: AgentConfig::default(),
             skills: SkillsConfig::default(),
+            pi: PiConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             heartbeat: HeartbeatConfig::default(),
@@ -9340,6 +9379,7 @@ default_temperature = 0.7
             reliability: ReliabilityConfig::default(),
             scheduler: SchedulerConfig::default(),
             skills: SkillsConfig::default(),
+            pi: PiConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),
@@ -9728,6 +9768,7 @@ tool_dispatcher = "xml"
             reliability: ReliabilityConfig::default(),
             scheduler: SchedulerConfig::default(),
             skills: SkillsConfig::default(),
+            pi: PiConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),

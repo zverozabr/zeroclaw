@@ -55,17 +55,18 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     crate::health::mark_component_ok("daemon");
 
     // Initialize Pi manager
-    // Pi API key: prefer Gemini (no balance issues), fallback to MiniMax
-    let pi_api_key = config
-        .reliability
-        .fallback_api_keys
-        .get("gemini:gemini-fb-1")
-        .or_else(|| config.reliability.fallback_api_keys.get("gemini:gemini-api-2"))
-        .or_else(|| config.reliability.fallback_api_keys.get("gemini:gemini-api-1"))
-        .or_else(|| config.reliability.fallback_api_keys.get("minimax-cn:mm-1"))
+    // Pi coding agent: read provider/model/key from [pi] config section
+    let pi_api_key = config.pi.api_key_profile.as_deref()
+        .and_then(|profile| config.reliability.fallback_api_keys.get(profile))
         .cloned()
         .unwrap_or_default();
-    crate::pi::init_pi_manager(&config.workspace_dir, &pi_api_key);
+    crate::pi::init_pi_manager(
+        &config.workspace_dir,
+        &pi_api_key,
+        &config.pi.provider,
+        &config.pi.model,
+        &config.pi.thinking,
+    );
     // Kill any Pi processes left from previous daemon crash
     crate::pi::cleanup_orphan_pi_processes().await;
 

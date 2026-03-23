@@ -27,13 +27,16 @@ pub struct PiManager {
     instances: Mutex<HashMap<String, PiInstance>>,
     pub(crate) session_store: session::PiSessionStore,
     workspace_dir: PathBuf,
-    minimax_key: String,
+    api_key: String,
+    provider: String,
+    model: String,
+    thinking: String,
 }
 
 static PI_MANAGER: OnceLock<Arc<PiManager>> = OnceLock::new();
 
-pub fn init_pi_manager(workspace_dir: &Path, minimax_key: &str) {
-    let _ = PI_MANAGER.set(Arc::new(PiManager::new(workspace_dir, minimax_key)));
+pub fn init_pi_manager(workspace_dir: &Path, api_key: &str, provider: &str, model: &str, thinking: &str) {
+    let _ = PI_MANAGER.set(Arc::new(PiManager::new(workspace_dir, api_key, provider, model, thinking)));
 }
 
 pub fn pi_manager() -> Option<Arc<PiManager>> {
@@ -56,39 +59,47 @@ pub async fn cleanup_orphan_pi_processes() {
 }
 
 impl PiManager {
-    pub fn new(workspace_dir: &Path, minimax_key: &str) -> Self {
+    pub fn new(workspace_dir: &Path, api_key: &str, provider: &str, model: &str, thinking: &str) -> Self {
         let session_store = session::PiSessionStore::new(workspace_dir.join("pi_sessions.json"));
         Self {
             instances: Mutex::new(HashMap::new()),
             session_store,
             workspace_dir: workspace_dir.to_path_buf(),
-            minimax_key: minimax_key.to_string(),
+            api_key: api_key.to_string(),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            thinking: thinking.to_string(),
         }
     }
 
-    /// Spawn Pi process with MiniMax provider.
+    /// Spawn Pi process with configured provider/model.
     async fn spawn_pi(&self) -> anyhow::Result<PiInstance> {
         info!(
-            provider = "minimax",
-            model = "MiniMax-M2.7-highspeed",
+            provider = %self.provider,
+            model = %self.model,
             workspace = %self.workspace_dir.display(),
             "spawning Pi process"
         );
 
+        // Determine env var name based on provider
+        let api_key_env = match self.provider.as_str() {
+            "minimax" => "MINIMAX_API_KEY",
+            "google" | "gemini" => "GEMINI_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            "openai" => "OPENAI_API_KEY",
+            _ => "MINIMAX_API_KEY",
+        };
+
         let mut child = tokio::process::Command::new("pi")
             .args([
-                "--mode",
-                "rpc",
-                "--provider",
-                "google",
-                "--model",
-                "gemini-2.5-flash",
-                "--thinking",
-                "high",
+                "--mode", "rpc",
+                "--provider", &self.provider,
+                "--model", &self.model,
+                "--thinking", &self.thinking,
                 "--cwd",
             ])
             .arg(&self.workspace_dir)
-            .env("GEMINI_API_KEY", &self.minimax_key)
+            .env(api_key_env, &self.api_key)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -433,7 +444,7 @@ mod tests {
     #[tokio::test]
     async fn kill_idle_removes_expired_instances() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let manager = PiManager::new(tmp.path(), "fake-key");
+        let manager = PiManager::new(tmp.path(), "fake-key", "minimax", "test-model", "off");
 
         // Empty manager: kill_idle must not crash
         manager.kill_idle(Duration::from_secs(0)).await;
@@ -461,7 +472,7 @@ mod tests {
     #[tokio::test]
     async fn kill_idle_keeps_active_instance() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let manager = PiManager::new(tmp.path(), "fake-key");
+        let manager = PiManager::new(tmp.path(), "fake-key", "minimax", "test-model", "off");
 
         manager.insert_test_instance("chat_b", Instant::now()).await;
 
@@ -476,7 +487,7 @@ mod tests {
     #[tokio::test]
     async fn kill_idle_selective_removal() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let manager = PiManager::new(tmp.path(), "fake-key");
+        let manager = PiManager::new(tmp.path(), "fake-key", "minimax", "test-model", "off");
 
         // Insert two instances: one "old" (backdated by subtracting from now),
         // one fresh

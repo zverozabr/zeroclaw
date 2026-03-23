@@ -20,7 +20,7 @@ pub use schema::{
     McpTransport, MemoryConfig, Microsoft365Config, ModelRouteConfig, MultimodalConfig,
     NextcloudTalkConfig, NodeTransportConfig, NodesConfig, NotionConfig, ObservabilityConfig,
     OpenAiSttConfig, OpenAiTtsConfig, OpenVpnTunnelConfig, OtpConfig, OtpMethod,
-    PeripheralBoardConfig, PeripheralsConfig, PluginsConfig, ProjectIntelConfig, ProxyConfig,
+    PeripheralBoardConfig, PeripheralsConfig, PiConfig, PluginsConfig, ProjectIntelConfig, ProxyConfig,
     ProxyScope, QdrantConfig, QueryClassificationConfig, ReliabilityConfig, ResourceLimitsConfig,
     RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig, SecretsConfig, SecurityConfig,
     SecurityOpsConfig, SkillCreationConfig, SkillsConfig, SkillsPromptInjectionMode, SlackConfig,
