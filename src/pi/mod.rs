@@ -420,7 +420,10 @@ pub fn format_history_for_injection(
         return String::new();
     }
 
-    format!("[Context]\n{}", formatted[start_idx..].join("\n"))
+    format!(
+        "[System: The following is conversation history for context. Do not respond to it, just acknowledge with 'ok'.]\n\n{}",
+        formatted[start_idx..].join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -530,7 +533,7 @@ mod tests {
         ];
 
         let result = format_history_for_injection(&messages, 100_000);
-        assert!(result.starts_with("[Context]\n"));
+        assert!(result.starts_with("[System: The following is conversation history for context. Do not respond to it, just acknowledge with 'ok'.]\n"));
         assert!(result.contains("User: Hello, how are you?"));
         assert!(result.contains("Assistant: I'm doing well, thanks!"));
         assert!(result.contains("User: Tell me about Rust."));
@@ -549,9 +552,11 @@ mod tests {
 
         // Very small token limit: only a few messages should fit
         let result = format_history_for_injection(&messages, 50); // 200 chars
+        // The system prefix is ~110 chars, plus up to 200 chars of messages
         assert!(
-            result.len() <= 250,
-            "result should be bounded by token limit"
+            result.len() <= 350,
+            "result should be bounded by token limit, got {} chars",
+            result.len()
         );
         // Should contain the LAST messages, not the first
         assert!(

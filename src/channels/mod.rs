@@ -1099,9 +1099,7 @@ async fn handle_pi_bypass_if_needed(
     // Determine the message for Pi:
     // 1. Explicit prefix "пи, ..." → strip prefix, activate Pi mode
     // 2. Already in Pi mode → use full message as-is
-    let first_activation;
     let pi_message = if let Some(stripped) = detect_pi_prefix(&msg.content) {
-        first_activation = !is_in_pi_mode;
         // Activate persistent Pi mode (drop lock immediately)
         {
             let global = global_route_overrides();
@@ -1122,7 +1120,6 @@ async fn handle_pi_bypass_if_needed(
         }
         stripped
     } else if is_in_pi_mode {
-        first_activation = false;
         // In Pi mode — pass full message
         msg.content.clone()
     } else {
