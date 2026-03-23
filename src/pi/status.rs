@@ -111,13 +111,19 @@ fn tool_icon(name: &str) -> &'static str {
     }
 }
 
-/// Truncate a string to at most `max` characters, appending an ellipsis if
-/// truncated.
+/// Truncate a string to at most `max` *bytes*, appending an ellipsis if
+/// truncated. The cut is always on a char boundary to avoid panics with
+/// multi-byte UTF-8 sequences (e.g. Cyrillic, CJK, emoji).
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}\u{2026}", &s[..max])
+        // Walk back from `max` to find a valid char boundary
+        let boundary = (0..=max)
+            .rev()
+            .find(|&i| s.is_char_boundary(i))
+            .unwrap_or(0);
+        format!("{}\u{2026}", &s[..boundary])
     }
 }
 
