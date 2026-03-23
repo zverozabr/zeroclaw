@@ -199,6 +199,7 @@ where
 
     // 3. Stream events
     let mut thinking_buf = String::new();
+    let mut text_buf = String::new(); // accumulate text_delta as fallback
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -231,8 +232,17 @@ where
                     on_event(&end_ev);
                     thinking_buf.clear();
                 }
+                PiEvent::TextDelta(delta) => {
+                    text_buf.push_str(delta);
+                    on_event(&ev);
+                }
                 PiEvent::AgentEnd { text } => {
-                    let final_text = text.clone();
+                    // Use agent_end text if available, fallback to accumulated text_delta
+                    let final_text = if text.is_empty() && !text_buf.is_empty() {
+                        text_buf.clone()
+                    } else {
+                        text.clone()
+                    };
                     on_event(&ev);
                     return Ok(final_text);
                 }

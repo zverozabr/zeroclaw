@@ -1258,11 +1258,16 @@ async fn handle_pi_bypass_if_needed(
             tokio::time::sleep(Duration::from_millis(500)).await;
             tracing::info!(
                 response_len = response.len(),
+                response_preview = %response.chars().take(100).collect::<String>(),
                 status_msg_id = ?status_msg_id,
                 "Pi final edit: sending clean response"
             );
             if let Some(msg_id) = status_msg_id {
-                notifier.edit_status(msg_id, &response).await;
+                if response.is_empty() {
+                    notifier.edit_status(msg_id, "(Pi completed with no output)").await;
+                } else {
+                    notifier.edit_status(msg_id, &response).await;
+                }
             }
             record_pi_turn(ctx, &history_key, &msg.content, &response);
             tracing::info!("Pi bypass completed successfully");
