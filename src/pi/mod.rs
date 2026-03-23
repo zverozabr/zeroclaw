@@ -148,7 +148,7 @@ impl PiManager {
         let reader = BufReader::new(stdout);
 
         // Wait for startup (MiniMax Pi starts in ~1s; 2s is safe margin)
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
         Ok(PiInstance {
             process: child,
