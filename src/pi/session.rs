@@ -79,21 +79,38 @@ impl PiSessionStore {
             if let Ok(last_active) = chrono::DateTime::parse_from_rfc3339(&entry.last_active) {
                 let age = now.signed_duration_since(last_active);
                 if age > chrono::Duration::from_std(max_age).unwrap_or(chrono::Duration::days(30)) {
-                    // Delete session file from disk
-                    let _ = std::fs::remove_file(&entry.session_file);
                     to_remove.push(key.clone());
                 }
             }
         }
 
-        if !to_remove.is_empty() {
-            for key in &to_remove {
-                map.remove(key);
+        let mut removed = 0;
+        let mut file_errors = 0;
+
+        for key in &to_remove {
+            if let Some(entry) = map.get(key) {
+                match std::fs::remove_file(&entry.session_file) {
+                    Ok(()) => removed += 1,
+                    Err(e) => {
+                        tracing::debug!(
+                            path = %entry.session_file,
+                            error = %e,
+                            "Failed to delete Pi session file"
+                        );
+                        file_errors += 1;
+                    }
+                }
             }
+            map.remove(key);
+        }
+
+        if !to_remove.is_empty() {
             self.write_map(&map);
             tracing::info!(
-                removed = to_remove.len(),
-                "Pi session cleanup: removed old sessions"
+                entries_removed = to_remove.len(),
+                files_deleted = removed,
+                file_errors,
+                "Pi session cleanup completed"
             );
         }
     }
@@ -187,5 +204,24 @@ mod tests {
         let store = PiSessionStore::new(dir.path().join("sessions.json"));
         // Should not panic on missing file
         store.cleanup(std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn cleanup_handles_missing_session_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PiSessionStore::new(dir.path().join("sessions.json"));
+        // Save with non-existent session file
+        store.save("old_key", "/tmp/nonexistent_pi_session_12345.jsonl");
+
+        // Manually backdate
+        let data = std::fs::read_to_string(store.path()).unwrap();
+        let mut map: HashMap<String, serde_json::Value> = serde_json::from_str(&data).unwrap();
+        map.get_mut("old_key").unwrap()["last_active"] =
+            serde_json::Value::String("2020-01-01T00:00:00+00:00".to_string());
+        std::fs::write(store.path(), serde_json::to_string_pretty(&map).unwrap()).unwrap();
+
+        // Cleanup should not panic even though file doesn't exist
+        store.cleanup(std::time::Duration::from_secs(86400));
+        assert_eq!(store.load("old_key"), None); // Entry removed from JSON
     }
 }
