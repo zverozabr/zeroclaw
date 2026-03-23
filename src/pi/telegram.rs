@@ -6,6 +6,7 @@ pub struct TelegramNotifier {
     client: reqwest::Client,
     bot_token: String,
     chat_id: String,
+    thread_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -20,11 +21,12 @@ struct MessageResult {
 }
 
 impl TelegramNotifier {
-    pub fn new(bot_token: &str, chat_id: &str) -> Self {
+    pub fn new(bot_token: &str, chat_id: &str, thread_id: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
             bot_token: bot_token.to_string(),
             chat_id: chat_id.to_string(),
+            thread_id,
         }
     }
 
@@ -32,14 +34,18 @@ impl TelegramNotifier {
     pub async fn send_status(&self, text: &str) -> Option<i64> {
         let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
 
+        let mut payload = serde_json::json!({
+            "chat_id": &self.chat_id,
+            "text": text,
+        });
+        if let Some(ref tid) = self.thread_id {
+            payload["message_thread_id"] = serde_json::Value::String(tid.clone());
+        }
+
         let resp = self
             .client
             .post(&url)
-            .json(&serde_json::json!({
-                "chat_id": &self.chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-            }))
+            .json(&payload)
             .send()
             .await
             .ok()?;
@@ -66,8 +72,7 @@ impl TelegramNotifier {
                 "chat_id": &self.chat_id,
                 "message_id": message_id,
                 "text": text,
-                "parse_mode": "HTML",
-            }))
+                            }))
             .send()
             .await;
     }
