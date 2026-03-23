@@ -205,9 +205,9 @@ where
             anyhow::bail!("timeout waiting for agent_end");
         }
 
-        let val = match recv_line(reader, remaining).await {
+        let val = match recv_line(reader, Duration::from_secs(5).min(remaining)).await {
             Some(v) => v,
-            None => anyhow::bail!("stream ended without agent_end"),
+            None => continue, // retry — might be slow tool execution
         };
 
         // Auto-cancel extension_ui_request

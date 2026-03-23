@@ -21,6 +21,7 @@ struct PiInstance {
     session_file: Option<String>,
     last_active: Instant,
     history_injected: bool,
+    prompt_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub struct PiManager {
@@ -35,8 +36,20 @@ pub struct PiManager {
 
 static PI_MANAGER: OnceLock<Arc<PiManager>> = OnceLock::new();
 
-pub fn init_pi_manager(workspace_dir: &Path, api_key: &str, provider: &str, model: &str, thinking: &str) {
-    let _ = PI_MANAGER.set(Arc::new(PiManager::new(workspace_dir, api_key, provider, model, thinking)));
+pub fn init_pi_manager(
+    workspace_dir: &Path,
+    api_key: &str,
+    provider: &str,
+    model: &str,
+    thinking: &str,
+) {
+    let _ = PI_MANAGER.set(Arc::new(PiManager::new(
+        workspace_dir,
+        api_key,
+        provider,
+        model,
+        thinking,
+    )));
 }
 
 pub fn pi_manager() -> Option<Arc<PiManager>> {
@@ -59,7 +72,13 @@ pub async fn cleanup_orphan_pi_processes() {
 }
 
 impl PiManager {
-    pub fn new(workspace_dir: &Path, api_key: &str, provider: &str, model: &str, thinking: &str) -> Self {
+    pub fn new(
+        workspace_dir: &Path,
+        api_key: &str,
+        provider: &str,
+        model: &str,
+        thinking: &str,
+    ) -> Self {
         let session_store = session::PiSessionStore::new(workspace_dir.join("pi_sessions.json"));
         Self {
             instances: Mutex::new(HashMap::new()),
@@ -90,16 +109,25 @@ impl PiManager {
             _ => "MINIMAX_API_KEY",
         };
 
+        // Get gateway creds at spawn time (available after gateway starts)
+        let (gw_token, gw_url) =
+            crate::skills::get_gateway_creds_for_skill("coder").unwrap_or_default();
+
         let mut child = tokio::process::Command::new("pi")
             .args([
                 "--mode", "rpc",
                 "--provider", &self.provider,
                 "--model", &self.model,
                 "--thinking", &self.thinking,
+                "--append-system-prompt",
+                "Думай и отвечай на русском языке. Ты — admin-агент ZeroClaw. У тебя полный доступ к gateway API через env vars ZEROCLAW_GATEWAY_URL и ZEROCLAW_GATEWAY_TOKEN. Используй curl для вызова API: memory (GET/POST/DELETE /api/memory), cron (GET/POST/DELETE /api/cron), config (GET/PUT /api/config), history (GET/DELETE /api/history/{key}), health (GET /api/health). Авторизация: -H 'Authorization: Bearer $ZEROCLAW_GATEWAY_TOKEN'. Также можешь редактировать skills в $ZEROCLAW_WORKSPACE/skills/, исходный код в ~/work/erp/zeroclaws/.",
                 "--cwd",
             ])
             .arg(&self.workspace_dir)
             .env(api_key_env, &self.api_key)
+            .env("ZEROCLAW_GATEWAY_URL", &gw_url)
+            .env("ZEROCLAW_GATEWAY_TOKEN", &gw_token)
+            .env("ZEROCLAW_WORKSPACE", self.workspace_dir.to_string_lossy().as_ref())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -123,6 +151,7 @@ impl PiManager {
             session_file: None,
             last_active: Instant::now(),
             history_injected: false,
+            prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -169,7 +198,20 @@ impl PiManager {
         let preview: String = message.chars().take(80).collect();
         info!(history_key, message_preview = %preview, "sending prompt to Pi");
 
+        // Get the prompt lock (clone Arc to avoid holding instances lock)
+        let prompt_lock = {
+            let instances = self.instances.lock().await;
+            let instance = instances
+                .get(history_key)
+                .ok_or_else(|| anyhow::anyhow!("no Pi instance for {}", history_key))?;
+            instance.prompt_lock.clone()
+        };
+
+        // Wait for any in-progress prompt to finish
+        let _guard = prompt_lock.lock().await;
+
         let start = Instant::now();
+        // Re-acquire instances lock after prompt_lock to avoid deadlock
         let mut instances = self.instances.lock().await;
         let instance = instances
             .get_mut(history_key)
@@ -312,6 +354,7 @@ impl PiManager {
             session_file: None,
             last_active,
             history_injected: false,
+            prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         self.instances
@@ -563,7 +606,7 @@ mod tests {
 
         // Very small token limit: only a few messages should fit
         let result = format_history_for_injection(&messages, 50); // 200 chars
-        // The system prefix is ~110 chars, plus up to 200 chars of messages
+                                                                  // The system prefix is ~110 chars, plus up to 200 chars of messages
         assert!(
             result.len() <= 350,
             "result should be bounded by token limit, got {} chars",
