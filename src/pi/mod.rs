@@ -80,15 +80,15 @@ impl PiManager {
                 "--mode",
                 "rpc",
                 "--provider",
-                "minimax",
+                "google",
                 "--model",
-                "MiniMax-M2.7-highspeed",
+                "gemini-2.5-flash",
                 "--thinking",
                 "high",
                 "--cwd",
             ])
             .arg(&self.workspace_dir)
-            .env("MINIMAX_API_KEY", &self.minimax_key)
+            .env("GEMINI_API_KEY", &self.minimax_key)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
