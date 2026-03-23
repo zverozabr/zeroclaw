@@ -52,22 +52,39 @@ impl TelegramNotifier {
         }
     }
 
-    /// Edit an existing message. Errors are silently ignored.
+    /// Edit an existing message. Logs errors instead of silently ignoring.
     pub async fn edit_status(&self, message_id: i64, text: &str) {
         let url = format!(
             "https://api.telegram.org/bot{}/editMessageText",
             self.bot_token
         );
 
-        let _ = self
-            .client
-            .post(&url)
-            .json(&serde_json::json!({
+        let mut payload = serde_json::json!({
             "chat_id": &self.chat_id,
             "message_id": message_id,
             "text": text,
-                        }))
-            .send()
-            .await;
+        });
+        if let Some(ref tid) = self.thread_id {
+            payload["message_thread_id"] = serde_json::Value::String(tid.clone());
+        }
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    tracing::warn!(
+                        status = %status,
+                        body = %body.chars().take(200).collect::<String>(),
+                        chat_id = %self.chat_id,
+                        message_id,
+                        "Pi Telegram edit_status failed"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Pi Telegram edit_status request failed");
+            }
+        }
     }
 }

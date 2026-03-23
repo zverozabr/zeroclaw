@@ -1256,6 +1256,11 @@ async fn handle_pi_bypass_if_needed(
             // Wait briefly for any in-flight spawned edits to complete,
             // then overwrite with the clean response.
             tokio::time::sleep(Duration::from_millis(500)).await;
+            tracing::info!(
+                response_len = response.len(),
+                status_msg_id = ?status_msg_id,
+                "Pi final edit: sending clean response"
+            );
             if let Some(msg_id) = status_msg_id {
                 notifier.edit_status(msg_id, &response).await;
             }
