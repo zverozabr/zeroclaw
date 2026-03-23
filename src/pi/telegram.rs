@@ -42,13 +42,7 @@ impl TelegramNotifier {
             payload["message_thread_id"] = serde_json::Value::String(tid.clone());
         }
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .ok()?;
+        let resp = self.client.post(&url).json(&payload).send().await.ok()?;
 
         let body: SendResponse = resp.json().await.ok()?;
         if body.ok {
@@ -69,10 +63,10 @@ impl TelegramNotifier {
             .client
             .post(&url)
             .json(&serde_json::json!({
-                "chat_id": &self.chat_id,
-                "message_id": message_id,
-                "text": text,
-                            }))
+            "chat_id": &self.chat_id,
+            "message_id": message_id,
+            "text": text,
+                        }))
             .send()
             .await;
     }

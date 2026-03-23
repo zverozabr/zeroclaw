@@ -861,6 +861,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/health", get(api::handle_api_health))
         .route("/api/sessions", get(api::handle_api_sessions_list))
         .route("/api/sessions/{id}", delete(api::handle_api_session_delete))
+        .route("/api/history", get(api::handle_api_history_list))
         .route(
             "/api/history/{sender_key}",
             get(api::handle_api_history_get).delete(api::handle_api_history_delete),

@@ -56,7 +56,10 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     // Initialize Pi manager
     // Pi coding agent: read provider/model/key from [pi] config section
-    let pi_api_key = config.pi.api_key_profile.as_deref()
+    let pi_api_key = config
+        .pi
+        .api_key_profile
+        .as_deref()
         .and_then(|profile| config.reliability.fallback_api_keys.get(profile))
         .cloned()
         .unwrap_or_default();

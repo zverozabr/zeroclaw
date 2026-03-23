@@ -1284,6 +1284,40 @@ pub async fn handle_api_session_delete(
     }
 }
 
+/// GET /api/history — list all active chats grouped by sender_key.
+pub async fn handle_api_history_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let chats = if let Some(ref histories) = state.conversation_histories {
+        let map = histories.lock().unwrap_or_else(|e| e.into_inner());
+        map.iter()
+            .map(|(key, turns)| {
+                serde_json::json!({
+                    "sender_key": key,
+                    "message_count": turns.len(),
+                    "last_message": turns.last().map(|m| serde_json::json!({
+                        "role": &m.role,
+                        "content": m.content.chars().take(100).collect::<String>(),
+                    })),
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+
+    Json(serde_json::json!({
+        "chats": chats,
+        "count": chats.len(),
+    }))
+    .into_response()
+}
+
 /// GET /api/history/{sender_key} — read conversation history for a sender.
 pub async fn handle_api_history_get(
     State(state): State<AppState>,

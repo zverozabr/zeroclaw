@@ -1322,9 +1322,15 @@ impl Default for PiConfig {
 }
 
 impl PiConfig {
-    fn default_provider() -> String { "minimax".into() }
-    fn default_model() -> String { "MiniMax-M2.7-highspeed".into() }
-    fn default_thinking() -> String { "high".into() }
+    fn default_provider() -> String {
+        "minimax".into()
+    }
+    fn default_model() -> String {
+        "MiniMax-M2.7-highspeed".into()
+    }
+    fn default_thinking() -> String {
+        "high".into()
+    }
 }
 
 /// Skills loading configuration (`[skills]` section).
