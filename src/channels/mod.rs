@@ -2397,6 +2397,7 @@ fn handle_models_command(
             if hint.eq_ignore_ascii_case("pi") {
                 current.pi_mode = true;
                 set_route_selection(ctx, sender_key, current.clone());
+                tracing::info!(sender = %sender_key, "Pi mode activated");
                 if let Some(mgr) = crate::pi::pi_manager() {
                     let key = sender_key.to_string();
                     tokio::spawn(async move {
@@ -2413,6 +2414,7 @@ fn handle_models_command(
             let was_pi_mode = current.pi_mode;
             if current.pi_mode {
                 current.pi_mode = false;
+                tracing::info!(sender = %sender_key, "Pi mode deactivated");
                 set_route_selection(ctx, sender_key, current.clone());
                 if let Some(mgr) = crate::pi::pi_manager() {
                     let key = sender_key.to_string();
