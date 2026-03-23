@@ -155,8 +155,8 @@ pub async fn recv_line(
         Ok(Ok(n)) if *n > 0 => {
             tracing::trace!(bytes = n, line_preview = %buf.chars().take(80).collect::<String>(), "recv_line: got data");
         }
-        Ok(Ok(_)) => { tracing::info!("recv_line: EOF (0 bytes)"); }
-        Ok(Err(e)) => { tracing::info!(error = %e, "recv_line: read error"); }
+        Ok(Ok(_)) => { tracing::debug!("recv_line: EOF (0 bytes)"); }
+        Ok(Err(e)) => { tracing::debug!(error = %e, "recv_line: read error"); }
         Err(_) => { /* timeout — normal, don't log */ }
     }
     match result {
@@ -211,12 +211,12 @@ where
         "type": "prompt",
         "message": message,
     });
-    tracing::info!("rpc_prompt: sending prompt");
+    tracing::debug!("rpc_prompt: sending prompt");
     send(stdin, &prompt).await?;
 
     // 2. Wait for ACK
     let deadline = tokio::time::Instant::now() + dur;
-    tracing::info!("rpc_prompt: waiting for ACK");
+    tracing::debug!("rpc_prompt: waiting for ACK");
     let ack = recv_response(reader, "prompt", dur)
         .await
         .ok_or_else(|| anyhow::anyhow!("timeout waiting for prompt ACK"))?;
@@ -224,7 +224,7 @@ where
     if ack.get("success").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!("prompt rejected: {}", ack);
     }
-    tracing::info!("rpc_prompt: ACK received, streaming events");
+    tracing::debug!("rpc_prompt: ACK received, streaming events");
 
     // 3. Stream events
     let mut thinking_buf = String::new();
@@ -243,7 +243,7 @@ where
         };
         event_count += 1;
         let etype = val.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-        tracing::info!(event_count, event_type = etype, "rpc_prompt: received event");
+        tracing::debug!(event_count, event_type = etype, "rpc_prompt: received event");
 
         // Auto-cancel extension_ui_request
         if val.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
