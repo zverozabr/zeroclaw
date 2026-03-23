@@ -168,12 +168,7 @@ fn print_entry(entry: &super::traits::MemoryEntry) {
     println!("\n{}", entry.content);
 }
 
-async fn handle_store(
-    config: &Config,
-    key: &str,
-    content: &str,
-    category: &str,
-) -> Result<()> {
+async fn handle_store(config: &Config, key: &str, content: &str, category: &str) -> Result<()> {
     let mem = create_cli_memory(config)?;
     let cat = parse_category(category);
 

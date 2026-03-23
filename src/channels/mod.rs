@@ -1173,8 +1173,8 @@ async fn handle_pi_bypass_if_needed(
         return true;
     }
 
-    // Inject ZeroClaw conversation history on first activation
-    if first_activation && mgr.needs_history_injection(&history_key).await {
+    // Inject ZeroClaw conversation history when Pi hasn't received it yet
+    if mgr.needs_history_injection(&history_key).await {
         let history: Vec<ChatMessage> = ctx
             .conversation_histories
             .lock()
@@ -1183,7 +1183,7 @@ async fn handle_pi_bypass_if_needed(
             .cloned()
             .unwrap_or_default();
         if !history.is_empty() {
-            if let Err(e) = mgr.inject_history(&history_key, &history, 4000).await {
+            if let Err(e) = mgr.inject_history(&history_key, &history, 100_000).await {
                 tracing::warn!(error = %e, "Failed to inject history into Pi");
             }
         }
@@ -1223,7 +1223,9 @@ async fn handle_pi_bypass_if_needed(
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_millis() as u64;
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX);
                 let prev = last_edit_at.load(Ordering::Relaxed);
                 if now_ms - prev >= 800 {
                     last_edit_at.store(now_ms, Ordering::Relaxed);
