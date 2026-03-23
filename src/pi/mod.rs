@@ -199,6 +199,18 @@ impl PiManager {
             rpc::rpc_new_session(&mut instance.stdin, &mut instance.stdout).await;
         }
 
+        // Drain any leftover events from session management before prompt
+        // (new_session/switch_session responses may arrive late)
+        loop {
+            match rpc::recv_line(&mut instance.stdout, Duration::from_millis(200)).await {
+                Some(val) => {
+                    let t = val.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                    tracing::debug!(event_type = t, "drained leftover event after session setup");
+                }
+                None => break, // no more pending events
+            }
+        }
+
         let mut instances = self.instances.lock().await;
         instances.insert(history_key.to_string(), instance);
         Ok(())
