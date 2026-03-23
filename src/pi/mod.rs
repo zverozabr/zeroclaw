@@ -192,7 +192,7 @@ impl PiManager {
                     instances.remove(history_key);
                 }
                 _ => {
-                    info!(history_key, "Pi already running");
+                    tracing::debug!(history_key, "Pi already running");
                     return Ok(());
                 }
             }
