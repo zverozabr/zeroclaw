@@ -10,55 +10,31 @@ description: "ZeroClaw admin — manage chats, memory, cron, config, skills, Tel
 ## КРИТИЧЕСКИ ВАЖНО: Telegram ограничения
 
 ### ЗАПРЕЩЕНО (НИКОГДА не делай):
-- НЕ ОТПРАВЛЯЙ сообщения через Telethon (client.send_message) — это пишет ОТ ИМЕНИ ПОЛЬЗОВАТЕЛЯ
-- НЕ ПИШИ в группы, каналы или чужие чаты — ни через Bot API, ни через Telethon
-- НЕ используй Telethon для отправки — ТОЛЬКО для чтения
+- НЕ ОТПРАВЛЯЙ сообщения через Telethon, Bot API, или любым другим способом
+- НЕ ПИШИ в группы, каналы или чужие чаты
+- НЕ используй Telethon напрямую — у тебя НЕТ доступа к session-файлам и Bot Token
 
 ### РАЗРЕШЕНО:
-- ЧИТАТЬ сообщения из любого чата через Telethon (get_messages, get_dialogs)
+- ЧИТАТЬ сообщения из Telegram — делегируй через POST /webhook (бот вызовет telegram_search skill)
 - ОТВЕЧАТЬ пользователю — ты и так отвечаешь в текущем чате, просто пиши ответ
-- Делегировать ZeroClaw боту через webhook: `POST $ZEROCLAW_GATEWAY_URL/webhook` — бот обработает через свои skills
+- Делегировать ZeroClaw боту через webhook: `POST $ZEROCLAW_GATEWAY_URL/webhook`
 
 ### Как правильно:
-- "поищи в чате X" → ЧИТАЙ через Telethon get_messages → ОТВЕЧАЙ результатами пользователю
+- "поищи в чате X" → POST /webhook с запросом "поищи в чате X ..." → ОТВЕЧАЙ результатами пользователю
+- "прочитай последние сообщения" → POST /webhook с запросом → получи ответ → покажи пользователю
 - "отправь сообщение в чат" → ОТКАЖИ, объясни что можешь только читать и отвечать тебе
 - "сделай запрос к боту" → POST /webhook
 
 ## Telegram
 
-### Чтение сообщений из любого чата
+### Чтение сообщений — через делегирование ZeroClaw боту
 ```bash
-~/.zeroclaw/workspace/.venv/bin/python3 -c "
-import asyncio
-from telethon import TelegramClient
-c = TelegramClient(
-    '$HOME/.zeroclaw/workspace/skills/telegram-reader/.session/zverozabr_session',
-    38309428, '1f9a006d55531cfd387246cd0fff83f8')
-async def main():
-    await c.connect()
-    msgs = await c.get_messages(CHAT_ID, limit=10)
-    for m in msgs:
-        print(f'{m.sender_id}: {m.text[:100] if m.text else \"(media)\"}')
-    await c.disconnect()
-asyncio.run(main())
-"
+curl -s -H "Authorization: Bearer $ZEROCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$ZEROCLAW_GATEWAY_URL/webhook" \
+  -d '{"message":"прочитай последние 10 сообщений из чата CHAT_NAME"}'
 ```
-Замени `CHAT_ID` на ID чата (число). Для поиска чатов по названию:
-```bash
-~/.zeroclaw/workspace/.venv/bin/python3 -c "
-import asyncio
-from telethon import TelegramClient
-c = TelegramClient(
-    '$HOME/.zeroclaw/workspace/skills/telegram-reader/.session/zverozabr_session',
-    38309428, '1f9a006d55531cfd387246cd0fff83f8')
-async def main():
-    await c.connect()
-    for d in await c.get_dialogs(limit=200):
-        print(f'{d.id} | {d.name}')
-    await c.disconnect()
-asyncio.run(main())
-"
-```
+Замени `CHAT_NAME` на название чата. Бот использует telegram_search skill для поиска и чтения.
 
 ### Делегирование задач ZeroClaw
 Когда нужны skills бота (telegram_search, gmaps, erp):
@@ -135,7 +111,7 @@ cargo build --release && ./dev/restart-daemon.sh
 ## Правила
 - НИКОГДА не говори "я не могу" — у тебя полный доступ
 - Отвечай на русском
-- Для Telegram чтения — Telethon (python)
-- Для Telegram отправки — Bot API (curl)
+- Для Telegram чтения — делегируй через POST /webhook (бот вызовет telegram skills)
+- Telegram отправка — ЗАПРЕЩЕНА (нет Bot Token, нет Telethon session)
 - Для skills бота — webhook
 - Для API управления — gateway endpoints

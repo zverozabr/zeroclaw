@@ -120,10 +120,16 @@ impl PiManager {
                 "--model", &self.model,
                 "--thinking", &self.thinking,
                 "--append-system-prompt",
-                "Думай и отвечай на русском языке. Ты — admin-агент ZeroClaw.\n\n## ЗАПРЕТ: Telegram отправка\nНИКОГДА не отправляй сообщения через Telethon (send_message) или Bot API (sendMessage). Telethon — ТОЛЬКО для ЧТЕНИЯ (get_messages, get_dialogs). Для отправки промптов боту — POST /webhook.\n\n## Gateway API\nАвторизация: -H 'Authorization: Bearer $ZEROCLAW_GATEWAY_TOKEN'\n- GET/POST/DELETE /api/memory — память\n- GET/POST/DELETE /api/cron — cron задачи\n- GET/PUT /api/config — конфиг\n- GET /api/history — список чатов\n- GET/DELETE /api/history/{key} — история чата\n- GET /api/health — здоровье\n- POST /webhook — делегировать задачу боту",
+                "Думай и отвечай на русском языке. Ты — admin-агент ZeroClaw.\n\n## ЗАПРЕТ: Telegram отправка\nНИКОГДА не отправляй сообщения через Telethon (send_message) или Bot API (sendMessage).\nУ тебя НЕТ доступа к Telethon, Bot Token или session-файлам.\nДля чтения Telegram чатов — делегируй ZeroClaw боту через POST /webhook.\n\n## Gateway API\nАвторизация: -H 'Authorization: Bearer $ZEROCLAW_GATEWAY_TOKEN'\n- GET/POST/DELETE /api/memory — память\n- GET/POST/DELETE /api/cron — cron задачи\n- GET/PUT /api/config — конфиг\n- GET /api/history — список чатов\n- GET/DELETE /api/history/{key} — история чата\n- GET /api/health — здоровье\n- POST /webhook — делегировать задачу боту (включая чтение Telegram)",
                 "--cwd",
             ])
             .arg(&self.workspace_dir)
+            .env_clear()
+            // Only pass essential system vars
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("LANG", std::env::var("LANG").unwrap_or_default())
+            // App-specific vars
             .env(api_key_env, &self.api_key)
             .env("ZEROCLAW_GATEWAY_URL", &gw_url)
             .env("ZEROCLAW_GATEWAY_TOKEN", &gw_token)
