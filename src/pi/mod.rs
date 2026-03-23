@@ -25,7 +25,7 @@ struct PiInstance {
 
 pub struct PiManager {
     instances: Mutex<HashMap<String, PiInstance>>,
-    session_store: session::PiSessionStore,
+    pub(crate) session_store: session::PiSessionStore,
     workspace_dir: PathBuf,
     minimax_key: String,
 }
@@ -38,6 +38,21 @@ pub fn init_pi_manager(workspace_dir: &Path, minimax_key: &str) {
 
 pub fn pi_manager() -> Option<Arc<PiManager>> {
     PI_MANAGER.get().cloned()
+}
+
+/// Kill any orphaned Pi processes from previous daemon runs.
+/// Called once at daemon startup before normal operation.
+pub async fn cleanup_orphan_pi_processes() {
+    let output = tokio::process::Command::new("pkill")
+        .args(["-f", "pi --mode rpc"])
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            info!("Killed orphaned Pi processes from previous run");
+        }
+    }
 }
 
 impl PiManager {
@@ -288,7 +303,10 @@ impl PiManager {
             history_injected: false,
         };
 
-        self.instances.lock().await.insert(key.to_string(), instance);
+        self.instances
+            .lock()
+            .await
+            .insert(key.to_string(), instance);
     }
 
     /// Inject ZeroClaw conversation history into Pi as context.
@@ -298,48 +316,111 @@ impl PiManager {
         messages: &[crate::providers::ChatMessage],
         token_limit: usize,
     ) -> anyhow::Result<()> {
-        // Format messages as context block
-        let mut formatted = Vec::new();
-        for msg in messages {
-            let role = if msg.role == "user" {
-                "User"
-            } else {
-                "Assistant"
-            };
-            formatted.push(format!("{}: {}", role, msg.content));
-        }
+        let context = format_history_for_injection(messages, token_limit);
 
-        // Estimate 4 chars per token, take last N messages fitting token_limit
-        let char_limit = token_limit * 4;
-        let mut total_chars = 0;
-        let mut start_idx = formatted.len();
-        for (i, line) in formatted.iter().enumerate().rev() {
-            total_chars += line.len() + 1; // +1 for newline
-            if total_chars > char_limit {
-                break;
+        // Guard: skip injection if context is too short to be useful
+        if context.len() < 50 {
+            info!(
+                history_key,
+                context_len = context.len(),
+                "skipping history injection: context too short"
+            );
+            let mut instances = self.instances.lock().await;
+            if let Some(instance) = instances.get_mut(history_key) {
+                instance.history_injected = true;
             }
-            start_idx = i;
+            return Ok(());
         }
 
-        let context = format!("[Context]\n{}", formatted[start_idx..].join("\n"));
+        let message_count = messages.len();
+        let total_chars = context.len();
+        info!(
+            history_key,
+            message_count, total_chars, "injecting ZeroClaw history into Pi"
+        );
 
         let mut instances = self.instances.lock().await;
         let instance = instances
             .get_mut(history_key)
             .ok_or_else(|| anyhow::anyhow!("no Pi instance for {}", history_key))?;
 
-        rpc::rpc_prompt(
+        let result = rpc::rpc_prompt(
             &mut instance.stdin,
             &mut instance.stdout,
             &context,
             Duration::from_secs(300),
             |_| {},
         )
-        .await?;
+        .await;
 
-        instance.history_injected = true;
+        match result {
+            Ok(_) => {
+                instance.history_injected = true;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    history_key,
+                    error = %e,
+                    total_chars,
+                    "Pi rejected history injection, continuing without context"
+                );
+                instance.history_injected = true;
+            }
+        }
+
         Ok(())
     }
+}
+
+/// Max chars for a single message before truncation (roughly 2k tokens).
+const MAX_MESSAGE_CHARS: usize = 8_000;
+
+/// Format conversation history into a context string for Pi injection.
+///
+/// Truncates individual long messages, then takes the last N messages
+/// that fit within `token_limit` (estimated at 4 chars/token).
+pub fn format_history_for_injection(
+    messages: &[crate::providers::ChatMessage],
+    token_limit: usize,
+) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+
+    let mut formatted = Vec::with_capacity(messages.len());
+    for msg in messages {
+        let role = if msg.role == "user" {
+            "User"
+        } else {
+            "Assistant"
+        };
+        let content = if msg.content.len() > MAX_MESSAGE_CHARS {
+            let truncated: String = msg.content.chars().take(MAX_MESSAGE_CHARS).collect();
+            format!("{}... [truncated]", truncated)
+        } else {
+            msg.content.clone()
+        };
+        formatted.push(format!("{}: {}", role, content));
+    }
+
+    // Estimate 4 chars per token, take last N messages fitting token_limit
+    let char_limit = token_limit * 4;
+    let mut total_chars = 0;
+    let mut start_idx = formatted.len();
+    for (i, line) in formatted.iter().enumerate().rev() {
+        let line_cost = line.len() + 1; // +1 for newline
+        if total_chars + line_cost > char_limit {
+            break;
+        }
+        total_chars += line_cost;
+        start_idx = i;
+    }
+
+    if start_idx >= formatted.len() {
+        return String::new();
+    }
+
+    format!("[Context]\n{}", formatted[start_idx..].join("\n"))
 }
 
 #[cfg(test)]
@@ -356,15 +437,11 @@ mod tests {
         assert!(!manager.is_running("chat_a").await);
 
         // Insert an instance whose last_active is "now"
-        manager
-            .insert_test_instance("chat_a", Instant::now())
-            .await;
+        manager.insert_test_instance("chat_a", Instant::now()).await;
         assert!(manager.is_running("chat_a").await);
 
         // kill_idle with a generous timeout should keep it alive
-        manager
-            .kill_idle(Duration::from_secs(30 * 60))
-            .await;
+        manager.kill_idle(Duration::from_secs(30 * 60)).await;
         assert!(
             manager.is_running("chat_a").await,
             "instance should survive when idle time < max_idle"
@@ -383,14 +460,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let manager = PiManager::new(tmp.path(), "fake-key");
 
-        manager
-            .insert_test_instance("chat_b", Instant::now())
-            .await;
+        manager.insert_test_instance("chat_b", Instant::now()).await;
 
         // With a large timeout the instance stays
-        manager
-            .kill_idle(Duration::from_secs(60 * 60))
-            .await;
+        manager.kill_idle(Duration::from_secs(60 * 60)).await;
         assert!(manager.is_running("chat_b").await);
 
         // Clean up: kill it so the sleep process doesn't linger
@@ -413,9 +486,7 @@ mod tests {
             .await;
 
         // Kill anything idle > 30 min
-        manager
-            .kill_idle(Duration::from_secs(30 * 60))
-            .await;
+        manager.kill_idle(Duration::from_secs(30 * 60)).await;
 
         assert!(
             !manager.is_running("old_chat").await,
@@ -428,5 +499,106 @@ mod tests {
 
         // Clean up
         manager.kill_idle(Duration::from_secs(0)).await;
+    }
+
+    #[test]
+    fn format_history_empty_messages() {
+        let result = format_history_for_injection(&[], 100_000);
+        assert!(
+            result.is_empty(),
+            "empty messages should produce empty string"
+        );
+    }
+
+    #[test]
+    fn format_history_formats_messages_correctly() {
+        use crate::providers::ChatMessage;
+
+        let messages = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: "Hello, how are you?".to_string(),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "I'm doing well, thanks!".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "Tell me about Rust.".to_string(),
+            },
+        ];
+
+        let result = format_history_for_injection(&messages, 100_000);
+        assert!(result.starts_with("[Context]\n"));
+        assert!(result.contains("User: Hello, how are you?"));
+        assert!(result.contains("Assistant: I'm doing well, thanks!"));
+        assert!(result.contains("User: Tell me about Rust."));
+    }
+
+    #[test]
+    fn format_history_respects_token_limit() {
+        use crate::providers::ChatMessage;
+
+        let messages: Vec<ChatMessage> = (0..100)
+            .map(|i| ChatMessage {
+                role: "user".to_string(),
+                content: format!("Message number {} with some padding text here", i),
+            })
+            .collect();
+
+        // Very small token limit: only a few messages should fit
+        let result = format_history_for_injection(&messages, 50); // 200 chars
+        assert!(
+            result.len() <= 250,
+            "result should be bounded by token limit"
+        );
+        // Should contain the LAST messages, not the first
+        assert!(
+            result.contains("Message number 99"),
+            "should include last message"
+        );
+        assert!(
+            !result.contains("Message number 0"),
+            "should not include first message"
+        );
+    }
+
+    #[test]
+    fn format_history_truncates_long_messages() {
+        use crate::providers::ChatMessage;
+
+        let long_content = "x".repeat(20_000);
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: long_content,
+        }];
+
+        let result = format_history_for_injection(&messages, 100_000);
+        assert!(
+            result.contains("... [truncated]"),
+            "long message should be truncated"
+        );
+        assert!(
+            result.len() < 10_000,
+            "truncated result should be much shorter than 20k"
+        );
+    }
+
+    #[test]
+    fn format_history_skips_when_nothing_fits() {
+        use crate::providers::ChatMessage;
+
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "A".repeat(1000),
+        }];
+
+        // Token limit so small that even one message won't fit
+        let result = format_history_for_injection(&messages, 1); // 4 chars
+        assert!(
+            result.is_empty(),
+            "should return empty when nothing fits in token limit"
+        );
     }
 }
