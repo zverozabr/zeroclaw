@@ -1228,14 +1228,10 @@ async fn handle_pi_bypass_if_needed(
 
     match result {
         Ok(response) => {
-            // Update status with final response
-            let rendered = {
-                let mut sb = status.lock().unwrap();
-                sb.on_response_text(&response);
-                sb.render()
-            };
+            // Final edit: show ONLY the clean response text (no StatusBuilder
+            // thinking/tool sections — those are for live progress only).
             if let Some(msg_id) = status_msg_id {
-                notifier.edit_status(msg_id, &rendered).await;
+                notifier.edit_status(msg_id, &response).await;
             }
             record_pi_turn(ctx, &history_key, &msg.content, &response);
             tracing::info!("Pi bypass completed successfully");
