@@ -3821,7 +3821,7 @@ async fn process_channel_message(
                 let same_family = req_base == act_base
                     || req_base.starts_with(act_base)
                     || act_base.starts_with(req_base);
-                if !same_family {
+                if !same_family && !delivered_response.contains("unavailable — response from") {
                     use std::fmt::Write as _;
                     write!(
                         delivered_response,
