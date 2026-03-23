@@ -263,6 +263,34 @@ impl PiManager {
             .map_or(false, |inst| !inst.history_injected)
     }
 
+    /// Insert a fake instance for testing (bypasses spawn_pi).
+    #[cfg(test)]
+    async fn insert_test_instance(&self, key: &str, last_active: Instant) {
+        // Use `true` as a dummy process — exits immediately, so when
+        // kill_idle tries rpc_get_session_file the broken-pipe send fails
+        // and returns None instantly (no 10s timeout).
+        let mut child = tokio::process::Command::new("true")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn true for test");
+
+        let stdin = child.stdin.take().expect("stdin piped");
+        let stdout = child.stdout.take().expect("stdout piped");
+
+        let instance = PiInstance {
+            process: child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            session_file: None,
+            last_active,
+            history_injected: false,
+        };
+
+        self.instances.lock().await.insert(key.to_string(), instance);
+    }
+
     /// Inject ZeroClaw conversation history into Pi as context.
     pub async fn inject_history(
         &self,
@@ -311,5 +339,94 @@ impl PiManager {
 
         instance.history_injected = true;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn kill_idle_removes_expired_instances() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager = PiManager::new(tmp.path(), "fake-key");
+
+        // Empty manager: kill_idle must not crash
+        manager.kill_idle(Duration::from_secs(0)).await;
+        assert!(!manager.is_running("chat_a").await);
+
+        // Insert an instance whose last_active is "now"
+        manager
+            .insert_test_instance("chat_a", Instant::now())
+            .await;
+        assert!(manager.is_running("chat_a").await);
+
+        // kill_idle with a generous timeout should keep it alive
+        manager
+            .kill_idle(Duration::from_secs(30 * 60))
+            .await;
+        assert!(
+            manager.is_running("chat_a").await,
+            "instance should survive when idle time < max_idle"
+        );
+
+        // kill_idle with ZERO timeout should remove it (elapsed > 0)
+        manager.kill_idle(Duration::from_secs(0)).await;
+        assert!(
+            !manager.is_running("chat_a").await,
+            "instance should be killed when max_idle is 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn kill_idle_keeps_active_instance() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager = PiManager::new(tmp.path(), "fake-key");
+
+        manager
+            .insert_test_instance("chat_b", Instant::now())
+            .await;
+
+        // With a large timeout the instance stays
+        manager
+            .kill_idle(Duration::from_secs(60 * 60))
+            .await;
+        assert!(manager.is_running("chat_b").await);
+
+        // Clean up: kill it so the sleep process doesn't linger
+        manager.kill_idle(Duration::from_secs(0)).await;
+    }
+
+    #[tokio::test]
+    async fn kill_idle_selective_removal() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager = PiManager::new(tmp.path(), "fake-key");
+
+        // Insert two instances: one "old" (backdated by subtracting from now),
+        // one fresh
+        let old_time = Instant::now()
+            .checked_sub(Duration::from_secs(31 * 60))
+            .expect("system uptime > 31 min");
+        manager.insert_test_instance("old_chat", old_time).await;
+        manager
+            .insert_test_instance("new_chat", Instant::now())
+            .await;
+
+        // Kill anything idle > 30 min
+        manager
+            .kill_idle(Duration::from_secs(30 * 60))
+            .await;
+
+        assert!(
+            !manager.is_running("old_chat").await,
+            "old instance (31 min idle) should be killed"
+        );
+        assert!(
+            manager.is_running("new_chat").await,
+            "fresh instance should survive"
+        );
+
+        // Clean up
+        manager.kill_idle(Duration::from_secs(0)).await;
     }
 }
