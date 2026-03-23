@@ -97,15 +97,20 @@ impl PiManager {
             provider = %self.provider,
             model = %self.model,
             workspace = %self.workspace_dir.display(),
+            api_key_len = self.api_key.len(),
             "spawning Pi process"
         );
 
+        if self.api_key.is_empty() {
+            anyhow::bail!("Pi API key is empty — check [pi].api_key_profile in config.toml");
+        }
+
         // Determine env var name based on provider
         let api_key_env = match self.provider.as_str() {
-            "minimax" => "MINIMAX_API_KEY",
             "google" | "gemini" => "GEMINI_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
             "openai" => "OPENAI_API_KEY",
+            // minimax and any other provider
             _ => "MINIMAX_API_KEY",
         };
 
@@ -136,18 +141,32 @@ impl PiManager {
             .env("ZEROCLAW_WORKSPACE", self.workspace_dir.to_string_lossy().as_ref())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
                 error!(error = %e, "failed to spawn Pi process");
                 e
             })?;
 
+        let pid = child.id().unwrap_or(0);
+        info!(pid, "Pi process spawned");
+
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
         let reader = BufReader::new(stdout);
 
-        // Wait for startup (MiniMax Pi starts in ~1s; 2s is safe margin)
+        // Spawn stderr reader to capture Pi error output
+        let stderr_reader = BufReader::new(stderr);
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = stderr_reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::warn!(pi_pid = pid, stderr = %line, "Pi stderr");
+            }
+        });
+
+        // Wait for startup
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         Ok(PiInstance {
@@ -201,14 +220,11 @@ impl PiManager {
 
         // Drain any leftover events from session management before prompt
         // (new_session/switch_session responses may arrive late)
-        loop {
-            match rpc::recv_line(&mut instance.stdout, Duration::from_millis(200)).await {
-                Some(val) => {
-                    let t = val.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-                    tracing::debug!(event_type = t, "drained leftover event after session setup");
-                }
-                None => break, // no more pending events
-            }
+        while let Some(val) =
+            rpc::recv_line(&mut instance.stdout, Duration::from_millis(200)).await
+        {
+            let t = val.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+            tracing::debug!(event_type = t, "drained leftover event after session setup");
         }
 
         let mut instances = self.instances.lock().await;
@@ -277,7 +293,7 @@ impl PiManager {
             Err(e) => {
                 error!(history_key, error = %e, "prompt error — removing dead Pi instance");
                 // Remove dead instance so next ensure_running will re-spawn
-                let mut instances = self.instances.lock().await;
+                // (instances is already locked from above)
                 if let Some(mut dead) = instances.remove(history_key) {
                     let _ = dead.process.kill().await;
                 }

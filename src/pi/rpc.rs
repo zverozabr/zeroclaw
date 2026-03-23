@@ -151,6 +151,14 @@ pub async fn recv_line(
 ) -> Option<serde_json::Value> {
     let mut buf = String::new();
     let result = timeout(dur, reader.read_line(&mut buf)).await;
+    match &result {
+        Ok(Ok(n)) if *n > 0 => {
+            tracing::trace!(bytes = n, line_preview = %buf.chars().take(80).collect::<String>(), "recv_line: got data");
+        }
+        Ok(Ok(_)) => { tracing::info!("recv_line: EOF (0 bytes)"); }
+        Ok(Err(e)) => { tracing::info!(error = %e, "recv_line: read error"); }
+        Err(_) => { /* timeout — normal, don't log */ }
+    }
     match result {
         Ok(Ok(n)) if n > 0 => serde_json::from_str(buf.trim()).ok(),
         _ => None,
