@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use tokio::task::JoinHandle;
 
 /// Sends and edits Telegram messages via the Bot API.
 #[derive(Clone)]
@@ -50,6 +51,29 @@ impl TelegramNotifier {
         } else {
             None
         }
+    }
+
+    /// Start sending "typing" action every 4s. Returns handle to abort later.
+    pub fn start_typing(&self) -> JoinHandle<()> {
+        let client = self.client.clone();
+        let bot_token = self.bot_token.clone();
+        let chat_id = self.chat_id.clone();
+        let thread_id = self.thread_id.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let url = format!("https://api.telegram.org/bot{}/sendChatAction", bot_token);
+                let mut payload = serde_json::json!({
+                    "chat_id": chat_id,
+                    "action": "typing",
+                });
+                if let Some(ref tid) = thread_id {
+                    payload["message_thread_id"] = serde_json::Value::String(tid.clone());
+                }
+                let _ = client.post(&url).json(&payload).send().await;
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            }
+        })
     }
 
     /// Edit an existing message. Logs errors instead of silently ignoring.

@@ -1,23 +1,36 @@
+use std::collections::VecDeque;
+
+/// Maximum number of thinking/tool sections to keep in the sliding window.
+const MAX_SECTIONS: usize = 3;
+
 /// Renders Pi events into Telegram-friendly status text.
 /// Pure, testable, no I/O.
 pub struct StatusBuilder {
-    sections: Vec<(String, String)>,
+    sections: VecDeque<(String, String)>,
     response: String,
 }
 
 impl StatusBuilder {
     pub fn new() -> Self {
         Self {
-            sections: Vec::new(),
+            sections: VecDeque::new(),
             response: String::new(),
         }
+    }
+
+    /// Push a section while enforcing the sliding window limit.
+    fn push_section(&mut self, icon: &str, text: String) {
+        if self.sections.len() >= MAX_SECTIONS {
+            self.sections.pop_front();
+        }
+        self.sections.push_back((icon.to_string(), text));
     }
 
     /// Record a thinking block. Prefix with the thought-bubble icon and
     /// truncate to 200 characters.
     pub fn on_thinking_end(&mut self, text: &str) {
         let truncated = truncate(text, 200);
-        self.sections.push(("\u{1f4ad}".to_string(), truncated));
+        self.push_section("\u{1f4ad}", truncated);
     }
 
     /// Record the start of a tool invocation with an appropriate icon.
@@ -38,14 +51,14 @@ impl StatusBuilder {
                 }
             }
         };
-        self.sections.push((icon.to_string(), summary));
+        self.push_section(icon, summary);
     }
 
     /// Record the end of a tool invocation. Prefix with the page icon and
     /// truncate to 150 characters.
     pub fn on_tool_end(&mut self, _name: &str, output: &str) {
         let truncated = truncate(output, 150);
-        self.sections.push(("\u{1f4c4}".to_string(), truncated));
+        self.push_section("\u{1f4c4}", truncated);
     }
 
     /// Set the final response text.
@@ -152,12 +165,34 @@ mod tests {
                 &json!({"command": format!("command-number-{i}-with-padding-text-here")}),
             );
         }
+        assert_eq!(
+            b.sections.len(),
+            MAX_SECTIONS,
+            "sections should be capped at {MAX_SECTIONS}, got {}",
+            b.sections.len()
+        );
         let out = b.render();
         assert!(
             out.len() <= 3800,
             "render length {} exceeds 3800",
             out.len()
         );
+    }
+
+    #[test]
+    fn sliding_window_keeps_last_3() {
+        let mut b = StatusBuilder::new();
+        for i in 1..=5 {
+            b.on_thinking_end(&format!("thought-{i}"));
+        }
+        assert_eq!(b.sections.len(), 3);
+        let out = b.render();
+        // Oldest two (thought-1, thought-2) should have been evicted.
+        assert!(!out.contains("thought-1"), "thought-1 should be evicted");
+        assert!(!out.contains("thought-2"), "thought-2 should be evicted");
+        assert!(out.contains("thought-3"));
+        assert!(out.contains("thought-4"));
+        assert!(out.contains("thought-5"));
     }
 
     #[test]

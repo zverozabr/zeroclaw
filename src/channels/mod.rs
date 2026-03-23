@@ -1209,6 +1209,7 @@ async fn handle_pi_bypass_if_needed(
         tg_thread_id,
     ));
     let status_msg_id = notifier.send_status("\u{2699} Pi is working\u{2026}").await;
+    let typing_handle = notifier.start_typing();
     let status = Arc::new(std::sync::Mutex::new(
         crate::pi::status::StatusBuilder::new(),
     ));
@@ -1251,6 +1252,8 @@ async fn handle_pi_bypass_if_needed(
         })
         .await;
 
+    typing_handle.abort();
+
     match result {
         Ok(response) => {
             // Wait briefly for any in-flight spawned edits to complete,
@@ -1264,7 +1267,9 @@ async fn handle_pi_bypass_if_needed(
             );
             if let Some(msg_id) = status_msg_id {
                 if response.is_empty() {
-                    notifier.edit_status(msg_id, "(Pi completed with no output)").await;
+                    notifier
+                        .edit_status(msg_id, "(Pi completed with no output)")
+                        .await;
                 } else {
                     notifier.edit_status(msg_id, &response).await;
                 }
