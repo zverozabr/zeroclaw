@@ -90,11 +90,16 @@ impl StatusBuilder {
             joined
         } else {
             // Keep the tail (most recent events).
-            let start = joined.len() - 3800;
-            // Find next newline to avoid cutting a line in the middle.
-            let cut = joined[start..]
+            // Walk forward from (len - 3800) to a char boundary to avoid
+            // slicing inside a multi-byte UTF-8 sequence (e.g. Cyrillic/CJK).
+            let raw_start = joined.len() - 3800;
+            let char_start = (raw_start..=joined.len())
+                .find(|&i| joined.is_char_boundary(i))
+                .unwrap_or(joined.len());
+            // Then skip to the next newline so we don't start mid-line.
+            let cut = joined[char_start..]
                 .find('\n')
-                .map_or(start, |pos| start + pos + 1);
+                .map_or(char_start, |pos| char_start + pos + 1);
             joined[cut..].to_string()
         }
     }
