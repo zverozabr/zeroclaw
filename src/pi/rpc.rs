@@ -153,7 +153,10 @@ pub async fn recv_response(
             return None;
         }
         let val = recv_line(reader, remaining).await?;
-        if val.get("type").and_then(|v| v.as_str()) == Some(command) {
+        // Pi responses have type="response" + command="<name>"
+        if val.get("type").and_then(|v| v.as_str()) == Some("response")
+            && val.get("command").and_then(|v| v.as_str()) == Some(command)
+        {
             return Some(val);
         }
     }
@@ -265,7 +268,7 @@ pub async fn rpc_switch_session(
 ) -> bool {
     let msg = serde_json::json!({
         "type": "switch_session",
-        "sessionFile": session_file,
+        "sessionPath": session_file,
     });
     if send(stdin, &msg).await.is_err() {
         return false;
@@ -281,10 +284,11 @@ pub async fn rpc_get_session_file(
     stdin: &mut ChildStdin,
     reader: &mut BufReader<ChildStdout>,
 ) -> Option<String> {
-    let msg = serde_json::json!({ "type": "get_session_file" });
+    let msg = serde_json::json!({ "type": "get_state" });
     send(stdin, &msg).await.ok()?;
     let resp = recv_response(reader, "get_state", Duration::from_secs(10)).await?;
-    resp.get("sessionFile")
+    resp.get("data")
+        .and_then(|d| d.get("sessionFile"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_owned())
 }
