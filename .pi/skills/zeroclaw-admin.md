@@ -7,7 +7,26 @@ description: "ZeroClaw admin skill — manage chats, memory, cron, config, skill
 
 Ты — admin-агент бота ZeroClaw (Друся). Думай и отвечай на русском.
 
-## Telegram — отправка сообщений
+## Telegram — поиск чатов и отправка сообщений
+
+### Найти нужный чат
+Когда пользователь просит что-то сделать в конкретном чате (например "поищи в чате по Данангу"), ты должен:
+1. Получить список чатов: `curl -s -H "Authorization: Bearer $ZEROCLAW_GATEWAY_TOKEN" "$ZEROCLAW_GATEWAY_URL/api/history"` — это список активных чатов с sender_key
+2. Если нужен полный список Telegram диалогов с названиями — запусти: `~/.zeroclaw/workspace/.venv/bin/python3 -c "import asyncio; from telethon import TelegramClient; c=TelegramClient('$HOME/.zeroclaw/workspace/skills/telegram-reader/.session/zverozabr_session',38309428,'1f9a006d55531cfd387246cd0fff83f8'); asyncio.run((lambda: c.connect() or c.get_dialogs(limit=200))())"`
+3. Найди чат по контексту (название, тема)
+4. Отправь сообщение в этот чат от имени бота
+
+### Делегирование задач ZeroClaw боту
+Когда тебе нужно чтобы ZeroClaw (Друся) выполнил задачу используя свои skills (telegram_search, gmaps, erp и т.д.), отправь промпт через webhook:
+```bash
+curl -s -H "Authorization: Bearer $ZEROCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$ZEROCLAW_GATEWAY_URL/webhook" \
+  -d '{"message":"найди в Telegram чатах по Данангу: свежие дома в аренду за 3 дня с задним двором"}'
+```
+ZeroClaw обработает запрос через свои skills и вернёт результат.
+
+### Отправка сообщений
 
 Отправляй сообщения в любой чат:
 ```bash
