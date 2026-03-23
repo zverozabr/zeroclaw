@@ -2438,11 +2438,10 @@ fn handle_models_command(
                     "\u{2705} Switched to {} ({})",
                     current.model, current.provider
                 )
-            } else if was_pi_mode {
-                "Pi mode off. Use `/models` to see available providers.".to_string()
             } else {
                 format!(
-                    "Unknown hint `{}`. Use `/models` to see available options.",
+                    "{}Unknown hint `{}`. Use `/models` to see available options.",
+                    if was_pi_mode { "Pi mode off. " } else { "" },
                     hint
                 )
             }
