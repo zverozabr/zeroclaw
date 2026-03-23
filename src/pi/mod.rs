@@ -163,10 +163,20 @@ impl PiManager {
 
     /// Ensure Pi is running for this chat. Spawn + load session if needed.
     pub async fn ensure_running(&self, history_key: &str) -> anyhow::Result<()> {
-        let instances = self.instances.lock().await;
-        if instances.contains_key(history_key) {
-            info!(history_key, "Pi already running");
-            return Ok(());
+        let mut instances = self.instances.lock().await;
+        // Check if instance exists AND process is alive
+        if let Some(inst) = instances.get_mut(history_key) {
+            match inst.process.try_wait() {
+                Ok(Some(_exit)) => {
+                    // Process exited — remove zombie and re-spawn below
+                    info!(history_key, "Pi process died — removing zombie, will re-spawn");
+                    instances.remove(history_key);
+                }
+                _ => {
+                    info!(history_key, "Pi already running");
+                    return Ok(());
+                }
+            }
         }
         drop(instances);
 
@@ -253,7 +263,12 @@ impl PiManager {
                 }
             }
             Err(e) => {
-                error!(history_key, error = %e, "prompt error");
+                error!(history_key, error = %e, "prompt error — removing dead Pi instance");
+                // Remove dead instance so next ensure_running will re-spawn
+                let mut instances = self.instances.lock().await;
+                if let Some(mut dead) = instances.remove(history_key) {
+                    let _ = dead.process.kill().await;
+                }
             }
         }
 
