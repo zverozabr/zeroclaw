@@ -1154,13 +1154,22 @@ async fn handle_pi_bypass_if_needed(
 
     // Ensure Pi process is running for this chat
     if let Err(e) = mgr.ensure_running(&history_key).await {
-        tracing::error!(error = %e, "Failed to start Pi");
+        tracing::error!(error = %e, "Pi spawn failed");
+        // Deactivate Pi mode so user doesn't get stuck
+        {
+            let global = global_route_overrides();
+            let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = routes.get_mut(&history_key) {
+                entry.pi_mode = false;
+            }
+            save_route_overrides(&routes);
+        }
         if let Some(ch) = channel {
             let _ = ch
                 .send(
                     &SendMessage::new(
                         format!(
-                            "\u{26a0}\u{fe0f} Failed to start Pi: {}",
+                            "\u{26a0}\u{fe0f} Failed to start Pi: {}. Switched back to LLM.",
                             truncate_with_ellipsis(&e.to_string(), 300)
                         ),
                         &msg.reply_target,
@@ -2418,7 +2427,7 @@ fn handle_models_command(
                         }
                     });
                 }
-                return "\u{2705} Pi mode activated. All messages go to coding agent.\nTo exit: /models minimax"
+                return "\u{2705} Pi mode activated. Starting coding agent\u{2026}\nTo exit: /models minimax"
                     .to_string();
             }
 
