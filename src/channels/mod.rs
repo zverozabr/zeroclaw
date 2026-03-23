@@ -1228,8 +1228,9 @@ async fn handle_pi_bypass_if_needed(
 
     match result {
         Ok(response) => {
-            // Final edit: show ONLY the clean response text (no StatusBuilder
-            // thinking/tool sections — those are for live progress only).
+            // Wait briefly for any in-flight spawned edits to complete,
+            // then overwrite with the clean response.
+            tokio::time::sleep(Duration::from_millis(500)).await;
             if let Some(msg_id) = status_msg_id {
                 notifier.edit_status(msg_id, &response).await;
             }
