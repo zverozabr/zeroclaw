@@ -1284,6 +1284,43 @@ pub async fn handle_api_session_delete(
     }
 }
 
+/// GET /api/history/{sender_key} — read conversation history for a sender.
+pub async fn handle_api_history_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(sender_key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let messages = if let Some(ref histories) = state.conversation_histories {
+        let map = histories.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(&sender_key)
+            .map(|turns| {
+                turns
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "role": &m.role,
+                            "content": &m.content,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    Json(serde_json::json!({
+        "sender_key": sender_key,
+        "messages": messages,
+        "count": messages.len(),
+    }))
+    .into_response()
+}
+
 /// DELETE /api/history/{sender_key} — clear in-memory conversation history for a sender.
 ///
 /// This is used by external skills (e.g. the coder skill `/reset` command) to ensure
