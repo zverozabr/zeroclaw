@@ -1031,7 +1031,6 @@ fn is_pi_stop(content: &str) -> bool {
     )
 }
 
-
 /// Record both user and Pi assistant turns into conversation history.
 fn record_pi_turn(
     ctx: &ChannelRuntimeContext,
@@ -1046,7 +1045,6 @@ fn record_pi_turn(
         ChatMessage::assistant(format!("[Pi] {pi_response}")),
     );
 }
-
 
 /// Orchestrator: detect Pi prefix or Pi mode, route to PiManager, record history.
 ///
@@ -1197,9 +1195,7 @@ async fn handle_pi_bypass_if_needed(
         &bot_token,
         &msg.reply_target,
     ));
-    let status_msg_id = notifier
-        .send_status("\u{2699} Pi is working\u{2026}")
-        .await;
+    let status_msg_id = notifier.send_status("\u{2699} Pi is working\u{2026}").await;
     let status = Arc::new(std::sync::Mutex::new(
         crate::pi::status::StatusBuilder::new(),
     ));
@@ -2417,8 +2413,10 @@ fn handle_models_command(
             }
 
             // Deactivate Pi when switching to another model
+            let was_pi_mode = current.pi_mode;
             if current.pi_mode {
                 current.pi_mode = false;
+                set_route_selection(ctx, sender_key, current.clone());
                 if let Some(mgr) = crate::pi::pi_manager() {
                     let key = sender_key.to_string();
                     tokio::spawn(async move {
@@ -2441,6 +2439,8 @@ fn handle_models_command(
                     "\u{2705} Switched to {} ({})",
                     current.model, current.provider
                 )
+            } else if was_pi_mode {
+                "Pi mode off. Use `/models` to see available providers.".to_string()
             } else {
                 format!(
                     "Unknown hint `{}`. Use `/models` to see available options.",
@@ -12068,5 +12068,4 @@ This is an example JSON object for profile settings."#;
         // Cleanup
         global.lock().unwrap().remove(key);
     }
-
 }
