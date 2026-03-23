@@ -1042,7 +1042,7 @@ fn record_pi_turn(
     append_sender_turn(
         ctx,
         history_key,
-        ChatMessage::assistant(format!("[Pi] {pi_response}")),
+        ChatMessage::assistant(pi_response.to_string()),
     );
 }
 
@@ -1203,6 +1203,7 @@ async fn handle_pi_bypass_if_needed(
     let s = status.clone();
     let n = notifier.clone();
     let mid = status_msg_id;
+    let last_edit_at = Arc::new(AtomicU64::new(0));
 
     let result = mgr
         .prompt(&history_key, &pi_message, move |event| {
@@ -1218,10 +1219,19 @@ async fn handle_pi_bypass_if_needed(
             let rendered = sb.render();
             drop(sb); // release lock before spawn
             if let Some(msg_id) = mid {
-                let notifier = n.clone();
-                tokio::spawn(async move {
-                    notifier.edit_status(msg_id, &rendered).await;
-                });
+                // Debounce: only edit if 800ms+ since last edit to avoid Telegram 429
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let prev = last_edit_at.load(Ordering::Relaxed);
+                if now_ms - prev >= 800 {
+                    last_edit_at.store(now_ms, Ordering::Relaxed);
+                    let notifier = n.clone();
+                    tokio::spawn(async move {
+                        notifier.edit_status(msg_id, &rendered).await;
+                    });
+                }
             }
         })
         .await;

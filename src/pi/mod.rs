@@ -102,8 +102,8 @@ impl PiManager {
         let stdout = child.stdout.take().expect("stdout piped");
         let reader = BufReader::new(stdout);
 
-        // Wait for startup
-        tokio::time::sleep(Duration::from_secs(4)).await;
+        // Wait for startup (MiniMax Pi starts in ~1s; 2s is safe margin)
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         Ok(PiInstance {
             process: child,
