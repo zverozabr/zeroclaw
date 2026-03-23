@@ -97,9 +97,20 @@ fn extract_last_assistant_text(event: &serde_json::Value) -> String {
             }
             // content might be an array of blocks
             if let Some(blocks) = msg.get("content").and_then(|v| v.as_array()) {
+                // First pass: look for "text" type blocks
                 for block in blocks {
                     if block.get("type").and_then(|v| v.as_str()) == Some("text") {
                         if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                            if !t.is_empty() {
+                                return t.to_owned();
+                            }
+                        }
+                    }
+                }
+                // Second pass: any block with non-empty "text" field (including thinking)
+                for block in blocks {
+                    if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                        if !t.is_empty() {
                             return t.to_owned();
                         }
                     }
