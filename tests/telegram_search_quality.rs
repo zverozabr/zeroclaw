@@ -622,7 +622,25 @@ async fn i6_live_vs_indexed_overlap() {
         .collect();
 
     let live_msgs = live["messages"].as_array().unwrap_or(&empty);
-    let overlap = live_msgs
+
+    // The indexer skips media-only messages (no text). Only compare text-bearing
+    // messages so that a burst of photo posts doesn't artificially lower overlap.
+    let text_live_msgs: Vec<_> = live_msgs
+        .iter()
+        .filter(|m| {
+            m["text"]
+                .as_str()
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if text_live_msgs.is_empty() {
+        eprintln!("No text messages in live results — skipping overlap check");
+        return;
+    }
+
+    let overlap = text_live_msgs
         .iter()
         .filter(|m| {
             m["id"]
@@ -632,17 +650,19 @@ async fn i6_live_vs_indexed_overlap() {
         })
         .count();
 
-    let total_live = live_msgs.len();
+    let total_live = text_live_msgs.len();
     let overlap_pct = if total_live > 0 {
         overlap * 100 / total_live
     } else {
         0
     };
 
-    eprintln!("Overlap: {overlap}/{total_live} = {overlap_pct}%");
+    eprintln!(
+        "Text-bearing live msgs: {total_live}, overlap with index: {overlap} = {overlap_pct}%"
+    );
     assert!(
         overlap_pct >= 50,
-        "Expected >= 50% overlap between live and indexed results, got {overlap_pct}%"
+        "Expected >= 50% overlap between live text messages and indexed results, got {overlap_pct}%"
     );
 }
 
