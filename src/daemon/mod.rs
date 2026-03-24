@@ -101,6 +101,19 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         });
     }
 
+    // Initialize OpenCode manager (if enabled)
+    if config.opencode.enabled {
+        let opencode_api_key = config
+            .opencode
+            .api_key_profile
+            .as_deref()
+            .and_then(|profile| config.reliability.fallback_api_keys.get(profile))
+            .cloned()
+            .unwrap_or_default();
+        // TODO: crate::opencode::init_oc_manager(&config.opencode, &opencode_api_key, &config.workspace_dir);
+        tracing::info!("OpenCode enabled (api_key_len={})", opencode_api_key.len());
+    }
+
     if config.heartbeat.enabled {
         let _ =
             crate::heartbeat::engine::HeartbeatEngine::ensure_heartbeat_file(&config.workspace_dir)

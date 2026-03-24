@@ -65,6 +65,7 @@ pub mod observability;
 pub(crate) mod onboard;
 pub mod peripherals;
 pub(crate) mod pi;
+pub mod opencode;
 pub mod providers;
 pub mod rag;
 pub mod runtime;

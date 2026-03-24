@@ -215,7 +215,7 @@ where
     send(stdin, &prompt).await?;
 
     // 2. Wait for ACK
-    let deadline = tokio::time::Instant::now() + dur;
+    let mut deadline = tokio::time::Instant::now() + dur;
     tracing::debug!("rpc_prompt: waiting for ACK");
     let ack = recv_response(reader, "prompt", dur)
         .await
@@ -226,7 +226,11 @@ where
     }
     tracing::debug!("rpc_prompt: ACK received, streaming events");
 
-    // 3. Stream events
+    // 3. Stream events.
+    // `deadline` is a per-event inactivity deadline: it resets each time an
+    // event arrives so that long but active responses (thinking + tool loops)
+    // are not killed mid-flight. The caller's `dur` is the maximum silence
+    // window, not the total wall-clock budget.
     let mut thinking_buf = String::new();
     let mut text_buf = String::new();
     let mut event_count: u32 = 0;
@@ -241,6 +245,8 @@ where
             Some(v) => v,
             None => continue,
         };
+        // Reset the inactivity deadline on every received event.
+        deadline = tokio::time::Instant::now() + dur;
         event_count += 1;
         let etype = val.get("type").and_then(|v| v.as_str()).unwrap_or("?");
         tracing::debug!(event_count, event_type = etype, "rpc_prompt: received event");

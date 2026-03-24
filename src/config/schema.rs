@@ -173,6 +173,10 @@ pub struct Config {
     #[serde(default)]
     pub pi: PiConfig,
 
+    /// OpenCode coding agent configuration (`[opencode]`).
+    #[serde(default)]
+    pub opencode: OpenCodeConfig,
+
     /// Model routing rules — route `hint:<name>` to specific provider+model combos.
     #[serde(default)]
     pub model_routes: Vec<ModelRouteConfig>,
@@ -1330,6 +1334,85 @@ impl PiConfig {
     }
     fn default_thinking() -> String {
         "high".into()
+    }
+}
+
+/// OpenCode coding agent configuration (`[opencode]` section).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OpenCodeConfig {
+    /// Enable the OpenCode backend instead of Pi (Claude Code).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Port for the OpenCode server. Default: 14096.
+    #[serde(default = "OpenCodeConfig::default_port")]
+    pub port: u16,
+    /// Hostname for the OpenCode server. Default: "127.0.0.1".
+    #[serde(default = "OpenCodeConfig::default_hostname")]
+    pub hostname: String,
+    /// LLM provider for OpenCode (e.g. "minimax").
+    #[serde(default = "OpenCodeConfig::default_provider")]
+    pub provider: String,
+    /// Model name (e.g. "MiniMax-M2.7-highspeed").
+    #[serde(default = "OpenCodeConfig::default_model")]
+    pub model: String,
+    /// Provider base URL (e.g. "https://api.minimax.chat/v1").
+    #[serde(default = "OpenCodeConfig::default_base_url")]
+    pub base_url: String,
+    /// Key profile name in fallback_api_keys (e.g. "minimax:pi-fresh-4").
+    #[serde(default)]
+    pub api_key_profile: Option<String>,
+    /// Max messages to inject as history context. Default: 50.
+    #[serde(default = "OpenCodeConfig::default_history_inject_limit")]
+    pub history_inject_limit: usize,
+    /// Max chars to inject as history context. Default: 50000.
+    #[serde(default = "OpenCodeConfig::default_history_inject_max_chars")]
+    pub history_inject_max_chars: usize,
+    /// Idle session cleanup after this many seconds. Default: 1800.
+    #[serde(default = "OpenCodeConfig::default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+}
+
+impl Default for OpenCodeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: Self::default_port(),
+            hostname: Self::default_hostname(),
+            provider: Self::default_provider(),
+            model: Self::default_model(),
+            base_url: Self::default_base_url(),
+            api_key_profile: None,
+            history_inject_limit: Self::default_history_inject_limit(),
+            history_inject_max_chars: Self::default_history_inject_max_chars(),
+            idle_timeout_secs: Self::default_idle_timeout_secs(),
+        }
+    }
+}
+
+impl OpenCodeConfig {
+    fn default_port() -> u16 {
+        14096
+    }
+    fn default_hostname() -> String {
+        "127.0.0.1".into()
+    }
+    fn default_provider() -> String {
+        "minimax".into()
+    }
+    fn default_model() -> String {
+        "MiniMax-M2.7-highspeed".into()
+    }
+    fn default_base_url() -> String {
+        "https://api.minimax.chat/v1".into()
+    }
+    fn default_history_inject_limit() -> usize {
+        50
+    }
+    fn default_history_inject_max_chars() -> usize {
+        50_000
+    }
+    fn default_idle_timeout_secs() -> u64 {
+        1800
     }
 }
 
@@ -6546,6 +6629,7 @@ impl Default for Config {
             agent: AgentConfig::default(),
             skills: SkillsConfig::default(),
             pi: PiConfig::default(),
+            opencode: OpenCodeConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             heartbeat: HeartbeatConfig::default(),
@@ -9386,6 +9470,7 @@ default_temperature = 0.7
             scheduler: SchedulerConfig::default(),
             skills: SkillsConfig::default(),
             pi: PiConfig::default(),
+            opencode: OpenCodeConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),
@@ -9775,6 +9860,7 @@ tool_dispatcher = "xml"
             scheduler: SchedulerConfig::default(),
             skills: SkillsConfig::default(),
             pi: PiConfig::default(),
+            opencode: OpenCodeConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),
