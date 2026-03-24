@@ -51,3 +51,4 @@ lcov.info
 .wrangler/.claude/worktrees/
 wt/
 check_minimax*.py
+test_pi_isolation.py
