@@ -79,7 +79,10 @@ pub async fn write_opencode_config(
 
     // Build the models map: one entry per model configured
     let mut models: HashMap<String, serde_json::Value> = HashMap::new();
-    models.insert(config.model.clone(), serde_json::Value::Object(serde_json::Map::default()));
+    models.insert(
+        config.model.clone(),
+        serde_json::Value::Object(serde_json::Map::default()),
+    );
 
     // Build provider map
     let mut provider: HashMap<String, OpencodeJsonProvider> = HashMap::new();
@@ -106,8 +109,7 @@ pub async fn write_opencode_config(
         compaction: OpencodeJsonCompaction { auto: true },
     };
 
-    let json = serde_json::to_string_pretty(&doc)
-        .context("serialize opencode.json")?;
+    let json = serde_json::to_string_pretty(&doc).context("serialize opencode.json")?;
 
     // Atomic write: write to .tmp then rename
     let out_path = config_dir.join("opencode.json");
@@ -208,14 +210,22 @@ mod tests {
     #[tokio::test]
     async fn write_no_tmp_file_remains() {
         let dir = tempdir().unwrap();
-        write_opencode_config(&test_config(), "key", dir.path()).await.unwrap();
-        assert!(!dir.path().join("opencode").join("opencode.json.tmp").exists());
+        write_opencode_config(&test_config(), "key", dir.path())
+            .await
+            .unwrap();
+        assert!(!dir
+            .path()
+            .join("opencode")
+            .join("opencode.json.tmp")
+            .exists());
     }
 
     #[tokio::test]
     async fn write_model_field_is_provider_slash_model() {
         let dir = tempdir().unwrap();
-        let path = write_opencode_config(&test_config(), "key", dir.path()).await.unwrap();
+        let path = write_opencode_config(&test_config(), "key", dir.path())
+            .await
+            .unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(val["model"], "minimax/MiniMax-M2.7-highspeed");

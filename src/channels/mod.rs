@@ -469,8 +469,8 @@ enum ChannelRuntimeCommand {
     Models(Option<String>),
     NewSession,
     Skills,
-    PiSteer(Option<String>),   // /ps [text] — abort + optional followup message
-    PiFollowup(String),        // /pf <text> — queue message while Pi busy
+    PiSteer(Option<String>), // /ps [text] — abort + optional followup message
+    PiFollowup(String),      // /pf <text> — queue message while Pi busy
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1190,8 +1190,11 @@ async fn handle_oc_bypass_if_needed(
         .get(&history_key)
         .cloned()
         .unwrap_or_default();
-    let history_ref: Option<&[crate::providers::ChatMessage]> =
-        if history.is_empty() { None } else { Some(&history) };
+    let history_ref: Option<&[crate::providers::ChatMessage]> = if history.is_empty() {
+        None
+    } else {
+        Some(&history)
+    };
 
     // Set up Telegram status updates.
     // reply_target may be "chat_id:thread_id" for forum groups — split for Bot API.
@@ -1206,7 +1209,9 @@ async fn handle_oc_bypass_if_needed(
         &tg_chat_id,
         tg_thread_id,
     ));
-    let status_msg_id = notifier.send_status("\u{2699} OpenCode is working\u{2026}").await;
+    let status_msg_id = notifier
+        .send_status("\u{2699} OpenCode is working\u{2026}")
+        .await;
     let typing_handle = notifier.start_typing();
 
     // Set up throttled live status updates during prompt execution.
@@ -1348,9 +1353,11 @@ fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRun
         "/ps" => {
             let text: String = parts.collect::<Vec<_>>().join(" ");
             let text = text.trim().to_string();
-            Some(ChannelRuntimeCommand::PiSteer(
-                if text.is_empty() { None } else { Some(text) }
-            ))
+            Some(ChannelRuntimeCommand::PiSteer(if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }))
         }
         "/pf" => {
             let text: String = parts.collect::<Vec<_>>().join(" ");
@@ -2470,11 +2477,7 @@ fn handle_ps_command(
 
 /// `/pf <text>` — queue a message for OpenCode to process after current response.
 #[allow(unused_variables)]
-fn handle_pf_command(
-    ctx: &ChannelRuntimeContext,
-    sender_key: &str,
-    text: String,
-) -> String {
+fn handle_pf_command(ctx: &ChannelRuntimeContext, sender_key: &str, text: String) -> String {
     if text.is_empty() {
         return "Usage: /pf <text>".to_string();
     }
@@ -2625,12 +2628,8 @@ async fn handle_runtime_command_if_needed(
             "Conversation history cleared. Starting fresh.".to_string()
         }
         ChannelRuntimeCommand::Skills => format_skills_list(&ctx.loaded_skills),
-        ChannelRuntimeCommand::PiSteer(text) => {
-            handle_ps_command(ctx, &sender_key, text)
-        }
-        ChannelRuntimeCommand::PiFollowup(text) => {
-            handle_pf_command(ctx, &sender_key, text)
-        }
+        ChannelRuntimeCommand::PiSteer(text) => handle_ps_command(ctx, &sender_key, text),
+        ChannelRuntimeCommand::PiFollowup(text) => handle_pf_command(ctx, &sender_key, text),
     };
 
     if let Err(err) = channel

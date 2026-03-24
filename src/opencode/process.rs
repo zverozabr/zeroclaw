@@ -60,7 +60,11 @@ impl OpenCodeProcessManager {
         if let Some(proc) = state.as_mut() {
             match proc.child.try_wait() {
                 Ok(Some(status)) => {
-                    warn!(pid = proc.pid, ?status, "opencode process exited, re-spawning");
+                    warn!(
+                        pid = proc.pid,
+                        ?status,
+                        "opencode process exited, re-spawning"
+                    );
                     *state = None;
                 }
                 Ok(None) => {
@@ -91,13 +95,10 @@ impl OpenCodeProcessManager {
 
         // Best-effort dispose
         let client = OpenCodeClient::new(self.port);
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            async {
-                let url = format!("http://{}:{}/instance/dispose", self.hostname, self.port);
-                let _ = reqwest::Client::new().post(&url).send().await;
-            },
-        )
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            let url = format!("http://{}:{}/instance/dispose", self.hostname, self.port);
+            let _ = reqwest::Client::new().post(&url).send().await;
+        })
         .await;
 
         // Wait up to 5 s for graceful exit
@@ -144,7 +145,13 @@ impl OpenCodeProcessManager {
         );
 
         let mut cmd = tokio::process::Command::new(&binary);
-        cmd.args(["serve", "--port", &self.port.to_string(), "--hostname", &self.hostname]);
+        cmd.args([
+            "serve",
+            "--port",
+            &self.port.to_string(),
+            "--hostname",
+            &self.hostname,
+        ]);
 
         // Set OPENCODE_CONFIG_DIR so OpenCode reads our opencode.json.
         // Keep PATH and HOME from parent process
@@ -235,9 +242,7 @@ fn find_opencode_binary() -> anyhow::Result<PathBuf> {
         return Ok(p);
     }
 
-    anyhow::bail!(
-        "opencode binary not found; install with: npm install -g opencode-ai"
-    )
+    anyhow::bail!("opencode binary not found; install with: npm install -g opencode-ai")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

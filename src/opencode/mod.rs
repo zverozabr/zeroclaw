@@ -115,7 +115,11 @@ impl OpenCodeManager {
                     return Ok(id.clone());
                 }
                 Ok(None) => {
-                    info!(history_key, session_id = id, "OpenCode session not found, creating new");
+                    info!(
+                        history_key,
+                        session_id = id,
+                        "OpenCode session not found, creating new"
+                    );
                 }
                 Err(e) => {
                     warn!(history_key, error = %e, "could not verify session, creating new");
@@ -234,11 +238,8 @@ impl OpenCodeManager {
             .build()
             .unwrap_or_default();
         let base_url = format!("http://127.0.0.1:{}", self.port);
-        let (mut rx, cancel_token, sse_handle) = subscribe_sse(
-            sse_http_client,
-            base_url,
-            session_id.clone(),
-        );
+        let (mut rx, cancel_token, sse_handle) =
+            subscribe_sse(sse_http_client, base_url, session_id.clone());
 
         // Store SSE abort handle
         {
@@ -282,7 +283,11 @@ impl OpenCodeManager {
         });
 
         // Send the actual message — retry once if OC server has crashed
-        let result = match self.http_client.send_message(&session_id, text, &self.provider, &self.model).await {
+        let result = match self
+            .http_client
+            .send_message(&session_id, text, &self.provider, &self.model)
+            .await
+        {
             Ok(r) => Ok(r),
             Err(crate::opencode::client::OpenCodeError::Http(e)) => {
                 tracing::warn!(history_key, error = %e, "OC HTTP error, attempting server restart and retry");
@@ -290,7 +295,9 @@ impl OpenCodeManager {
                 if let Some(pm) = crate::opencode::process::opencode_process() {
                     if pm.ensure_running().await.is_ok() {
                         // Retry once
-                        self.http_client.send_message(&session_id, text, &self.provider, &self.model).await
+                        self.http_client
+                            .send_message(&session_id, text, &self.provider, &self.model)
+                            .await
                             .map_err(|e| anyhow::anyhow!("OC prompt failed after restart: {e}"))
                     } else {
                         Err(anyhow::anyhow!("OC server restart failed: {e}"))
@@ -406,9 +413,7 @@ impl OpenCodeManager {
             let map = self.session_map.read().await;
             let sse = self.active_sse.lock().await;
             map.iter()
-                .filter(|(k, e)| {
-                    e.last_active.elapsed() > max_idle && !sse.contains_key(*k)
-                })
+                .filter(|(k, e)| e.last_active.elapsed() > max_idle && !sse.contains_key(*k))
                 .map(|(k, _)| k.clone())
                 .collect()
         };
@@ -463,7 +468,11 @@ pub fn format_history_for_injection(
 
     let mut formatted = Vec::with_capacity(messages.len());
     for msg in messages {
-        let role = if msg.role == "user" { "User" } else { "Assistant" };
+        let role = if msg.role == "user" {
+            "User"
+        } else {
+            "Assistant"
+        };
         let content = if msg.content.len() > MAX_MESSAGE_CHARS {
             let truncated: String = msg.content.chars().take(MAX_MESSAGE_CHARS).collect();
             format!("{}... [truncated]", truncated)
@@ -592,7 +601,10 @@ mod tests {
         }
         mgr.kill_idle(Duration::from_secs(1800)).await;
         let map = mgr.session_map.read().await;
-        assert!(!map.contains_key("old_key"), "old session should be removed");
+        assert!(
+            !map.contains_key("old_key"),
+            "old session should be removed"
+        );
         assert!(map.contains_key("new_key"), "new session should remain");
     }
 
@@ -663,8 +675,14 @@ mod tests {
     fn format_history_basic() {
         use crate::providers::ChatMessage;
         let messages = vec![
-            ChatMessage { role: "user".to_string(), content: "Hello".to_string() },
-            ChatMessage { role: "assistant".to_string(), content: "Hi there".to_string() },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "Hi there".to_string(),
+            },
         ];
         let result = format_history_for_injection(&messages, 50, 50_000);
         assert!(result.contains("User: Hello"));

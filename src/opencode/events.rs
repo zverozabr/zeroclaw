@@ -85,23 +85,19 @@ pub fn parse_sse_event(raw_data: &str, session_id: &str) -> Option<OpenCodeEvent
 
     match envelope.kind.as_str() {
         "message.part.delta" => {
-            let props: PartDeltaProps =
-                serde_json::from_value(envelope.properties).ok()?;
+            let props: PartDeltaProps = serde_json::from_value(envelope.properties).ok()?;
             if props.session_id != session_id {
                 return None;
             }
             match props.field.as_str() {
                 "text" => Some(OpenCodeEvent::TextDelta(props.delta)),
-                "thinking" | "reasoning" => {
-                    Some(OpenCodeEvent::ThinkingDelta(props.delta))
-                }
+                "thinking" | "reasoning" => Some(OpenCodeEvent::ThinkingDelta(props.delta)),
                 _ => None,
             }
         }
 
         "message.part.updated" => {
-            let props: PartUpdatedProps =
-                serde_json::from_value(envelope.properties).ok()?;
+            let props: PartUpdatedProps = serde_json::from_value(envelope.properties).ok()?;
             if props.session_id != session_id {
                 return None;
             }
@@ -111,16 +107,13 @@ pub fn parse_sse_event(raw_data: &str, session_id: &str) -> Option<OpenCodeEvent
             let name = props.tool_name.unwrap_or_else(|| "unknown".to_string());
             match props.state.as_deref() {
                 Some("running") => Some(OpenCodeEvent::ToolStart { name }),
-                Some("result" | "error") => {
-                    Some(OpenCodeEvent::ToolEnd { name })
-                }
+                Some("result" | "error") => Some(OpenCodeEvent::ToolEnd { name }),
                 _ => None,
             }
         }
 
         "session.status" => {
-            let props: SessionStatusProps =
-                serde_json::from_value(envelope.properties).ok()?;
+            let props: SessionStatusProps = serde_json::from_value(envelope.properties).ok()?;
             if props.session_id != session_id {
                 return None;
             }
@@ -354,8 +347,14 @@ mod tests {
 
     #[test]
     fn parse_thinking_delta() {
-        let ev = parse_sse_event(&delta_json("ses_abc", "thinking", "Let me think"), "ses_abc");
-        assert_eq!(ev, Some(OpenCodeEvent::ThinkingDelta("Let me think".into())));
+        let ev = parse_sse_event(
+            &delta_json("ses_abc", "thinking", "Let me think"),
+            "ses_abc",
+        );
+        assert_eq!(
+            ev,
+            Some(OpenCodeEvent::ThinkingDelta("Let me think".into()))
+        );
     }
 
     #[test]
@@ -367,19 +366,34 @@ mod tests {
     #[test]
     fn parse_tool_start() {
         let ev = parse_sse_event(&tool_json("ses_abc", "running", "bash"), "ses_abc");
-        assert_eq!(ev, Some(OpenCodeEvent::ToolStart { name: "bash".into() }));
+        assert_eq!(
+            ev,
+            Some(OpenCodeEvent::ToolStart {
+                name: "bash".into()
+            })
+        );
     }
 
     #[test]
     fn parse_tool_end_result() {
         let ev = parse_sse_event(&tool_json("ses_abc", "result", "bash"), "ses_abc");
-        assert_eq!(ev, Some(OpenCodeEvent::ToolEnd { name: "bash".into() }));
+        assert_eq!(
+            ev,
+            Some(OpenCodeEvent::ToolEnd {
+                name: "bash".into()
+            })
+        );
     }
 
     #[test]
     fn parse_tool_end_error() {
         let ev = parse_sse_event(&tool_json("ses_abc", "error", "grep"), "ses_abc");
-        assert_eq!(ev, Some(OpenCodeEvent::ToolEnd { name: "grep".into() }));
+        assert_eq!(
+            ev,
+            Some(OpenCodeEvent::ToolEnd {
+                name: "grep".into()
+            })
+        );
     }
 
     #[test]
@@ -397,7 +411,10 @@ mod tests {
     #[test]
     fn parse_heartbeat_no_session_filter() {
         let raw = r#"{"type":"server.heartbeat","properties":{}}"#;
-        assert_eq!(parse_sse_event(raw, "any_session"), Some(OpenCodeEvent::Heartbeat));
+        assert_eq!(
+            parse_sse_event(raw, "any_session"),
+            Some(OpenCodeEvent::Heartbeat)
+        );
     }
 
     #[test]
@@ -452,7 +469,9 @@ mod tests {
         let mut active_tool = None;
 
         drain_sse_into_status(
-            &OpenCodeEvent::ToolStart { name: "bash".into() },
+            &OpenCodeEvent::ToolStart {
+                name: "bash".into(),
+            },
             &mut status,
             &mut thinking_buf,
             &mut active_tool,

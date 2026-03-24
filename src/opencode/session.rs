@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionEntry {
     session_id: String,
-    created_at: String,    // RFC3339
-    last_active: String,   // RFC3339
+    created_at: String,  // RFC3339
+    last_active: String, // RFC3339
 }
 
 /// Persistent store mapping `history_key → opencode_session_id`.

@@ -150,10 +150,7 @@ impl OpenCodeClient {
     /// Verify the server is reachable. Returns `Ok(())` on HTTP 2xx.
     pub async fn health_check(&self) -> ClientResult<()> {
         let url = format!("{}/path", self.base_url);
-        let resp = self
-            .apply_auth(self.http.get(&url))
-            .send()
-            .await?;
+        let resp = self.apply_auth(self.http.get(&url)).send().await?;
         if resp.status().is_success() {
             Ok(())
         } else {
@@ -187,10 +184,7 @@ impl OpenCodeClient {
     }
 
     /// Retrieve session info. Returns `None` if the session was not found (404).
-    pub async fn get_session(
-        &self,
-        session_id: &str,
-    ) -> ClientResult<Option<SessionInfo>> {
+    pub async fn get_session(&self, session_id: &str) -> ClientResult<Option<SessionInfo>> {
         let url = format!("{}/session/{}", self.base_url, session_id);
         let resp = self.apply_auth(self.http.get(&url)).send().await?;
         match resp.status().as_u16() {
@@ -219,7 +213,10 @@ impl OpenCodeClient {
         let url = format!("{}/session/{}/message", self.base_url, session_id);
         let body = MessageRequest {
             parts: vec![MessagePartRequest { kind: "text", text }],
-            model: ModelRef { provider_id, model_id },
+            model: ModelRef {
+                provider_id,
+                model_id,
+            },
             no_reply: None,
         };
         let resp = self
@@ -230,7 +227,10 @@ impl OpenCodeClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
-            return Err(OpenCodeError::ServerError { status, body: body_text });
+            return Err(OpenCodeError::ServerError {
+                status,
+                body: body_text,
+            });
         }
         Ok(resp.json::<MessageResponse>().await?)
     }
@@ -248,7 +248,10 @@ impl OpenCodeClient {
         let url = format!("{}/session/{}/message", self.base_url, session_id);
         let body = MessageRequest {
             parts: vec![MessagePartRequest { kind: "text", text }],
-            model: ModelRef { provider_id, model_id },
+            model: ModelRef {
+                provider_id,
+                model_id,
+            },
             no_reply: Some(true),
         };
         let resp = self
@@ -259,7 +262,10 @@ impl OpenCodeClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
-            return Err(OpenCodeError::ServerError { status, body: body_text });
+            return Err(OpenCodeError::ServerError {
+                status,
+                body: body_text,
+            });
         }
         Ok(())
     }
@@ -278,7 +284,10 @@ impl OpenCodeClient {
         let url = format!("{}/session/{}/prompt_async", self.base_url, session_id);
         let body = MessageRequest {
             parts: vec![MessagePartRequest { kind: "text", text }],
-            model: ModelRef { provider_id, model_id },
+            model: ModelRef {
+                provider_id,
+                model_id,
+            },
             no_reply: None,
         };
         let resp = self
@@ -292,7 +301,10 @@ impl OpenCodeClient {
         }
         warn!(status, "prompt_async returned non-204");
         let body_text = resp.text().await.unwrap_or_default();
-        Err(OpenCodeError::ServerError { status, body: body_text })
+        Err(OpenCodeError::ServerError {
+            status,
+            body: body_text,
+        })
     }
 
     // ── Control ───────────────────────────────────────────────────────────────
@@ -303,10 +315,7 @@ impl OpenCodeClient {
     /// was already idle (not an error).
     pub async fn abort(&self, session_id: &str) -> ClientResult<bool> {
         let url = format!("{}/session/{}/abort", self.base_url, session_id);
-        let resp = self
-            .apply_auth(self.http.post(&url))
-            .send()
-            .await?;
+        let resp = self.apply_auth(self.http.post(&url)).send().await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -320,10 +329,7 @@ impl OpenCodeClient {
     /// Returns `Ok(())` even if the session was not found (idempotent).
     pub async fn delete_session(&self, session_id: &str) -> ClientResult<()> {
         let url = format!("{}/session/{}", self.base_url, session_id);
-        let resp = self
-            .apply_auth(self.http.delete(&url))
-            .send()
-            .await?;
+        let resp = self.apply_auth(self.http.delete(&url)).send().await?;
         match resp.status().as_u16() {
             200..=299 | 404 => Ok(()),
             status => {
@@ -366,7 +372,10 @@ mod tests {
             .mount(&server)
             .await;
         let err = make_client(&server).health_check().await.unwrap_err();
-        assert!(matches!(err, OpenCodeError::ServerError { status: 503, .. }));
+        assert!(matches!(
+            err,
+            OpenCodeError::ServerError { status: 503, .. }
+        ));
     }
 
     #[tokio::test]
@@ -375,8 +384,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/session"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"id": "ses_abc"})),
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "ses_abc"})),
             )
             .mount(&server)
             .await;
@@ -394,8 +402,7 @@ mod tests {
             .and(path("/session"))
             .and(header("x-opencode-directory", "/my/project"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"id": "ses_dir_test"})),
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "ses_dir_test"})),
             )
             .mount(&server)
             .await;
@@ -411,15 +418,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/session/ses_abc"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"id": "ses_abc"})),
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "ses_abc"})),
             )
             .mount(&server)
             .await;
-        let info = make_client(&server)
-            .get_session("ses_abc")
-            .await
-            .unwrap();
+        let info = make_client(&server).get_session("ses_abc").await.unwrap();
         assert!(info.is_some());
     }
 
@@ -443,12 +446,10 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/session/ses_abc/message"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "info": {"id": "msg_1", "role": "assistant"},
-                    "parts": [{"type": "text", "text": "Hello!"}]
-                })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "info": {"id": "msg_1", "role": "assistant"},
+                "parts": [{"type": "text", "text": "Hello!"}]
+            })))
             .mount(&server)
             .await;
         let resp = make_client(&server)
@@ -470,7 +471,10 @@ mod tests {
             .send_message("ses_abc", "Hi", "minimax", "MiniMax-M2.7-highspeed")
             .await
             .unwrap_err();
-        assert!(matches!(err, OpenCodeError::ServerError { status: 500, .. }));
+        assert!(matches!(
+            err,
+            OpenCodeError::ServerError { status: 500, .. }
+        ));
     }
 
     #[tokio::test]
@@ -519,7 +523,10 @@ mod tests {
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;
-        make_client(&server).delete_session("ses_abc").await.unwrap();
+        make_client(&server)
+            .delete_session("ses_abc")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -530,7 +537,10 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        make_client(&server).delete_session("ses_gone").await.unwrap();
+        make_client(&server)
+            .delete_session("ses_gone")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

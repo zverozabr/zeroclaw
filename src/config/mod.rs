@@ -20,15 +20,14 @@ pub use schema::{
     McpTransport, MemoryConfig, Microsoft365Config, ModelRouteConfig, MultimodalConfig,
     NextcloudTalkConfig, NodeTransportConfig, NodesConfig, NotionConfig, ObservabilityConfig,
     OpenAiSttConfig, OpenAiTtsConfig, OpenCodeConfig, OpenVpnTunnelConfig, OtpConfig, OtpMethod,
-    PeripheralBoardConfig, PeripheralsConfig, PluginsConfig, ProjectIntelConfig,
-    ProxyConfig, ProxyScope, QdrantConfig, QueryClassificationConfig, ReliabilityConfig,
-    ResourceLimitsConfig, RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig,
-    SecretsConfig, SecurityConfig, SecurityOpsConfig, SkillCreationConfig, SkillsConfig,
-    SkillsPromptInjectionMode, SlackConfig, StorageConfig, StorageProviderConfig,
-    StorageProviderSection, StreamMode, SwarmConfig, SwarmStrategy, TelegramConfig,
-    TextBrowserConfig, ToolFilterGroup, ToolFilterGroupMode, TranscriptionConfig, TtsConfig,
-    TunnelConfig, VerifiableIntentConfig, WebFetchConfig, WebSearchConfig, WebhookConfig,
-    WorkspaceConfig, DEFAULT_GWS_SERVICES,
+    PeripheralBoardConfig, PeripheralsConfig, PluginsConfig, ProjectIntelConfig, ProxyConfig,
+    ProxyScope, QdrantConfig, QueryClassificationConfig, ReliabilityConfig, ResourceLimitsConfig,
+    RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig, SecretsConfig, SecurityConfig,
+    SecurityOpsConfig, SkillCreationConfig, SkillsConfig, SkillsPromptInjectionMode, SlackConfig,
+    StorageConfig, StorageProviderConfig, StorageProviderSection, StreamMode, SwarmConfig,
+    SwarmStrategy, TelegramConfig, TextBrowserConfig, ToolFilterGroup, ToolFilterGroupMode,
+    TranscriptionConfig, TtsConfig, TunnelConfig, VerifiableIntentConfig, WebFetchConfig,
+    WebSearchConfig, WebhookConfig, WorkspaceConfig, DEFAULT_GWS_SERVICES,
 };
 
 pub fn name_and_presence<T: traits::ChannelConfig>(channel: Option<&T>) -> (&'static str, bool) {

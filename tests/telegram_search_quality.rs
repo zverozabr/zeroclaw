@@ -1064,8 +1064,7 @@ asyncio.run(main())
                         .filter(|m| {
                             let t = m["text"].as_str().unwrap_or("");
                             // Skip tool-status notifications and /new confirmations
-                            !t.contains('\u{1f527}')
-                                && !t.contains("Conversation history cleared")
+                            !t.contains('\u{1f527}') && !t.contains("Conversation history cleared")
                         })
                         .collect();
                     if let Some(chosen) = non_tool_msgs.last() {
@@ -1736,9 +1735,8 @@ async fn b_new2_contacts_are_deduplicated_in_response() {
         || text.contains("contacts_json")
         || text.contains("\"action\"");
     if !is_honest_empty {
-        let has_contact = text.contains('@')
-            || contains_phone_number(&text)
-            || lower_new2.contains("контакт");
+        let has_contact =
+            text.contains('@') || contains_phone_number(&text) || lower_new2.contains("контакт");
         assert!(
             has_contact,
             "Bot reply must contain contacts or 'not found', got:\n{text}"
