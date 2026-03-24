@@ -1065,6 +1065,14 @@ impl OpenAiCompatibleProvider {
     ) -> Vec<NativeMessage> {
         messages
             .iter()
+            .filter(|message| {
+                // Drop empty assistant messages — some providers (e.g. Moonshot/Kimi)
+                // reject requests containing assistant turns with no content.
+                if message.role == "assistant" && message.content.trim().is_empty() {
+                    return false;
+                }
+                true
+            })
             .map(|message| {
                 if message.role == "assistant" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content)
