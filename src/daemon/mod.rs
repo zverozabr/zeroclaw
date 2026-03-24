@@ -54,55 +54,8 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     crate::health::mark_component_ok("daemon");
 
-    // Initialize Pi manager
-    // Pi coding agent: read provider/model/key from [pi] config section
-    let pi_api_key = config
-        .pi
-        .api_key_profile
-        .as_deref()
-        .and_then(|profile| config.reliability.fallback_api_keys.get(profile))
-        .cloned()
-        .unwrap_or_default();
-    crate::pi::init_pi_manager(
-        &config.workspace_dir,
-        &pi_api_key,
-        &config.pi.provider,
-        &config.pi.model,
-        &config.pi.thinking,
-    );
-    // Kill any Pi processes left from previous daemon crash
-    crate::pi::cleanup_orphan_pi_processes().await;
-
-    // Start Pi idle reaper background task
-    if let Some(manager) = crate::pi::pi_manager() {
-        tokio::spawn(async move {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static LAST_SESSION_CLEANUP: AtomicU64 = AtomicU64::new(0);
-
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                manager
-                    .kill_idle(std::time::Duration::from_secs(30 * 60))
-                    .await;
-
-                // Run session garbage collection once per hour (7-day retention)
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                if now_secs - LAST_SESSION_CLEANUP.load(Ordering::Relaxed) > 3600 {
-                    manager
-                        .session_store
-                        .cleanup(std::time::Duration::from_secs(7 * 24 * 3600));
-                    LAST_SESSION_CLEANUP.store(now_secs, Ordering::Relaxed);
-                }
-            }
-        });
-    }
-
-    // Initialize OpenCode manager (if enabled)
-    if config.opencode.enabled {
+    // Initialize OpenCode manager (always enabled; replaces Pi backend)
+    {
         let opencode_api_key = config
             .opencode
             .api_key_profile
@@ -250,10 +203,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     wait_for_shutdown_signal().await?;
     crate::health::mark_component_error("daemon", "shutdown requested");
 
-    // Stop all Pi instances (save sessions before killing)
-    if let Some(mgr) = crate::pi::pi_manager() {
-        mgr.stop_all().await;
-    }
+    // REMOVED: Pi stop_all (Pi module removed, replaced by OpenCode)
 
     for handle in &handles {
         handle.abort();

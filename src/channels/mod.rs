@@ -1048,276 +1048,6 @@ fn record_pi_turn(
     );
 }
 
-/// Orchestrator: detect Pi prefix or Pi mode, route to PiManager, record history.
-///
-/// Pi mode: once activated with "пи, ...", ALL subsequent messages from this
-/// sender route to Pi until "пи стоп". This avoids repeating the prefix.
-async fn handle_pi_bypass_if_needed(
-    ctx: &ChannelRuntimeContext,
-    msg: &traits::ChannelMessage,
-    channel: Option<&Arc<dyn Channel>>,
-) -> bool {
-    let history_key = conversation_history_key(msg);
-
-    // Check persistent Pi mode from global route overrides.
-    let is_in_pi_mode = global_route_overrides()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&history_key)
-        .is_some_and(|r| r.pi_mode);
-
-    // "пи стоп" / "pi stop" — exit Pi mode
-    if is_pi_stop(&msg.content) {
-        if is_in_pi_mode {
-            // Clear pi_mode flag (drop lock before await)
-            {
-                let global = global_route_overrides();
-                let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(entry) = routes.get_mut(&history_key) {
-                    entry.pi_mode = false;
-                }
-                save_route_overrides(&routes);
-            }
-            // Stop the Pi instance for this chat
-            if let Some(mgr) = crate::pi::pi_manager() {
-                let _ = mgr.stop(&history_key).await;
-            }
-            if let Some(ch) = channel {
-                let _ = ch
-                    .send(
-                        &SendMessage::new(
-                            "Pi mode off. Messages go to main assistant.".to_string(),
-                            &msg.reply_target,
-                        )
-                        .in_thread(msg.thread_ts.clone())
-                        .reply_to(msg.reply_to_message_id.clone()),
-                    )
-                    .await;
-            }
-        }
-        return is_in_pi_mode;
-    }
-
-    // Determine the message for Pi:
-    // 1. Explicit prefix "пи, ..." → strip prefix, activate Pi mode
-    // 2. Already in Pi mode → use full message as-is
-    let pi_message = if let Some(stripped) = detect_pi_prefix(&msg.content) {
-        // Activate persistent Pi mode (drop lock immediately)
-        {
-            let global = global_route_overrides();
-            let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
-            routes
-                .entry(history_key.clone())
-                .and_modify(|r| r.pi_mode = true)
-                .or_insert_with(|| {
-                    let default = default_route_selection(ctx);
-                    ChannelRouteSelection {
-                        provider: default.provider,
-                        model: default.model,
-                        api_key: None,
-                        pi_mode: true,
-                    }
-                });
-            save_route_overrides(&routes);
-        }
-        stripped
-    } else if is_in_pi_mode {
-        // In Pi mode — pass full message
-        msg.content.clone()
-    } else {
-        return false;
-    };
-
-    tracing::info!(
-        sender = %msg.sender,
-        channel = %msg.channel,
-        "Pi bypass: routing to PiManager"
-    );
-
-    let Some(mgr) = crate::pi::pi_manager() else {
-        tracing::error!("PiManager not initialized");
-        if let Some(ch) = channel {
-            let _ = ch
-                .send(
-                    &SendMessage::new(
-                        "\u{26a0}\u{fe0f} Pi not available (manager not initialized)".to_string(),
-                        &msg.reply_target,
-                    )
-                    .in_thread(msg.thread_ts.clone())
-                    .reply_to(msg.reply_to_message_id.clone()),
-                )
-                .await;
-        }
-        return true;
-    };
-
-    // Ensure Pi process is running for this chat
-    if let Err(e) = mgr.ensure_running(&history_key).await {
-        tracing::error!(error = %e, "Pi spawn failed");
-        // Deactivate Pi mode so user doesn't get stuck
-        {
-            let global = global_route_overrides();
-            let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(entry) = routes.get_mut(&history_key) {
-                entry.pi_mode = false;
-            }
-            save_route_overrides(&routes);
-        }
-        if let Some(ch) = channel {
-            let _ = ch
-                .send(
-                    &SendMessage::new(
-                        format!(
-                            "\u{26a0}\u{fe0f} Failed to start Pi: {}. Switched back to LLM.",
-                            truncate_with_ellipsis(&e.to_string(), 300)
-                        ),
-                        &msg.reply_target,
-                    )
-                    .in_thread(msg.thread_ts.clone())
-                    .reply_to(msg.reply_to_message_id.clone()),
-                )
-                .await;
-        }
-        return true;
-    }
-
-    // Inject ZeroClaw conversation history when Pi hasn't received it yet
-    if mgr.needs_history_injection(&history_key).await {
-        let history: Vec<ChatMessage> = ctx
-            .conversation_histories
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&history_key)
-            .cloned()
-            .unwrap_or_default();
-        if !history.is_empty() {
-            if let Err(e) = mgr.inject_history(&history_key, &history, 100_000).await {
-                tracing::warn!(error = %e, "Failed to inject history into Pi");
-            }
-        }
-    }
-
-    // Set up Telegram status updates.
-    // reply_target may be "chat_id:thread_id" for forum groups — split for Bot API.
-    let bot_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
-    let (tg_chat_id, tg_thread_id) = if let Some((cid, tid)) = msg.reply_target.split_once(':') {
-        (cid.to_string(), Some(tid.to_string()))
-    } else {
-        (msg.reply_target.clone(), msg.thread_ts.clone())
-    };
-    let notifier = Arc::new(crate::pi::telegram::TelegramNotifier::new(
-        &bot_token,
-        &tg_chat_id,
-        tg_thread_id,
-    ));
-    let status_msg_id = notifier.send_status("\u{2699} Pi is working\u{2026}").await;
-    let typing_handle = notifier.start_typing();
-    let status = Arc::new(std::sync::Mutex::new(
-        crate::pi::status::StatusBuilder::new(),
-    ));
-
-    let s = status.clone();
-    let n = notifier.clone();
-    let mid = status_msg_id;
-    let last_edit_at = Arc::new(AtomicU64::new(0));
-
-    let result = mgr
-        .prompt(&history_key, &pi_message, move |event| {
-            use crate::pi::rpc::PiEvent;
-
-            let mut sb = s.lock().unwrap();
-            match &event {
-                PiEvent::ThinkingEnd(text) => sb.on_thinking_end(text),
-                PiEvent::ToolStart { name, args } => sb.on_tool_start(name, args),
-                PiEvent::ToolEnd { output, .. } => sb.on_tool_end("", output),
-                _ => return,
-            }
-            let rendered = sb.render();
-            drop(sb); // release lock before spawn
-            if let Some(msg_id) = mid {
-                // Debounce: only edit if 800ms+ since last edit to avoid Telegram 429
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-                    .try_into()
-                    .unwrap_or(u64::MAX);
-                let prev = last_edit_at.load(Ordering::Relaxed);
-                if now_ms - prev >= 800 {
-                    last_edit_at.store(now_ms, Ordering::Relaxed);
-                    let notifier = n.clone();
-                    tokio::spawn(async move {
-                        notifier.edit_status(msg_id, &rendered).await;
-                    });
-                }
-            }
-        })
-        .await;
-
-    typing_handle.abort();
-
-    match result {
-        Ok(response) => {
-            // Wait briefly for any in-flight spawned edits to complete,
-            // then overwrite with the clean response.
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            tracing::info!(
-                response_len = response.len(),
-                response_preview = %response.chars().take(100).collect::<String>(),
-                status_msg_id = ?status_msg_id,
-                "Pi final edit: sending clean response"
-            );
-            if let Some(msg_id) = status_msg_id {
-                if response.is_empty() {
-                    notifier
-                        .edit_status(msg_id, "(Pi completed with no output)")
-                        .await;
-                } else {
-                    notifier.edit_status(msg_id, &response).await;
-                }
-            }
-            record_pi_turn(ctx, &history_key, &msg.content, &response);
-            tracing::info!("Pi bypass completed successfully");
-        }
-        Err(err) => {
-            let err_str = err.to_string();
-            tracing::error!(error = %err_str, "Pi bypass failed");
-            record_pi_turn(
-                ctx,
-                &history_key,
-                &msg.content,
-                &format!("[Error] {err_str}"),
-            );
-            // Edit status message with error, or send new message via channel
-            if let Some(msg_id) = status_msg_id {
-                notifier
-                    .edit_status(
-                        msg_id,
-                        &format!(
-                            "\u{26a0}\u{fe0f} Pi error: {}",
-                            truncate_with_ellipsis(&err_str, 500)
-                        ),
-                    )
-                    .await;
-            } else if let Some(ch) = channel {
-                let error_msg = format!(
-                    "\u{26a0}\u{fe0f} Pi error: {}",
-                    truncate_with_ellipsis(&err_str, 500)
-                );
-                let _ = ch
-                    .send(
-                        &SendMessage::new(error_msg, &msg.reply_target)
-                            .in_thread(msg.thread_ts.clone())
-                            .reply_to(msg.reply_to_message_id.clone()),
-                    )
-                    .await;
-            }
-        }
-    }
-
-    true
-}
-
 /// Orchestrator: detect Pi prefix or Pi mode, route to OpenCodeManager, record history.
 ///
 /// Mirrors `handle_pi_bypass_if_needed` but delegates to `OpenCodeManager` instead of
@@ -2732,20 +2462,11 @@ fn handle_models_command(
                 current.pi_mode = true;
                 set_route_selection(ctx, sender_key, current.clone());
                 tracing::info!(sender = %sender_key, "Pi mode activated");
-                if ctx.prompt_config.opencode.enabled {
-                    if let Some(mgr) = crate::opencode::oc_manager() {
-                        let key = sender_key.to_string();
-                        tokio::spawn(async move {
-                            if let Err(e) = mgr.ensure_session(&key).await {
-                                tracing::error!(error = %e, "Failed to create OC session on /models pi");
-                            }
-                        });
-                    }
-                } else if let Some(mgr) = crate::pi::pi_manager() {
+                if let Some(mgr) = crate::opencode::oc_manager() {
                     let key = sender_key.to_string();
                     tokio::spawn(async move {
-                        if let Err(e) = mgr.ensure_running(&key).await {
-                            tracing::error!(error = %e, "Failed to start Pi on /models pi");
+                        if let Err(e) = mgr.ensure_session(&key).await {
+                            tracing::error!(error = %e, "Failed to create OC session on /models pi");
                         }
                     });
                 }
@@ -2759,20 +2480,11 @@ fn handle_models_command(
                 current.pi_mode = false;
                 tracing::info!(sender = %sender_key, "Pi mode deactivated");
                 set_route_selection(ctx, sender_key, current.clone());
-                if ctx.prompt_config.opencode.enabled {
-                    if let Some(mgr) = crate::opencode::oc_manager() {
-                        let key = sender_key.to_string();
-                        tokio::spawn(async move {
-                            if let Err(e) = mgr.stop(&key).await {
-                                tracing::warn!(error = %e, "Failed to stop OC session on model switch");
-                            }
-                        });
-                    }
-                } else if let Some(mgr) = crate::pi::pi_manager() {
+                if let Some(mgr) = crate::opencode::oc_manager() {
                     let key = sender_key.to_string();
                     tokio::spawn(async move {
                         if let Err(e) = mgr.stop(&key).await {
-                            tracing::warn!(error = %e, "Failed to stop Pi on model switch");
+                            tracing::warn!(error = %e, "Failed to stop OC session on model switch");
                         }
                     });
                 }
@@ -3450,12 +3162,8 @@ async fn process_channel_message(
         return;
     }
 
-    // ── Pi/OC bypass: route "пи, ..."/"pi, ..." directly to coder backend ──
-    let pi_handled = if ctx.prompt_config.opencode.enabled {
-        handle_oc_bypass_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await
-    } else {
-        handle_pi_bypass_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await
-    };
+    // ── OC bypass: route "пи, ..."/"pi, ..." directly to OpenCode backend ──
+    let pi_handled = handle_oc_bypass_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await;
     if pi_handled {
         return;
     }
