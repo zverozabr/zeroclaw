@@ -111,7 +111,7 @@ pub fn parse_sse_event(raw_data: &str, session_id: &str) -> Option<OpenCodeEvent
             let name = props.tool_name.unwrap_or_else(|| "unknown".to_string());
             match props.state.as_deref() {
                 Some("running") => Some(OpenCodeEvent::ToolStart { name }),
-                Some("result") | Some("error") => {
+                Some("result" | "error") => {
                     Some(OpenCodeEvent::ToolEnd { name })
                 }
                 _ => None,
@@ -154,9 +154,9 @@ pub fn drain_sse_into_status(
     active_tool: &mut Option<String>,
 ) -> bool {
     match event {
-        OpenCodeEvent::TextDelta(_) => {
-            // Text deltas accumulate in the caller's text_buf, not here.
-            // StatusBuilder.on_response_text() is called once at the end.
+        OpenCodeEvent::TextDelta(_) | OpenCodeEvent::Heartbeat | OpenCodeEvent::Connected => {
+            // TextDelta: accumulates in the caller's text_buf, not here.
+            // Heartbeat/Connected: no-op for status; caller resets inactivity timer on Heartbeat.
         }
         OpenCodeEvent::ThinkingDelta(delta) => {
             thinking_buf.push_str(delta);
@@ -179,9 +179,6 @@ pub fn drain_sse_into_status(
                 thinking_buf.clear();
             }
             return true;
-        }
-        OpenCodeEvent::Heartbeat | OpenCodeEvent::Connected => {
-            // No-op for status; caller resets its inactivity timer on Heartbeat.
         }
     }
     false
@@ -267,7 +264,7 @@ async fn sse_reader_task(
 
         loop {
             tokio::select! {
-                _ = stop.cancelled() => {
+                () = stop.cancelled() => {
                     debug!(session_id = %session_id, "SSE reader cancelled");
                     return;
                 }

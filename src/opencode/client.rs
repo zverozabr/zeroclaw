@@ -342,7 +342,7 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    async fn make_client(server: &MockServer) -> OpenCodeClient {
+    fn make_client(server: &MockServer) -> OpenCodeClient {
         OpenCodeClient::with_base_url(server.uri())
     }
 
@@ -354,7 +354,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
             .mount(&server)
             .await;
-        make_client(&server).await.health_check().await.unwrap();
+        make_client(&server).health_check().await.unwrap();
     }
 
     #[tokio::test]
@@ -365,7 +365,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(503).set_body_string("down"))
             .mount(&server)
             .await;
-        let err = make_client(&server).await.health_check().await.unwrap_err();
+        let err = make_client(&server).health_check().await.unwrap_err();
         assert!(matches!(err, OpenCodeError::ServerError { status: 503, .. }));
     }
 
@@ -381,7 +381,6 @@ mod tests {
             .mount(&server)
             .await;
         let id = make_client(&server)
-            .await
             .create_session("/tmp/workspace")
             .await
             .unwrap();
@@ -401,7 +400,6 @@ mod tests {
             .mount(&server)
             .await;
         make_client(&server)
-            .await
             .create_session("/my/project")
             .await
             .unwrap();
@@ -419,7 +417,6 @@ mod tests {
             .mount(&server)
             .await;
         let info = make_client(&server)
-            .await
             .get_session("ses_abc")
             .await
             .unwrap();
@@ -435,7 +432,6 @@ mod tests {
             .mount(&server)
             .await;
         let info = make_client(&server)
-            .await
             .get_session("ses_missing")
             .await
             .unwrap();
@@ -456,7 +452,6 @@ mod tests {
             .mount(&server)
             .await;
         let resp = make_client(&server)
-            .await
             .send_message("ses_abc", "Hi", "minimax", "MiniMax-M2.7-highspeed")
             .await
             .unwrap();
@@ -472,7 +467,6 @@ mod tests {
             .mount(&server)
             .await;
         let err = make_client(&server)
-            .await
             .send_message("ses_abc", "Hi", "minimax", "MiniMax-M2.7-highspeed")
             .await
             .unwrap_err();
@@ -488,7 +482,6 @@ mod tests {
             .mount(&server)
             .await;
         make_client(&server)
-            .await
             .send_message_async("ses_abc", "Hi", "minimax", "MiniMax-M2.7-highspeed")
             .await
             .unwrap();
@@ -502,7 +495,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(true))
             .mount(&server)
             .await;
-        let aborted = make_client(&server).await.abort("ses_abc").await.unwrap();
+        let aborted = make_client(&server).abort("ses_abc").await.unwrap();
         assert!(aborted);
     }
 
@@ -514,7 +507,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(false))
             .mount(&server)
             .await;
-        let aborted = make_client(&server).await.abort("ses_abc").await.unwrap();
+        let aborted = make_client(&server).abort("ses_abc").await.unwrap();
         assert!(!aborted);
     }
 
@@ -526,7 +519,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;
-        make_client(&server).await.delete_session("ses_abc").await.unwrap();
+        make_client(&server).delete_session("ses_abc").await.unwrap();
     }
 
     #[tokio::test]
@@ -537,7 +530,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        make_client(&server).await.delete_session("ses_gone").await.unwrap();
+        make_client(&server).delete_session("ses_gone").await.unwrap();
     }
 
     #[tokio::test]

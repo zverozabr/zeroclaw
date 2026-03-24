@@ -76,7 +76,7 @@ impl OpenCodeProcessManager {
 
         // Spawn new process (release lock during I/O)
         drop(state);
-        let proc = self.spawn_opencode().await?;
+        let proc = self.spawn_opencode()?;
         let pid = proc.pid;
         self.wait_for_ready().await?;
         self.state.lock().await.replace(proc);
@@ -133,7 +133,7 @@ impl OpenCodeProcessManager {
 
     // ── Private ───────────────────────────────────────────────────────────────
 
-    async fn spawn_opencode(&self) -> anyhow::Result<OpenCodeProcess> {
+    fn spawn_opencode(&self) -> anyhow::Result<OpenCodeProcess> {
         let binary = find_opencode_binary()?;
         info!(
             binary = %binary.display(),

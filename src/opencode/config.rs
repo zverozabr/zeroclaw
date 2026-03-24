@@ -79,7 +79,7 @@ pub async fn write_opencode_config(
 
     // Build the models map: one entry per model configured
     let mut models: HashMap<String, serde_json::Value> = HashMap::new();
-    models.insert(config.model.clone(), serde_json::Value::Object(Default::default()));
+    models.insert(config.model.clone(), serde_json::Value::Object(serde_json::Map::default()));
 
     // Build provider map
     let mut provider: HashMap<String, OpencodeJsonProvider> = HashMap::new();
