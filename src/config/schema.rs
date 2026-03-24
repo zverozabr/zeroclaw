@@ -7194,6 +7194,10 @@ impl Config {
                         continue;
                     }
                 }
+                // Skip false positives for opencode sub-fields
+                if path.starts_with("opencode.") || path == "opencode" {
+                    continue;
+                }
                 tracing::warn!(
                     "Unknown config key ignored: \"{}\". Check config.toml for typos or deprecated options.",
                     path
