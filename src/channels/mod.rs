@@ -2473,6 +2473,7 @@ fn handle_models_command(
             {
                 current.provider = route.provider.clone();
                 current.model = route.model.clone();
+                current.api_key = route.api_key.clone();
                 set_route_selection(ctx, sender_key, current.clone());
                 format!(
                     "\u{2705} Switched to {} ({})",
