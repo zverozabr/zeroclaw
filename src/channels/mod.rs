@@ -1209,7 +1209,48 @@ async fn handle_oc_bypass_if_needed(
     let status_msg_id = notifier.send_status("\u{2699} OpenCode is working\u{2026}").await;
     let typing_handle = notifier.start_typing();
 
-    let result = mgr.prompt(&history_key, &oc_message, history_ref, |_event| {}).await;
+    // Set up throttled live status updates during prompt execution.
+    let notifier_cb = Arc::clone(&notifier);
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let last_edit_ms = Arc::new(AtomicI64::new(0_i64));
+    let status_msg_id_cb = status_msg_id;
+
+    let result = mgr
+        .prompt(&history_key, &oc_message, history_ref, move |event| {
+            use crate::opencode::events::OpenCodeEvent;
+            let text = match &event {
+                OpenCodeEvent::ThinkingDelta(_) => "\u{1f4ad} Thinking\u{2026}".to_string(),
+                OpenCodeEvent::ToolStart { name } => {
+                    format!("\u{2699} Running `{name}`\u{2026}")
+                }
+                OpenCodeEvent::ToolEnd { .. } => "\u{2699} Processing\u{2026}".to_string(),
+                _ => return,
+            };
+            // Use as_secs() * 1000 (u64 → i64) to avoid u128 truncation lint.
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_mul(1000) as i64;
+            let last = last_edit_ms.load(Ordering::Relaxed);
+            // Throttle: only edit if 2s have passed since last edit.
+            if now_ms - last < 2000 {
+                return;
+            }
+            if last_edit_ms
+                .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+            {
+                return; // another event won the race
+            }
+            let notifier_inner = Arc::clone(&notifier_cb);
+            if let Some(msg_id) = status_msg_id_cb {
+                tokio::spawn(async move {
+                    notifier_inner.edit_status(msg_id, &text).await;
+                });
+            }
+        })
+        .await;
 
     typing_handle.abort();
 

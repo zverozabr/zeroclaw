@@ -281,11 +281,26 @@ impl OpenCodeManager {
             let _ = status_done_tx.send(local_text_buf);
         });
 
-        // Send the actual message (blocking HTTP)
-        let result = self
-            .http_client
-            .send_message(&session_id, text, &self.provider, &self.model)
-            .await;
+        // Send the actual message — retry once if OC server has crashed
+        let result = match self.http_client.send_message(&session_id, text, &self.provider, &self.model).await {
+            Ok(r) => Ok(r),
+            Err(crate::opencode::client::OpenCodeError::Http(e)) => {
+                tracing::warn!(history_key, error = %e, "OC HTTP error, attempting server restart and retry");
+                // Try to restart the server
+                if let Some(pm) = crate::opencode::process::opencode_process() {
+                    if pm.ensure_running().await.is_ok() {
+                        // Retry once
+                        self.http_client.send_message(&session_id, text, &self.provider, &self.model).await
+                            .map_err(|e| anyhow::anyhow!("OC prompt failed after restart: {e}"))
+                    } else {
+                        Err(anyhow::anyhow!("OC server restart failed: {e}"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("OC prompt transport error: {e}"))
+                }
+            }
+            Err(e) => Err(anyhow::anyhow!("OC prompt error: {e}")),
+        };
 
         // Cancel SSE reader
         cancel_token.cancel();
@@ -309,7 +324,7 @@ impl OpenCodeManager {
                     Ok(final_text)
                 }
             }
-            Err(e) => Err(anyhow::anyhow!("OpenCode prompt failed: {e}")),
+            Err(e) => Err(e),
         }
     }
 

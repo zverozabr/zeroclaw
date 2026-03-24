@@ -203,7 +203,15 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     wait_for_shutdown_signal().await?;
     crate::health::mark_component_error("daemon", "shutdown requested");
 
-    // REMOVED: Pi stop_all (Pi module removed, replaced by OpenCode)
+    // Graceful OpenCode shutdown
+    if let Some(mgr) = crate::opencode::oc_manager() {
+        mgr.stop_all().await;
+        tracing::info!("OpenCode sessions stopped");
+    }
+    if let Some(pm) = crate::opencode::process::opencode_process() {
+        pm.shutdown().await;
+        tracing::info!("OpenCode server stopped");
+    }
 
     for handle in &handles {
         handle.abort();
