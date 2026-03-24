@@ -1296,7 +1296,9 @@ fn parse_skills_prompt_injection_mode(raw: &str) -> Option<SkillsPromptInjection
 /// OpenCode coding agent configuration (`[opencode]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OpenCodeConfig {
-    /// Enable the OpenCode backend instead of Pi (Claude Code).
+    /// Whether the OpenCode backend was enabled.
+    /// NOTE: OpenCode is now the permanent coding backend — this field is
+    /// kept for config compatibility but no longer controls initialization.
     #[serde(default)]
     pub enabled: bool,
     /// Port for the OpenCode server. Default: 14096.
