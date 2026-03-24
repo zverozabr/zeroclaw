@@ -421,7 +421,9 @@ impl OpenCodeManager {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    async fn get_session_id(&self, history_key: &str) -> Option<String> {
+    /// Return the OpenCode session ID for `history_key` if one exists.
+    /// Used to pass `ZC_OC_SESSION_ID` to skill subprocesses.
+    pub async fn get_session_id(&self, history_key: &str) -> Option<String> {
         let map = self.session_map.read().await;
         map.get(history_key).map(|e| e.opencode_session_id.clone())
     }
