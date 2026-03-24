@@ -191,6 +191,21 @@ mod tests {
     }
 
     #[test]
+    fn truncates_cyrillic_without_panic() {
+        // Cyrillic chars are 2 bytes each. A naïve &s[..3800] would panic
+        // when the byte boundary falls inside a 2-byte sequence.
+        let mut b = StatusBuilder::new();
+        let cyrillic_chunk = "Привет мир! ".repeat(40); // ~480 bytes per repeat
+        for _ in 0..10 {
+            b.on_tool_end("bash", &cyrillic_chunk);
+        }
+        // Must not panic and must produce valid UTF-8 within length limit.
+        let out = b.render();
+        assert!(out.len() <= 3800);
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+    }
+
+    #[test]
     fn sliding_window_keeps_last_3() {
         let mut b = StatusBuilder::new();
         for i in 1..=5 {
