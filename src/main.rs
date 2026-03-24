@@ -97,6 +97,7 @@ mod migration;
 mod multimodal;
 mod observability;
 mod onboard;
+mod opencode;
 mod peripherals;
 mod pi;
 #[cfg(feature = "plugins-wasm")]

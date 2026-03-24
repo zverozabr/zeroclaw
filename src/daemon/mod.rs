@@ -110,8 +110,59 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             .and_then(|profile| config.reliability.fallback_api_keys.get(profile))
             .cloned()
             .unwrap_or_default();
-        // TODO: crate::opencode::init_oc_manager(&config.opencode, &opencode_api_key, &config.workspace_dir);
-        tracing::info!("OpenCode enabled (api_key_len={})", opencode_api_key.len());
+
+        // Write opencode.json config file
+        match crate::opencode::config::write_opencode_config(
+            &config.opencode,
+            &opencode_api_key,
+            &config.workspace_dir,
+        )
+        .await
+        {
+            Ok(config_path) => {
+                // Initialize process manager and start server
+                let config_dir = config_path
+                    .parent()
+                    .unwrap_or(&config.workspace_dir)
+                    .to_path_buf();
+                crate::opencode::process::init_opencode_process(
+                    config.opencode.port,
+                    &config.opencode.hostname,
+                    config_dir,
+                );
+                crate::opencode::process::OpenCodeProcessManager::cleanup_orphans().await;
+
+                if let Some(pm) = crate::opencode::process::opencode_process() {
+                    if let Err(e) = pm.ensure_running().await {
+                        tracing::error!(error = %e, "failed to start opencode server");
+                    }
+                }
+
+                // Initialize manager
+                crate::opencode::init_oc_manager(
+                    &config.opencode,
+                    &opencode_api_key,
+                    &config.workspace_dir,
+                );
+
+                // Idle reaper
+                let idle_timeout =
+                    std::time::Duration::from_secs(config.opencode.idle_timeout_secs);
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                        if let Some(mgr) = crate::opencode::oc_manager() {
+                            mgr.kill_idle(idle_timeout).await;
+                        }
+                    }
+                });
+
+                tracing::info!("OpenCode initialized (port={})", config.opencode.port);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to write opencode.json, opencode disabled");
+            }
+        }
     }
 
     if config.heartbeat.enabled {

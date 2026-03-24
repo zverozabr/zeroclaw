@@ -469,6 +469,8 @@ enum ChannelRuntimeCommand {
     Models(Option<String>),
     NewSession,
     Skills,
+    PiSteer(Option<String>),   // /ps [text] — abort + optional followup message
+    PiFollowup(String),        // /pf <text> — queue message while Pi busy
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1345,6 +1347,22 @@ fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRun
         }
         "/new" => Some(ChannelRuntimeCommand::NewSession),
         "/skills" => Some(ChannelRuntimeCommand::Skills),
+        "/ps" => {
+            let text: String = parts.collect::<Vec<_>>().join(" ");
+            let text = text.trim().to_string();
+            Some(ChannelRuntimeCommand::PiSteer(
+                if text.is_empty() { None } else { Some(text) }
+            ))
+        }
+        "/pf" => {
+            let text: String = parts.collect::<Vec<_>>().join(" ");
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                None
+            } else {
+                Some(ChannelRuntimeCommand::PiFollowup(text))
+            }
+        }
         _ => None,
     }
 }
@@ -2425,6 +2443,55 @@ async fn try_handle_pending_selection(
     None
 }
 
+/// `/ps [text]` — abort current OpenCode generation, optionally send a new message.
+#[allow(unused_variables)]
+fn handle_ps_command(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+    text: Option<String>,
+) -> String {
+    let Some(mgr) = crate::opencode::oc_manager() else {
+        return "OpenCode not available (not enabled or not initialized)".to_string();
+    };
+    let key = sender_key.to_string();
+    tokio::spawn(async move {
+        match mgr.abort(&key).await {
+            Ok(true) => tracing::info!(sender_key = %key, "Pi aborted via /ps"),
+            Ok(false) => tracing::debug!(sender_key = %key, "Pi was not active"),
+            Err(e) => tracing::warn!(sender_key = %key, error = %e, "/ps abort error"),
+        }
+        // If text provided, send as new message after abort
+        if let Some(follow_text) = text {
+            if let Err(e) = mgr.prompt(&key, &follow_text, None, |_| {}).await {
+                tracing::warn!(sender_key = %key, error = %e, "/ps followup prompt failed");
+            }
+        }
+    });
+    "Aborting\u{2026}".to_string()
+}
+
+/// `/pf <text>` — queue a message for OpenCode to process after current response.
+#[allow(unused_variables)]
+fn handle_pf_command(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+    text: String,
+) -> String {
+    if text.is_empty() {
+        return "Usage: /pf <text>".to_string();
+    }
+    let Some(mgr) = crate::opencode::oc_manager() else {
+        return "OpenCode not available".to_string();
+    };
+    let key = sender_key.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = mgr.prompt_async(&key, &text).await {
+            tracing::warn!(sender_key = %key, error = %e, "/pf prompt_async failed");
+        }
+    });
+    "Queued".to_string()
+}
+
 fn handle_models_command(
     ctx: &ChannelRuntimeContext,
     sender_key: &str,
@@ -2560,6 +2627,12 @@ async fn handle_runtime_command_if_needed(
             "Conversation history cleared. Starting fresh.".to_string()
         }
         ChannelRuntimeCommand::Skills => format_skills_list(&ctx.loaded_skills),
+        ChannelRuntimeCommand::PiSteer(text) => {
+            handle_ps_command(ctx, &sender_key, text)
+        }
+        ChannelRuntimeCommand::PiFollowup(text) => {
+            handle_pf_command(ctx, &sender_key, text)
+        }
     };
 
     if let Err(err) = channel
