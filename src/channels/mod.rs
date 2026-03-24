@@ -1318,6 +1318,233 @@ async fn handle_pi_bypass_if_needed(
     true
 }
 
+/// Orchestrator: detect Pi prefix or Pi mode, route to OpenCodeManager, record history.
+///
+/// Mirrors `handle_pi_bypass_if_needed` but delegates to `OpenCodeManager` instead of
+/// `PiManager`. Used when `[opencode] enabled = true`.
+async fn handle_oc_bypass_if_needed(
+    ctx: &ChannelRuntimeContext,
+    msg: &traits::ChannelMessage,
+    channel: Option<&Arc<dyn Channel>>,
+) -> bool {
+    let history_key = conversation_history_key(msg);
+
+    // Check persistent Pi mode from global route overrides.
+    let is_in_pi_mode = global_route_overrides()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&history_key)
+        .is_some_and(|r| r.pi_mode);
+
+    // "пи стоп" / "pi stop" — exit Pi mode
+    if is_pi_stop(&msg.content) {
+        if is_in_pi_mode {
+            // Clear pi_mode flag (drop lock before await)
+            {
+                let global = global_route_overrides();
+                let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(entry) = routes.get_mut(&history_key) {
+                    entry.pi_mode = false;
+                }
+                save_route_overrides(&routes);
+            }
+            // Stop the OpenCode session for this chat
+            if let Some(mgr) = crate::opencode::oc_manager() {
+                let _ = mgr.stop(&history_key).await;
+            }
+            if let Some(ch) = channel {
+                let _ = ch
+                    .send(
+                        &SendMessage::new(
+                            "Coder stopped. Messages go to main assistant.".to_string(),
+                            &msg.reply_target,
+                        )
+                        .in_thread(msg.thread_ts.clone())
+                        .reply_to(msg.reply_to_message_id.clone()),
+                    )
+                    .await;
+            }
+        }
+        return is_in_pi_mode;
+    }
+
+    // Determine the message for OpenCode:
+    // 1. Explicit prefix "пи, ..." → strip prefix, activate Pi mode
+    // 2. Already in Pi mode → use full message as-is
+    let oc_message = if let Some(stripped) = detect_pi_prefix(&msg.content) {
+        // Activate persistent Pi mode (drop lock immediately)
+        {
+            let global = global_route_overrides();
+            let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
+            routes
+                .entry(history_key.clone())
+                .and_modify(|r| r.pi_mode = true)
+                .or_insert_with(|| {
+                    let default = default_route_selection(ctx);
+                    ChannelRouteSelection {
+                        provider: default.provider,
+                        model: default.model,
+                        api_key: None,
+                        pi_mode: true,
+                    }
+                });
+            save_route_overrides(&routes);
+        }
+        stripped
+    } else if is_in_pi_mode {
+        // In Pi mode — pass full message
+        msg.content.clone()
+    } else {
+        return false;
+    };
+
+    tracing::info!(
+        sender = %msg.sender,
+        channel = %msg.channel,
+        "OC bypass: routing to OpenCodeManager"
+    );
+
+    let Some(mgr) = crate::opencode::oc_manager() else {
+        tracing::error!("OpenCodeManager not initialized");
+        if let Some(ch) = channel {
+            let _ = ch
+                .send(
+                    &SendMessage::new(
+                        "\u{26a0}\u{fe0f} OpenCode not available (manager not initialized)"
+                            .to_string(),
+                        &msg.reply_target,
+                    )
+                    .in_thread(msg.thread_ts.clone())
+                    .reply_to(msg.reply_to_message_id.clone()),
+                )
+                .await;
+        }
+        return true;
+    };
+
+    // Ensure OpenCode session exists for this chat
+    if let Err(e) = mgr.ensure_session(&history_key).await {
+        tracing::error!(error = %e, "OpenCode session creation failed");
+        // Deactivate Pi mode so user doesn't get stuck
+        {
+            let global = global_route_overrides();
+            let mut routes = global.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = routes.get_mut(&history_key) {
+                entry.pi_mode = false;
+            }
+            save_route_overrides(&routes);
+        }
+        if let Some(ch) = channel {
+            let _ = ch
+                .send(
+                    &SendMessage::new(
+                        format!(
+                            "\u{26a0}\u{fe0f} Failed to start OpenCode: {}. Switched back to LLM.",
+                            truncate_with_ellipsis(&e.to_string(), 300)
+                        ),
+                        &msg.reply_target,
+                    )
+                    .in_thread(msg.thread_ts.clone())
+                    .reply_to(msg.reply_to_message_id.clone()),
+                )
+                .await;
+        }
+        return true;
+    }
+
+    // Load ZeroClaw conversation history for potential injection
+    let history: Vec<crate::providers::ChatMessage> = ctx
+        .conversation_histories
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&history_key)
+        .cloned()
+        .unwrap_or_default();
+    let history_ref: Option<&[crate::providers::ChatMessage]> =
+        if history.is_empty() { None } else { Some(&history) };
+
+    // Set up Telegram status updates.
+    // reply_target may be "chat_id:thread_id" for forum groups — split for Bot API.
+    let bot_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
+    let (tg_chat_id, tg_thread_id) = if let Some((cid, tid)) = msg.reply_target.split_once(':') {
+        (cid.to_string(), Some(tid.to_string()))
+    } else {
+        (msg.reply_target.clone(), msg.thread_ts.clone())
+    };
+    let notifier = Arc::new(crate::opencode::telegram::TelegramNotifier::new(
+        &bot_token,
+        &tg_chat_id,
+        tg_thread_id,
+    ));
+    let status_msg_id = notifier.send_status("\u{2699} OpenCode is working\u{2026}").await;
+    let typing_handle = notifier.start_typing();
+
+    let result = mgr.prompt(&history_key, &oc_message, history_ref, |_event| {}).await;
+
+    typing_handle.abort();
+
+    match result {
+        Ok(response) => {
+            // Wait briefly for any in-flight spawned edits to complete,
+            // then overwrite with the clean response.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            tracing::info!(
+                response_len = response.len(),
+                response_preview = %response.chars().take(100).collect::<String>(),
+                status_msg_id = ?status_msg_id,
+                "OC final edit: sending clean response"
+            );
+            if let Some(msg_id) = status_msg_id {
+                if response.is_empty() {
+                    notifier
+                        .edit_status(msg_id, "(OpenCode completed with no output)")
+                        .await;
+                } else {
+                    notifier.edit_status(msg_id, &response).await;
+                }
+            }
+            record_pi_turn(ctx, &history_key, &msg.content, &response);
+            tracing::info!("OC bypass completed successfully");
+        }
+        Err(err) => {
+            let err_str = err.to_string();
+            tracing::error!(error = %err_str, "OC bypass failed");
+            record_pi_turn(
+                ctx,
+                &history_key,
+                &msg.content,
+                &format!("[Error] {err_str}"),
+            );
+            // Edit status message with error, or send new message via channel
+            if let Some(msg_id) = status_msg_id {
+                notifier
+                    .edit_status(
+                        msg_id,
+                        &format!(
+                            "\u{26a0}\u{fe0f} OpenCode error: {}",
+                            truncate_with_ellipsis(&err_str, 500)
+                        ),
+                    )
+                    .await;
+            } else if let Some(ch) = channel {
+                let error_msg = format!(
+                    "\u{26a0}\u{fe0f} OpenCode error: {}",
+                    truncate_with_ellipsis(&err_str, 500)
+                );
+                let _ = ch
+                    .send(
+                        &SendMessage::new(error_msg, &msg.reply_target)
+                            .in_thread(msg.thread_ts.clone())
+                            .reply_to(msg.reply_to_message_id.clone()),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    true
+}
+
 fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRuntimeCommand> {
     if !supports_runtime_model_switch(channel_name) {
         return None;
@@ -2505,7 +2732,16 @@ fn handle_models_command(
                 current.pi_mode = true;
                 set_route_selection(ctx, sender_key, current.clone());
                 tracing::info!(sender = %sender_key, "Pi mode activated");
-                if let Some(mgr) = crate::pi::pi_manager() {
+                if ctx.prompt_config.opencode.enabled {
+                    if let Some(mgr) = crate::opencode::oc_manager() {
+                        let key = sender_key.to_string();
+                        tokio::spawn(async move {
+                            if let Err(e) = mgr.ensure_session(&key).await {
+                                tracing::error!(error = %e, "Failed to create OC session on /models pi");
+                            }
+                        });
+                    }
+                } else if let Some(mgr) = crate::pi::pi_manager() {
                     let key = sender_key.to_string();
                     tokio::spawn(async move {
                         if let Err(e) = mgr.ensure_running(&key).await {
@@ -2523,7 +2759,16 @@ fn handle_models_command(
                 current.pi_mode = false;
                 tracing::info!(sender = %sender_key, "Pi mode deactivated");
                 set_route_selection(ctx, sender_key, current.clone());
-                if let Some(mgr) = crate::pi::pi_manager() {
+                if ctx.prompt_config.opencode.enabled {
+                    if let Some(mgr) = crate::opencode::oc_manager() {
+                        let key = sender_key.to_string();
+                        tokio::spawn(async move {
+                            if let Err(e) = mgr.stop(&key).await {
+                                tracing::warn!(error = %e, "Failed to stop OC session on model switch");
+                            }
+                        });
+                    }
+                } else if let Some(mgr) = crate::pi::pi_manager() {
                     let key = sender_key.to_string();
                     tokio::spawn(async move {
                         if let Err(e) = mgr.stop(&key).await {
@@ -3205,8 +3450,13 @@ async fn process_channel_message(
         return;
     }
 
-    // ── Pi bypass: route "пи, ..."/"pi, ..." directly to coder.py ──
-    if handle_pi_bypass_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await {
+    // ── Pi/OC bypass: route "пи, ..."/"pi, ..." directly to coder backend ──
+    let pi_handled = if ctx.prompt_config.opencode.enabled {
+        handle_oc_bypass_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await
+    } else {
+        handle_pi_bypass_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await
+    };
+    if pi_handled {
         return;
     }
 
