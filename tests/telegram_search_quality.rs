@@ -230,6 +230,7 @@ async fn run_submit_contacts(contacts_json: &str) -> Value {
 
 /// U1: mirror_stats returns valid structure even if DB does not exist yet.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn u1_mirror_stats_returns_valid_structure() {
     let result = run_mirror_sync(&["mirror_stats"]);
 
@@ -253,6 +254,7 @@ fn u1_mirror_stats_returns_valid_structure() {
 
 /// U2: search_indexed on empty/missing DB returns success=true with empty results.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn u2_indexed_search_empty_db_returns_empty_not_error() {
     let result = run_mirror_sync(&["search_indexed", "--query", "тест"]);
 
@@ -272,6 +274,7 @@ fn u2_indexed_search_empty_db_returns_empty_not_error() {
 
 /// U3: search_indexed with no-match query returns success=true, count=0.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn u3_indexed_search_no_results_returns_empty() {
     let result = run_mirror_sync(&["search_indexed", "--query", "xyzqwertynonexistent12345abc"]);
 
@@ -288,6 +291,7 @@ fn u3_indexed_search_no_results_returns_empty() {
 
 /// U4: search_indexed with special characters does not crash.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn u4_indexed_search_special_chars_no_crash() {
     // FTS5 special chars — should return success (possibly with syntax note)
     let result = run_mirror_sync(&["search_indexed", "--query", "* AND OR NOT"]);
@@ -301,6 +305,7 @@ fn u4_indexed_search_special_chars_no_crash() {
 
 /// U5: search_fuzzy on empty DB returns success=true with empty results.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn u5_fuzzy_search_empty_db_returns_empty() {
     let result = run_mirror_sync(&["search_fuzzy", "--query", "сантехник"]);
 
@@ -320,6 +325,7 @@ fn u5_fuzzy_search_empty_db_returns_empty() {
 
 /// U6: search_fuzzy threshold field is preserved in response.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn u6_fuzzy_search_threshold_in_response() {
     let result = run_mirror_sync(&["search_fuzzy", "--query", "тест", "--threshold", "0.8"]);
 
@@ -333,6 +339,7 @@ fn u6_fuzzy_search_threshold_in_response() {
 
 /// U7: search_indexed date_filter args are accepted without error.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn u7_indexed_search_date_filter_accepted() {
     let result = run_mirror_sync(&[
         "search_indexed",
@@ -353,6 +360,7 @@ fn u7_indexed_search_date_filter_accepted() {
 /// u8: submit_contacts.py rejects a contact whose username does not appear in message_text
 /// and is not author_contact. Verbatim gate fires before HTTP verify (SKIP_VERIFY=1).
 #[tokio::test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 async fn u8_verbatim_gate_rejects_contact_not_in_message_text() {
     let skill_dir =
         std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into()))
@@ -397,6 +405,7 @@ async fn u8_verbatim_gate_rejects_contact_not_in_message_text() {
 
 /// u9: submit_contacts.py accepts a contact whose username appears verbatim in message_text.
 #[tokio::test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 async fn u9_verbatim_gate_accepts_contact_in_message_text() {
     let skill_dir =
         std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into()))
@@ -481,6 +490,7 @@ async fn i1_index_channel_fetches_and_indexes_messages() {
 
 /// I2: search_indexed is fast — must complete in under 1 second.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn i2_indexed_search_latency_sub_second() {
     let start = std::time::Instant::now();
     let result = run_mirror_sync(&["search_indexed", "--query", "самуи", "--limit", "50"]);
@@ -541,6 +551,7 @@ async fn i4_search_global_scans_multiple_dialogs() {
 
 /// I5: date_filter_precision — all results from search_indexed fall within requested range.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn i5_date_filter_precision_all_results_in_range() {
     let date_from = "2025-01-01";
     let date_to = "2026-12-31";
@@ -668,6 +679,7 @@ async fn i6_live_vs_indexed_overlap() {
 
 /// I7: No duplicate msg_id+chat_id in indexed search results.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn i7_hybrid_no_duplicate_ids_in_indexed_results() {
     let result = run_mirror_sync(&["search_indexed", "--query", "самуи", "--limit", "200"]);
 
@@ -764,6 +776,7 @@ async fn q2_aircon_date_filter_all_results_in_range() {
 
 /// Q3: Empty query returns success=true, count=0, no crash.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn q3_empty_query_no_crash() {
     // Empty string query
     let result = run_mirror_sync(&["search_indexed", "--query", ""]);
@@ -777,6 +790,7 @@ fn q3_empty_query_no_crash() {
 
 /// Q4: Very long query (>200 chars) is handled without crash.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn q4_very_long_query_no_crash() {
     let long_query = "а".repeat(250);
     let result = run_mirror_sync(&["search_indexed", "--query", &long_query]);
@@ -788,6 +802,7 @@ fn q4_very_long_query_no_crash() {
 
 /// Q5: search_fuzzy with typo finds plausible matches when data is indexed.
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn q5_fuzzy_typo_tolerance() {
     // "сантехик" is a common typo for "сантехник"
     let result = run_mirror_sync(&[
@@ -814,6 +829,7 @@ fn q5_fuzzy_typo_tolerance() {
 
 /// Q6: Strict fuzzy threshold (0.95) returns fewer results than lenient (0.5).
 #[test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 fn q6_fuzzy_stricter_threshold_fewer_results() {
     let strict = run_mirror_sync(&[
         "search_fuzzy",
@@ -849,6 +865,7 @@ fn q6_fuzzy_stricter_threshold_fewer_results() {
 
 /// Q7: Three parallel search_indexed calls all complete without deadlock.
 #[tokio::test]
+#[ignore = "requires ~/.zeroclaw workspace"]
 async fn q7_parallel_indexed_searches_no_deadlock() {
     let queries = ["самуи", "юрист", "врач"];
 
