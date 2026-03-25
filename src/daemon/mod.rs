@@ -110,6 +110,11 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                     }
                 });
 
+                // Watchdog: auto-restart OC if it becomes unresponsive.
+                if let Some(pm) = crate::opencode::process::opencode_process() {
+                    pm.spawn_watchdog();
+                }
+
                 tracing::info!("OpenCode initialized (port={})", config.opencode.port);
             }
             Err(e) => {

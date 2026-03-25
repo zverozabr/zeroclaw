@@ -337,6 +337,13 @@ impl OpenCodeManager {
                                             },
                                         );
                                         drop(map);
+
+                                        // Re-inject conversation history so the fresh
+                                        // session has context from before the crash.
+                                        if let Some(msgs) = messages {
+                                            self.inject_history(history_key, msgs).await;
+                                        }
+
                                         self.http_client
                                             .send_message(
                                                 &new_sid,

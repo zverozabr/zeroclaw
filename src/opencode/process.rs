@@ -68,8 +68,23 @@ impl OpenCodeProcessManager {
                     *state = None;
                 }
                 Ok(None) => {
-                    debug!("opencode already running");
-                    return Ok(());
+                    // Process is alive, but check if it actually responds to HTTP.
+                    let client = OpenCodeClient::new(self.port);
+                    match tokio::time::timeout(Duration::from_secs(5), client.health_check()).await
+                    {
+                        Ok(Ok(())) => {
+                            debug!("opencode already running and healthy");
+                            return Ok(());
+                        }
+                        _ => {
+                            warn!(
+                                pid = proc.pid,
+                                "opencode process alive but unresponsive, killing and re-spawning"
+                            );
+                            let _ = proc.child.kill().await;
+                            *state = None;
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!(error = %e, "try_wait error, re-spawning");
@@ -86,6 +101,36 @@ impl OpenCodeProcessManager {
         self.state.lock().await.replace(proc);
         info!(pid, "opencode server started");
         Ok(())
+    }
+
+    /// Spawn a background task that health-checks the OC server every 30s.
+    /// If it's unresponsive, kills and restarts the process automatically.
+    pub fn spawn_watchdog(self: &std::sync::Arc<Self>) {
+        let mgr = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                // Only check if a process was started
+                {
+                    let state = mgr.state.lock().await;
+                    if state.is_none() {
+                        continue;
+                    }
+                }
+                let client = OpenCodeClient::new(mgr.port);
+                match tokio::time::timeout(Duration::from_secs(5), client.health_check()).await {
+                    Ok(Ok(())) => {} // healthy
+                    _ => {
+                        warn!("OC watchdog: server unresponsive, triggering restart");
+                        if let Err(e) = mgr.ensure_running().await {
+                            tracing::error!(error = %e, "OC watchdog: restart failed");
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Gracefully shut down the OpenCode server.

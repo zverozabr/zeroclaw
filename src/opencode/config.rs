@@ -45,6 +45,8 @@ struct OpencodeJson {
     provider: HashMap<String, OpencodeJsonProvider>,
     model: String,
     compaction: OpencodeJsonCompaction,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    instructions: Vec<String>,
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -115,6 +117,14 @@ pub async fn write_opencode_config(
             },
         );
 
+        // Include AGENTS.md if it exists in the opencode config dir.
+        let agents_path = config_dir.join("AGENTS.md");
+        let instructions = if agents_path.exists() {
+            vec!["AGENTS.md".to_string()]
+        } else {
+            vec![]
+        };
+
         serde_json::to_string_pretty(&OpencodeJson {
             server: OpencodeJsonServer {
                 port: config.port,
@@ -123,6 +133,7 @@ pub async fn write_opencode_config(
             provider,
             model: format!("{}/{}", config.provider, config.model),
             compaction: OpencodeJsonCompaction { auto: true },
+            instructions,
         })
         .context("serialize opencode.json")?
     };
