@@ -1214,16 +1214,19 @@ async fn handle_oc_bypass_if_needed(
         .await;
     let typing_handle = notifier.start_typing();
 
-    // Polling-based live status: shows tool calls and thinking in Telegram.
+    // Polling-based live status: scrolling log in one Telegram message.
     let notifier_poll = Arc::clone(&notifier);
     use std::sync::atomic::{AtomicI64, Ordering};
     let last_edit_ms = Arc::new(AtomicI64::new(0_i64));
     let status_msg_id_poll = status_msg_id;
+    let status_lines: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    const MAX_VISIBLE_LINES: usize = 5;
 
     let result = mgr
         .prompt_with_polling(&history_key, &oc_message, history_ref, move |status| {
             use crate::opencode::PollingStatus;
-            let text = match &status {
+            let line = match &status {
                 PollingStatus::Thinking(preview) => {
                     format!("\u{1f4ad} {preview}")
                 }
@@ -1244,6 +1247,15 @@ async fn handle_oc_bypass_if_needed(
                 }
                 PollingStatus::StepStart => "\u{1f4ad} Thinking\u{2026}".to_string(),
             };
+
+            // Append line to scrolling buffer
+            let text = {
+                let mut lines = status_lines.lock().unwrap_or_else(|e| e.into_inner());
+                lines.push(line);
+                let start = lines.len().saturating_sub(MAX_VISIBLE_LINES);
+                lines[start..].join("\n")
+            };
+
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
