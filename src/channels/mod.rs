@@ -1210,11 +1210,37 @@ async fn handle_oc_bypass_if_needed(
         tg_thread_id,
     ));
     let status_msg_id = notifier
-        .send_status("\u{2699} OpenCode is working\u{2026}")
+        .send_status("\u{2699}\u{fe0f} OpenCode is working\u{2026}")
         .await;
     let typing_handle = notifier.start_typing();
 
+    // Animated progress dots while OC works (SSE events not available in OC 1.3).
+    let notifier_dots = Arc::clone(&notifier);
+    let dots_stop = tokio_util::sync::CancellationToken::new();
+    let dots_stop_clone = dots_stop.clone();
+    let dots_handle = status_msg_id.map(|mid| {
+        tokio::spawn(async move {
+            let frames = [
+                "\u{2699}\u{fe0f} Working.",
+                "\u{2699}\u{fe0f} Working..",
+                "\u{2699}\u{fe0f} Working...",
+            ];
+            let mut i = 0usize;
+            loop {
+                tokio::select! {
+                    () = dots_stop_clone.cancelled() => break,
+                    () = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                        notifier_dots.edit_status(mid, frames[i % frames.len()]).await;
+                        i += 1;
+                    }
+                }
+            }
+        })
+    });
+
     // Set up throttled live status updates during prompt execution.
+    // (Currently OC 1.3 does not emit session events via SSE, so the
+    // callback below is a no-op. The animated dots above provide feedback.)
     let notifier_cb = Arc::clone(&notifier);
     use std::sync::atomic::{AtomicI64, Ordering};
     let last_edit_ms = Arc::new(AtomicI64::new(0_i64));
@@ -1258,6 +1284,10 @@ async fn handle_oc_bypass_if_needed(
         .await;
 
     typing_handle.abort();
+    dots_stop.cancel();
+    if let Some(h) = dots_handle {
+        h.abort();
+    }
 
     match result {
         Ok(response) => {
