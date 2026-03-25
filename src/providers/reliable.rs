@@ -340,6 +340,10 @@ fn accepted_model_prefixes(provider_name: &str) -> Option<&[&str]> {
         "openai-codex" => Some(&["gpt-", "o1-", "o3-", "o4-"]),
         "openai" => Some(&["gpt-", "o1-", "o3-", "o4-", "chatgpt-"]),
         "anthropic" => Some(&["claude-"]),
+        "kimi" | "moonshot" => Some(&["kimi-", "moonshot-"]),
+        "minimax" | "minimax-cn" => Some(&["MiniMax-", "abab"]),
+        "groq" => Some(&["llama", "mixtral", "gemma", "whisper", "distil"]),
+        "deepseek" => Some(&["deepseek-"]),
         _ => None, // unknown provider — accept any model
     }
 }
