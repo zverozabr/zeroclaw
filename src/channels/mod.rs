@@ -1285,7 +1285,7 @@ async fn handle_oc_bypass_if_needed(
     let status_msg_id_poll = status_msg_id;
     let status_lines: Arc<std::sync::Mutex<Vec<String>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
-    const MAX_VISIBLE_LINES: usize = 5;
+    const MAX_VISIBLE_LINES: usize = 10;
 
     let result = mgr
         .prompt_with_polling(&history_key, &oc_message, history_ref, move |status| {
@@ -1298,16 +1298,37 @@ async fn handle_oc_bypass_if_needed(
                     name,
                     status,
                     detail,
+                    input,
+                    output,
                 } => {
-                    let desc = detail
-                        .as_deref()
-                        .map(|d| format!(" \u{2014} {d}"))
-                        .unwrap_or_default();
+                    let mut parts = Vec::new();
                     if status == "completed" {
-                        format!("\u{2705} `{name}`{desc}")
+                        let desc = detail
+                            .as_deref()
+                            .map(|d| format!(" \u{2014} {d}"))
+                            .unwrap_or_default();
+                        parts.push(format!("\u{2705} `{name}`{desc}"));
+                        if let Some(out) = output {
+                            if !out.is_empty() {
+                                // Show truncated output like CLI
+                                let short: String =
+                                    out.lines().take(3).collect::<Vec<_>>().join("\n");
+                                parts.push(format!("```\n{short}\n```"));
+                            }
+                        }
                     } else {
-                        format!("\u{2699}\u{fe0f} `{name}`{desc}")
+                        // Running — show command/input
+                        if let Some(cmd) = input {
+                            parts.push(format!("\u{2699}\u{fe0f} `{name}`: `{cmd}`"));
+                        } else {
+                            let desc = detail
+                                .as_deref()
+                                .map(|d| format!(" \u{2014} {d}"))
+                                .unwrap_or_default();
+                            parts.push(format!("\u{2699}\u{fe0f} `{name}`{desc}"));
+                        }
                     }
+                    parts.join("\n")
                 }
                 PollingStatus::StepStart => "\u{1f4ad} Thinking\u{2026}".to_string(),
             };

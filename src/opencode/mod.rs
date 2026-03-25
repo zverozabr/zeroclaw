@@ -32,6 +32,10 @@ pub enum PollingStatus {
         name: String,
         status: String,
         detail: Option<String>,
+        /// Full command/input for the tool (shown in verbose mode)
+        input: Option<String>,
+        /// Tool output/result (shown in verbose mode)
+        output: Option<String>,
     },
     /// New reasoning step started
     StepStart,
@@ -476,16 +480,35 @@ impl OpenCodeManager {
                                                     .pointer("/state/input/command")
                                                     .and_then(|v| v.as_str())
                                             })
-                                            .map(|s| s.chars().take(60).collect::<String>());
+                                            .map(|s| s.chars().take(120).collect::<String>());
+                                        // Full input (command, file path, etc.)
+                                        let input = part
+                                            .extra
+                                            .pointer("/state/input/command")
+                                            .and_then(|v| v.as_str())
+                                            .or_else(|| {
+                                                part.extra
+                                                    .pointer("/state/input/file_path")
+                                                    .and_then(|v| v.as_str())
+                                            })
+                                            .map(|s| s.chars().take(200).collect::<String>());
+                                        // Tool output/result
+                                        let output = part
+                                            .extra
+                                            .pointer("/state/output")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.chars().take(300).collect::<String>());
                                         on_status(PollingStatus::Tool {
                                             name: tool_name.to_string(),
                                             status: status.to_string(),
                                             detail,
+                                            input,
+                                            output,
                                         });
                                     }
                                     "text" => {
                                         if let Some(t) = &part.text {
-                                            let preview: String = t.chars().take(100).collect();
+                                            let preview: String = t.chars().take(300).collect();
                                             if !preview.is_empty() {
                                                 on_status(PollingStatus::Thinking(preview));
                                             }
