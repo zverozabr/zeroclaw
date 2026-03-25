@@ -1214,57 +1214,34 @@ async fn handle_oc_bypass_if_needed(
         .await;
     let typing_handle = notifier.start_typing();
 
-    // Animated progress dots while OC works (SSE events not available in OC 1.3).
-    let notifier_dots = Arc::clone(&notifier);
-    let dots_stop = tokio_util::sync::CancellationToken::new();
-    let dots_stop_clone = dots_stop.clone();
-    let dots_handle = status_msg_id.map(|mid| {
-        tokio::spawn(async move {
-            let frames = [
-                "\u{2699}\u{fe0f} Working.",
-                "\u{2699}\u{fe0f} Working..",
-                "\u{2699}\u{fe0f} Working...",
-            ];
-            let mut i = 0usize;
-            loop {
-                tokio::select! {
-                    () = dots_stop_clone.cancelled() => break,
-                    () = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
-                        notifier_dots.edit_status(mid, frames[i % frames.len()]).await;
-                        i += 1;
-                    }
-                }
-            }
-        })
-    });
-
-    // Set up throttled live status updates during prompt execution.
-    // (Currently OC 1.3 does not emit session events via SSE, so the
-    // callback below is a no-op. The animated dots above provide feedback.)
-    let notifier_cb = Arc::clone(&notifier);
+    // Polling-based live status: shows tool calls and thinking in Telegram.
+    let notifier_poll = Arc::clone(&notifier);
     use std::sync::atomic::{AtomicI64, Ordering};
     let last_edit_ms = Arc::new(AtomicI64::new(0_i64));
-    let status_msg_id_cb = status_msg_id;
+    let status_msg_id_poll = status_msg_id;
 
     let result = mgr
-        .prompt(&history_key, &oc_message, history_ref, move |event| {
-            use crate::opencode::events::OpenCodeEvent;
-            let text = match &event {
-                OpenCodeEvent::ThinkingDelta(_) => "\u{1f4ad} Thinking\u{2026}".to_string(),
-                OpenCodeEvent::ToolStart { name } => {
-                    format!("\u{2699} Running `{name}`\u{2026}")
+        .prompt_with_polling(&history_key, &oc_message, history_ref, move |status| {
+            use crate::opencode::PollingStatus;
+            let text = match &status {
+                PollingStatus::Thinking(preview) => {
+                    format!("\u{1f4ad} {preview}")
                 }
-                OpenCodeEvent::ToolEnd { .. } => "\u{2699} Processing\u{2026}".to_string(),
-                _ => return,
+                PollingStatus::Tool { name, status } => {
+                    if status == "completed" {
+                        format!("\u{2705} `{name}` done")
+                    } else {
+                        format!("\u{2699}\u{fe0f} Running `{name}`\u{2026}")
+                    }
+                }
+                PollingStatus::StepStart => "\u{1f4ad} Thinking\u{2026}".to_string(),
             };
-            // Use as_secs() * 1000 (u64 → i64) to avoid u128 truncation lint.
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs()
                 .saturating_mul(1000) as i64;
             let last = last_edit_ms.load(Ordering::Relaxed);
-            // Throttle: only edit if 2s have passed since last edit.
             if now_ms - last < 2000 {
                 return;
             }
@@ -1272,10 +1249,10 @@ async fn handle_oc_bypass_if_needed(
                 .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
                 .is_err()
             {
-                return; // another event won the race
+                return;
             }
-            let notifier_inner = Arc::clone(&notifier_cb);
-            if let Some(msg_id) = status_msg_id_cb {
+            let notifier_inner = Arc::clone(&notifier_poll);
+            if let Some(msg_id) = status_msg_id_poll {
                 tokio::spawn(async move {
                     notifier_inner.edit_status(msg_id, &text).await;
                 });
@@ -1284,10 +1261,6 @@ async fn handle_oc_bypass_if_needed(
         .await;
 
     typing_handle.abort();
-    dots_stop.cancel();
-    if let Some(h) = dots_handle {
-        h.abort();
-    }
 
     match result {
         Ok(response) => {

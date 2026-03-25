@@ -235,6 +235,19 @@ impl OpenCodeClient {
         Ok(resp.json::<MessageResponse>().await?)
     }
 
+    /// Fetch all messages for a session. Used for polling progress during
+    /// prompt execution — new parts (tool calls, thinking) appear incrementally.
+    pub async fn get_messages(&self, session_id: &str) -> ClientResult<Vec<MessageResponse>> {
+        let url = format!("{}/session/{}/message", self.base_url, session_id);
+        let resp = self.apply_auth(self.http.get(&url)).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(OpenCodeError::ServerError { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Send a message with `noReply: true` — used for history injection.
     ///
     /// OpenCode processes the message but does not generate an AI response.

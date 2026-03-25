@@ -20,6 +20,19 @@ use crate::opencode::events::{drain_sse_into_status, subscribe_sse, OpenCodeEven
 use crate::opencode::session::OpenCodeSessionStore;
 use crate::opencode::status::StatusBuilder;
 
+// ── Polling status ────────────────────────────────────────────────────────────
+
+/// Status updates from polling OC messages API.
+#[derive(Debug, Clone)]
+pub enum PollingStatus {
+    /// Model is thinking — preview of text so far
+    Thinking(String),
+    /// Tool call with name and status ("running" / "completed")
+    Tool { name: String, status: String },
+    /// New reasoning step started
+    StepStart,
+}
+
 // ── Session entry ─────────────────────────────────────────────────────────────
 
 struct SessionEntry {
@@ -373,6 +386,136 @@ impl OpenCodeManager {
                 }
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Prompt with polling-based live status updates.
+    ///
+    /// OC 1.3 SSE `/event` endpoint doesn't forward session events, so instead
+    /// we poll `GET /session/{id}/message` every 2s and report new parts
+    /// (tool calls, thinking text) via `on_status`.
+    pub async fn prompt_with_polling<F>(
+        &self,
+        history_key: &str,
+        text: &str,
+        history: Option<&[crate::providers::ChatMessage]>,
+        on_status: F,
+    ) -> anyhow::Result<String>
+    where
+        F: Fn(PollingStatus) + Send + Sync + 'static,
+    {
+        let session_id = self.ensure_session(history_key).await?;
+
+        // Inject history if needed
+        if let Some(turns) = history {
+            if self.needs_history_injection(history_key).await {
+                self.inject_history(&session_id, turns).await;
+                self.mark_history_injected(history_key).await;
+            }
+        }
+        self.touch_session(history_key).await;
+
+        let http = Arc::clone(&self.http_client);
+        let provider = self.provider.clone();
+        let model = self.model.clone();
+        let sid = session_id.clone();
+        let msg = text.to_string();
+
+        // Send message in background (blocks until OC completes)
+        let send_handle =
+            tokio::spawn(async move { http.send_message(&sid, &msg, &provider, &model).await });
+
+        // Poll messages every 2s until send completes
+        let on_status = Arc::new(on_status);
+        let mut seen_parts = 0usize;
+        let poll_interval = Duration::from_secs(2);
+
+        loop {
+            tokio::time::sleep(poll_interval).await;
+
+            if send_handle.is_finished() {
+                break;
+            }
+
+            if let Ok(messages) = self.http_client.get_messages(&session_id).await {
+                let mut current_idx = 0usize;
+                for msg_resp in &messages {
+                    if msg_resp.info.role == "assistant" || msg_resp.info.role.is_empty() {
+                        for part in &msg_resp.parts {
+                            if current_idx >= seen_parts {
+                                match part.kind.as_str() {
+                                    "tool" => {
+                                        let tool_name = part
+                                            .extra
+                                            .get("tool")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("tool");
+                                        let status = part
+                                            .extra
+                                            .pointer("/state/status")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("running");
+                                        on_status(PollingStatus::Tool {
+                                            name: tool_name.to_string(),
+                                            status: status.to_string(),
+                                        });
+                                    }
+                                    "text" => {
+                                        if let Some(t) = &part.text {
+                                            let preview: String = t.chars().take(80).collect();
+                                            if !preview.is_empty() {
+                                                on_status(PollingStatus::Thinking(preview));
+                                            }
+                                        }
+                                    }
+                                    "step-start" => {
+                                        on_status(PollingStatus::StepStart);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            current_idx += 1;
+                        }
+                    } else {
+                        current_idx += msg_resp.parts.len();
+                    }
+                }
+                if current_idx > seen_parts {
+                    seen_parts = current_idx;
+                }
+            }
+        }
+
+        // Get result from send task
+        let result = send_handle
+            .await
+            .map_err(|e| anyhow::anyhow!("send task panicked: {e}"))?;
+
+        self.touch_session(history_key).await;
+
+        match result {
+            Ok(response) => {
+                let final_text = response.text();
+                if final_text.is_empty() {
+                    // Fallback: extract text from polled messages
+                    if let Ok(messages) = self.http_client.get_messages(&session_id).await {
+                        let text: String = messages
+                            .iter()
+                            .filter(|m| m.info.role == "assistant" || m.info.role.is_empty())
+                            .flat_map(|m| m.parts.iter())
+                            .filter(|p| p.kind == "text")
+                            .filter_map(|p| p.text.as_deref())
+                            .collect::<Vec<_>>()
+                            .join("");
+                        Ok(text)
+                    } else {
+                        Ok(String::new())
+                    }
+                } else {
+                    Ok(final_text)
+                }
+            }
+            Err(e) => Err(anyhow::anyhow!("OC prompt error: {e}")),
         }
     }
 
