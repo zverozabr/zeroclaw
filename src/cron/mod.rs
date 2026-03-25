@@ -15,7 +15,7 @@ pub use schedule::{
 #[allow(unused_imports)]
 pub use store::{
     add_agent_job, all_overdue_jobs, due_jobs, get_job, list_jobs, list_runs, record_last_run,
-    record_run, remove_job, reschedule_after_run, update_job,
+    record_run, remove_job, reschedule_after_run, sync_declarative_jobs, update_job,
 };
 pub use types::{
     deserialize_maybe_stringified, CronJob, CronJobPatch, CronRun, DeliveryConfig, JobType,
@@ -62,7 +62,7 @@ pub(crate) fn validate_delivery_config(delivery: Option<&DeliveryConfig>) -> Res
         bail!("delivery.channel is required for announce mode");
     };
     match channel.to_ascii_lowercase().as_str() {
-        "telegram" | "discord" | "slack" | "mattermost" | "signal" | "matrix" => {}
+        "telegram" | "discord" | "slack" | "mattermost" | "signal" | "matrix" | "qq" => {}
         other => bail!("unsupported delivery channel: {other}"),
     }
 

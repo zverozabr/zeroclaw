@@ -572,6 +572,7 @@ mod tests {
                 iteration_cooldown_ms: None,
                 timeout_secs: None,
                 agentic_timeout_secs: None,
+                skills_directory: None,
             },
         );
         agents.insert(
@@ -592,6 +593,7 @@ mod tests {
                 iteration_cooldown_ms: None,
                 timeout_secs: None,
                 agentic_timeout_secs: None,
+                skills_directory: None,
             },
         );
         agents

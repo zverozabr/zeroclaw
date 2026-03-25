@@ -711,6 +711,7 @@ impl ModelRoutingConfigTool {
                 iteration_cooldown_ms: None,
                 timeout_secs: None,
                 agentic_timeout_secs: None,
+                skills_directory: None,
             });
 
         next_agent.provider = provider;

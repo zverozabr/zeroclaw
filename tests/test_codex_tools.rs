@@ -22,6 +22,7 @@ async fn codex_gpt51_native_tool_call() {
         provider_timeout_secs: None,
         extra_headers: std::collections::HashMap::new(),
         api_path: None,
+        provider_max_tokens: None,
     };
 
     let provider = zeroclaw::providers::openai_codex::OpenAiCodexProvider::new(&options, None)

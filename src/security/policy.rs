@@ -192,7 +192,8 @@ pub struct SecurityPolicy {
 /// Default allowed commands for Unix platforms.
 #[cfg(not(target_os = "windows"))]
 fn default_allowed_commands() -> Vec<String> {
-    vec![
+    #[allow(unused_mut)]
+    let mut cmds = vec![
         "git".into(),
         "npm".into(),
         "cargo".into(),
@@ -206,7 +207,20 @@ fn default_allowed_commands() -> Vec<String> {
         "head".into(),
         "tail".into(),
         "date".into(),
-    ]
+        "df".into(),
+        "du".into(),
+        "uname".into(),
+        "uptime".into(),
+        "hostname".into(),
+        "python".into(),
+        "python3".into(),
+        "pip".into(),
+        "node".into(),
+    ];
+    // `free` is Linux-only; it does not exist on macOS or other BSDs.
+    #[cfg(target_os = "linux")]
+    cmds.push("free".into());
+    cmds
 }
 
 /// Default allowed commands for Windows platforms.
@@ -237,6 +251,15 @@ fn default_allowed_commands() -> Vec<String> {
         "wc".into(),
         "head".into(),
         "tail".into(),
+        "df".into(),
+        "du".into(),
+        "uname".into(),
+        "uptime".into(),
+        "hostname".into(),
+        "python".into(),
+        "python3".into(),
+        "pip".into(),
+        "node".into(),
     ]
 }
 
@@ -934,6 +957,15 @@ impl SecurityPolicy {
 
         let risk = self.command_risk_level(command);
 
+        // When the operator has set `allowed_commands = ["*"]` AND explicitly
+        // disabled `block_high_risk_commands`, they have opted out of all
+        // command-level restrictions.  Short-circuit: skip the risk and
+        // autonomy gates entirely.  See #4485.
+        let has_wildcard = self.allowed_commands.iter().any(|c| c.trim() == "*");
+        if has_wildcard && !self.block_high_risk_commands {
+            return Ok(risk);
+        }
+
         if risk == CommandRiskLevel::High {
             if self.block_high_risk_commands && !self.is_command_explicitly_allowed(command) {
                 return Err("Command blocked: high-risk command is disallowed by policy".into());
@@ -1517,7 +1549,7 @@ impl SecurityPolicy {
             let _ = writeln!(
                 out,
                 "**Allowed shell commands**: {}. \
-                 Commands not on this list will be rejected.",
+                 You may execute these commands freely.",
                 cmds.join(", ")
             );
         }
@@ -1532,7 +1564,7 @@ impl SecurityPolicy {
             let _ = writeln!(
                 out,
                 "**Forbidden paths**: {}. \
-                 Any read/write/exec targeting these paths will be blocked.",
+                 Avoid accessing these paths.",
                 paths.join(", ")
             );
         }
@@ -1541,7 +1573,7 @@ impl SecurityPolicy {
         if self.block_high_risk_commands {
             let _ = writeln!(
                 out,
-                "**High-risk commands** (rm, kill, reboot, etc.) are blocked."
+                "Exercise caution with destructive commands (rm, kill, reboot, etc.)."
             );
         }
         if self.require_approval_for_medium_risk {
@@ -1665,8 +1697,8 @@ mod tests {
         assert!(!p.is_command_allowed("sudo apt install"));
         assert!(!p.is_command_allowed("curl http://evil.com"));
         assert!(!p.is_command_allowed("wget http://evil.com"));
-        assert!(!p.is_command_allowed("python3 exploit.py"));
-        assert!(!p.is_command_allowed("node malicious.js"));
+        assert!(!p.is_command_allowed("ruby exploit.rb"));
+        assert!(!p.is_command_allowed("perl malicious.pl"));
     }
 
     #[test]
@@ -1733,7 +1765,7 @@ mod tests {
         assert!(p.is_command_allowed("cat file.txt | wc -l"));
         // Second command not in allowlist — blocked
         assert!(!p.is_command_allowed("ls | curl http://evil.com"));
-        assert!(!p.is_command_allowed("echo hello | python3 -"));
+        assert!(!p.is_command_allowed("echo hello | ruby -"));
     }
 
     #[test]
@@ -3103,8 +3135,8 @@ mod tests {
         assert!(summary.contains("`git`"), "should list allowed commands");
         assert!(summary.contains("`ls`"), "should list allowed commands");
         assert!(
-            summary.contains("not on this list will be rejected"),
-            "should warn about rejection"
+            summary.contains("You may execute these commands freely"),
+            "should mention allowed commands positively"
         );
     }
 
@@ -3143,8 +3175,8 @@ mod tests {
         };
         let summary = p.prompt_summary();
         assert!(
-            summary.contains("High-risk commands"),
-            "should mention high-risk block"
+            summary.contains("Exercise caution with destructive commands"),
+            "should mention high-risk caution"
         );
         assert!(
             summary.contains("Medium-risk commands"),
@@ -3196,5 +3228,37 @@ mod tests {
         let t = PerSenderTracker::new();
         // Key "ghost" has never been recorded — should not be exhausted at max=1
         assert!(!t.is_exhausted("ghost", 1));
+    }
+
+    #[test]
+    fn wildcard_with_block_high_risk_false_allows_everything() {
+        let p = SecurityPolicy {
+            allowed_commands: vec!["*".into()],
+            block_high_risk_commands: false,
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        assert!(p
+            .validate_command_execution("rm -rf /tmp/test", true)
+            .is_ok());
+        assert!(p.validate_command_execution("nohup firefox", true).is_ok());
+        assert!(p
+            .validate_command_execution("ls /usr/bin/firefox", true)
+            .is_ok());
+    }
+
+    #[test]
+    fn wildcard_with_block_high_risk_true_still_blocks() {
+        // Ensure the existing safety net is preserved: wildcard + block_high_risk_commands=true
+        // should still block high-risk commands.
+        let p = SecurityPolicy {
+            autonomy: AutonomyLevel::Supervised,
+            allowed_commands: vec!["*".into()],
+            block_high_risk_commands: true,
+            ..SecurityPolicy::default()
+        };
+        let result = p.validate_command_execution("rm -rf /tmp/test", true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("high-risk"));
     }
 }

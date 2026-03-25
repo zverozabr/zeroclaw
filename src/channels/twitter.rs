@@ -290,6 +290,7 @@ impl Channel for TwitterChannel {
                                     .map(|s| s.to_string()),
                                 reply_to_message_id: None,
                                 interruption_scope_id: None,
+                                attachments: vec![],
                             };
 
                             if tx.send(channel_msg).await.is_err() {

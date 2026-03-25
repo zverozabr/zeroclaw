@@ -293,6 +293,7 @@ impl Provider for ClaudeCodeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -426,7 +427,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let path = dir.join("fake_claude.sh");
-        std::fs::write(&path, "#!/bin/sh\ncat /dev/stdin\n").unwrap();
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "#!/bin/sh\ncat /dev/stdin").unwrap();
+        f.sync_all().unwrap();
+        drop(f);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
