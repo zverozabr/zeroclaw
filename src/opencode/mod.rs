@@ -294,11 +294,40 @@ impl OpenCodeManager {
                 // Try to restart the server
                 if let Some(pm) = crate::opencode::process::opencode_process() {
                     if pm.ensure_running().await.is_ok() {
-                        // Retry once
-                        self.http_client
+                        // Retry with the same session first
+                        match self
+                            .http_client
                             .send_message(&session_id, text, &self.provider, &self.model)
                             .await
-                            .map_err(|e| anyhow::anyhow!("OC prompt failed after restart: {e}"))
+                        {
+                            Ok(r) => Ok(r),
+                            Err(_retry_err) => {
+                                // Session may have been deleted (FK constraint) — create fresh
+                                tracing::warn!(history_key, "OC retry failed, creating fresh session");
+                                let directory = self.workspace_dir.to_string_lossy().to_string();
+                                match self.http_client.create_session(&directory).await {
+                                    Ok(new_sid) => {
+                                        let mut map = self.session_map.write().await;
+                                        map.insert(
+                                            history_key.to_string(),
+                                            SessionEntry {
+                                                opencode_session_id: new_sid.clone(),
+                                                last_active: Instant::now(),
+                                                history_injected: false,
+                                            },
+                                        );
+                                        drop(map);
+                                        self.http_client
+                                            .send_message(&new_sid, text, &self.provider, &self.model)
+                                            .await
+                                            .map_err(|e| {
+                                                anyhow::anyhow!("OC prompt failed with fresh session: {e}")
+                                            })
+                                    }
+                                    Err(e) => Err(anyhow::anyhow!("OC fresh session creation failed: {e}")),
+                                }
+                            }
+                        }
                     } else {
                         Err(anyhow::anyhow!("OC server restart failed: {e}"))
                     }
