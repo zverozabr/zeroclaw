@@ -1572,6 +1572,18 @@ pub struct OpenCodeConfig {
     /// Idle session cleanup after this many seconds. Default: 1800.
     #[serde(default = "OpenCodeConfig::default_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
+    /// Fallback LLM provider name (e.g. "moonshot").
+    #[serde(default)]
+    pub fallback_provider: Option<String>,
+    /// Fallback model name (e.g. "kimi-k2-0905-preview").
+    #[serde(default)]
+    pub fallback_model: Option<String>,
+    /// Fallback provider base URL.
+    #[serde(default)]
+    pub fallback_base_url: Option<String>,
+    /// Key profile name for the fallback provider in fallback_api_keys.
+    #[serde(default)]
+    pub fallback_api_key_profile: Option<String>,
 }
 
 impl Default for OpenCodeConfig {
@@ -1587,6 +1599,10 @@ impl Default for OpenCodeConfig {
             history_inject_limit: Self::default_history_inject_limit(),
             history_inject_max_chars: Self::default_history_inject_max_chars(),
             idle_timeout_secs: Self::default_idle_timeout_secs(),
+            fallback_provider: None,
+            fallback_model: None,
+            fallback_base_url: None,
+            fallback_api_key_profile: None,
         }
     }
 }

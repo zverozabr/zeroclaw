@@ -68,6 +68,20 @@ fn record_provider_fallback(
     });
 }
 
+// ── Model-specific Temperature Overrides ────────────────────────────────
+// Some models require a fixed temperature and will reject or behave poorly
+// with values other than the canonical one. This function centralises that
+// logic so every call-site benefits automatically.
+
+/// Return a forced temperature for models that require one, or `None` if the
+/// caller's default should be used unchanged.
+fn forced_temperature(model: &str) -> Option<f64> {
+    match model {
+        m if m.contains("thinking") || m == "kimi-k2.5" => Some(1.0),
+        _ => None,
+    }
+}
+
 // ── Error Classification ─────────────────────────────────────────────────
 // Errors are split into retryable (transient server/network failures) and
 // non-retryable (permanent client errors). This distinction drives whether
@@ -517,8 +531,9 @@ impl Provider for ReliableProvider {
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {
+                    let effective_temp = forced_temperature(current_model).unwrap_or(temperature);
                     match provider
-                        .chat_with_system(system_prompt, message, current_model, temperature)
+                        .chat_with_system(system_prompt, message, current_model, effective_temp)
                         .await
                     {
                         Ok(resp) => {
@@ -864,8 +879,9 @@ impl Provider for ReliableProvider {
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {
+                    let effective_temp = forced_temperature(current_model).unwrap_or(temperature);
                     match provider
-                        .chat_with_tools(&effective_messages, tools, current_model, temperature)
+                        .chat_with_tools(&effective_messages, tools, current_model, effective_temp)
                         .await
                     {
                         Ok(resp) => {
@@ -1035,11 +1051,12 @@ impl Provider for ReliableProvider {
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {
+                    let effective_temp = forced_temperature(current_model).unwrap_or(temperature);
                     let req = ChatRequest {
                         messages: &effective_messages,
                         tools: request.tools,
                     };
-                    match provider.chat(req, current_model, temperature).await {
+                    match provider.chat(req, current_model, effective_temp).await {
                         Ok(resp) => {
                             if attempt > 0
                                 || *current_model != model

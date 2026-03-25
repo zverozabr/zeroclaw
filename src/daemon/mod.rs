@@ -64,10 +64,18 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             .cloned()
             .unwrap_or_default();
 
+        let opencode_fallback_api_key: Option<String> = config
+            .opencode
+            .fallback_api_key_profile
+            .as_deref()
+            .and_then(|profile| config.reliability.fallback_api_keys.get(profile))
+            .cloned();
+
         // Write opencode.json config file
         match crate::opencode::config::write_opencode_config(
             &config.opencode,
             &opencode_api_key,
+            opencode_fallback_api_key.as_deref(),
             &config.workspace_dir,
         )
         .await
@@ -114,6 +122,45 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 if let Some(pm) = crate::opencode::process::opencode_process() {
                     pm.spawn_watchdog();
                 }
+
+                // OAuth token expiry monitor
+                tokio::spawn(async {
+                    let auth_path = home::home_dir()
+                        .map(|h| h.join(".local/share"))
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                        .join("opencode/auth.json");
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+                    loop {
+                        interval.tick().await;
+                        if let Ok(text) = tokio::fs::read_to_string(&auth_path).await {
+                            if let Ok(auth) = serde_json::from_str::<serde_json::Value>(&text) {
+                                // Check each provider's token
+                                for (provider, data) in auth.as_object().into_iter().flatten() {
+                                    if let Some(expires_ms) =
+                                        data.get("expires").and_then(|v| v.as_u64())
+                                    {
+                                        #[allow(clippy::cast_possible_truncation)]
+                                        let now_ms = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis()
+                                            as u64;
+                                        let remaining_secs =
+                                            expires_ms.saturating_sub(now_ms) / 1000;
+                                        let remaining_days = remaining_secs / 86400;
+                                        if remaining_days <= 3 {
+                                            tracing::warn!(
+                                                provider,
+                                                remaining_days,
+                                                "OAuth token expires soon — run `opencode auth` to refresh"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
 
                 tracing::info!("OpenCode initialized (port={})", config.opencode.port);
             }

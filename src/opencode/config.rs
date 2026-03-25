@@ -61,6 +61,7 @@ struct OpencodeJson {
 pub async fn write_opencode_config(
     config: &OpenCodeConfig,
     api_key: &str,
+    fallback_api_key: Option<&str>,
     workspace_dir: &Path,
 ) -> anyhow::Result<PathBuf> {
     use anyhow::Context as _;
@@ -74,8 +75,16 @@ pub async fn write_opencode_config(
     // write a minimal config without custom provider block.
     let is_builtin = matches!(config.provider.as_str(), "openai" | "anthropic");
 
+    // Include AGENTS.md if it exists in the opencode config dir.
+    let agents_path = config_dir.join("AGENTS.md");
+    let instructions: Vec<String> = if agents_path.exists() {
+        vec!["AGENTS.md".to_string()]
+    } else {
+        vec![]
+    };
+
     let json = if is_builtin {
-        serde_json::to_string_pretty(&serde_json::json!({
+        let mut val = serde_json::json!({
             "$schema": "https://opencode.ai/config.json",
             "server": {
                 "port": config.port,
@@ -83,8 +92,38 @@ pub async fn write_opencode_config(
             },
             "model": format!("{}/{}", config.provider, config.model),
             "compaction": { "auto": true },
-        }))
-        .context("serialize opencode.json")?
+        });
+        if !instructions.is_empty() {
+            val["instructions"] = serde_json::json!(instructions);
+        }
+        // Add fallback provider if configured
+        if let (Some(fb_provider), Some(fb_model), Some(fb_base_url), Some(fb_key)) = (
+            config.fallback_provider.as_deref(),
+            config.fallback_model.as_deref(),
+            config.fallback_base_url.as_deref(),
+            fallback_api_key,
+        ) {
+            if !fb_key.is_empty() {
+                let fb_display = provider_display_name(fb_provider);
+                let mut fb_models = serde_json::Map::new();
+                fb_models.insert(
+                    fb_model.to_string(),
+                    serde_json::Value::Object(serde_json::Map::default()),
+                );
+                val["provider"] = serde_json::json!({
+                    fb_provider: {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "name": fb_display,
+                        "options": {
+                            "apiKey": fb_key,
+                            "baseURL": fb_base_url,
+                        },
+                        "models": fb_models,
+                    }
+                });
+            }
+        }
+        serde_json::to_string_pretty(&val).context("serialize opencode.json")?
     } else {
         if api_key.is_empty() {
             anyhow::bail!(
@@ -117,13 +156,34 @@ pub async fn write_opencode_config(
             },
         );
 
-        // Include AGENTS.md if it exists in the opencode config dir.
-        let agents_path = config_dir.join("AGENTS.md");
-        let instructions = if agents_path.exists() {
-            vec!["AGENTS.md".to_string()]
-        } else {
-            vec![]
-        };
+        // Add fallback provider if configured
+        if let (Some(fb_provider), Some(fb_model), Some(fb_base_url), Some(fb_key)) = (
+            config.fallback_provider.as_deref(),
+            config.fallback_model.as_deref(),
+            config.fallback_base_url.as_deref(),
+            fallback_api_key,
+        ) {
+            if !fb_key.is_empty() {
+                let fb_display = provider_display_name(fb_provider);
+                let mut fb_models: HashMap<String, serde_json::Value> = HashMap::new();
+                fb_models.insert(
+                    fb_model.to_string(),
+                    serde_json::Value::Object(serde_json::Map::default()),
+                );
+                provider.insert(
+                    fb_provider.to_string(),
+                    OpencodeJsonProvider {
+                        npm: "@ai-sdk/openai-compatible".to_string(),
+                        name: fb_display,
+                        options: OpencodeJsonProviderOptions {
+                            api_key: fb_key.to_string(),
+                            base_url: fb_base_url.to_string(),
+                        },
+                        models: fb_models,
+                    },
+                );
+            }
+        }
 
         serde_json::to_string_pretty(&OpencodeJson {
             server: OpencodeJsonServer {
@@ -199,13 +259,17 @@ mod tests {
             history_inject_limit: 50,
             history_inject_max_chars: 50_000,
             idle_timeout_secs: 1800,
+            fallback_provider: None,
+            fallback_model: None,
+            fallback_base_url: None,
+            fallback_api_key_profile: None,
         }
     }
 
     #[tokio::test]
     async fn write_creates_valid_json() {
         let dir = tempdir().unwrap();
-        let path = write_opencode_config(&test_config(), "test-key", dir.path())
+        let path = write_opencode_config(&test_config(), "test-key", None, dir.path())
             .await
             .unwrap();
         assert!(path.exists());
@@ -221,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn write_rejects_empty_key() {
         let dir = tempdir().unwrap();
-        let result = write_opencode_config(&test_config(), "", dir.path()).await;
+        let result = write_opencode_config(&test_config(), "", None, dir.path()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
     }
@@ -230,14 +294,14 @@ mod tests {
     async fn write_creates_parent_dir() {
         let dir = tempdir().unwrap();
         let nested = dir.path().join("nested").join("workspace");
-        let result = write_opencode_config(&test_config(), "key", &nested).await;
+        let result = write_opencode_config(&test_config(), "key", None, &nested).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn write_no_tmp_file_remains() {
         let dir = tempdir().unwrap();
-        write_opencode_config(&test_config(), "key", dir.path())
+        write_opencode_config(&test_config(), "key", None, dir.path())
             .await
             .unwrap();
         assert!(!dir
@@ -250,12 +314,36 @@ mod tests {
     #[tokio::test]
     async fn write_model_field_is_provider_slash_model() {
         let dir = tempdir().unwrap();
-        let path = write_opencode_config(&test_config(), "key", dir.path())
+        let path = write_opencode_config(&test_config(), "key", None, dir.path())
             .await
             .unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(val["model"], "minimax/MiniMax-M2.7-highspeed");
+    }
+
+    #[tokio::test]
+    async fn write_includes_fallback_provider() {
+        let dir = tempdir().unwrap();
+        let mut cfg = test_config();
+        cfg.fallback_provider = Some("moonshot".to_string());
+        cfg.fallback_model = Some("kimi-k2-0905-preview".to_string());
+        cfg.fallback_base_url = Some("https://api.moonshot.cn/v1".to_string());
+        let path = write_opencode_config(&cfg, "primary-key", Some("fallback-key"), dir.path())
+            .await
+            .unwrap();
+        let val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(val["provider"]["minimax"].is_object());
+        assert!(val["provider"]["moonshot"].is_object());
+        assert_eq!(
+            val["provider"]["moonshot"]["options"]["apiKey"],
+            "fallback-key"
+        );
+        assert_eq!(
+            val["provider"]["moonshot"]["options"]["baseURL"],
+            "https://api.moonshot.cn/v1"
+        );
     }
 
     #[test]
