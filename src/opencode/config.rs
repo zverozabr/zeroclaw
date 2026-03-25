@@ -63,53 +63,69 @@ pub async fn write_opencode_config(
 ) -> anyhow::Result<PathBuf> {
     use anyhow::Context as _;
 
-    if api_key.is_empty() {
-        anyhow::bail!(
-            "OpenCode API key is empty — check [opencode].api_key_profile in config.toml"
-        );
-    }
-
     let config_dir = workspace_dir.join("opencode");
     tokio::fs::create_dir_all(&config_dir)
         .await
         .with_context(|| format!("create opencode config dir: {}", config_dir.display()))?;
 
-    // Display name: "minimax" → "MiniMax", etc.
-    let display_name = provider_display_name(&config.provider);
+    // For built-in providers (openai, anthropic) that use OAuth from auth.json,
+    // write a minimal config without custom provider block.
+    let is_builtin = matches!(config.provider.as_str(), "openai" | "anthropic");
 
-    // Build the models map: one entry per model configured
-    let mut models: HashMap<String, serde_json::Value> = HashMap::new();
-    models.insert(
-        config.model.clone(),
-        serde_json::Value::Object(serde_json::Map::default()),
-    );
-
-    // Build provider map
-    let mut provider: HashMap<String, OpencodeJsonProvider> = HashMap::new();
-    provider.insert(
-        config.provider.clone(),
-        OpencodeJsonProvider {
-            npm: "@ai-sdk/openai-compatible".to_string(),
-            name: display_name,
-            options: OpencodeJsonProviderOptions {
-                api_key: api_key.to_string(),
-                base_url: config.base_url.clone(),
+    let json = if is_builtin {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "server": {
+                "port": config.port,
+                "hostname": &config.hostname,
             },
-            models,
-        },
-    );
+            "model": format!("{}/{}", config.provider, config.model),
+            "compaction": { "auto": true },
+        }))
+        .context("serialize opencode.json")?
+    } else {
+        if api_key.is_empty() {
+            anyhow::bail!(
+                "OpenCode API key is empty — check [opencode].api_key_profile in config.toml"
+            );
+        }
 
-    let doc = OpencodeJson {
-        server: OpencodeJsonServer {
-            port: config.port,
-            hostname: config.hostname.clone(),
-        },
-        provider,
-        model: format!("{}/{}", config.provider, config.model),
-        compaction: OpencodeJsonCompaction { auto: true },
+        // Display name: "minimax" → "MiniMax", etc.
+        let display_name = provider_display_name(&config.provider);
+
+        // Build the models map: one entry per model configured
+        let mut models: HashMap<String, serde_json::Value> = HashMap::new();
+        models.insert(
+            config.model.clone(),
+            serde_json::Value::Object(serde_json::Map::default()),
+        );
+
+        // Build provider map
+        let mut provider: HashMap<String, OpencodeJsonProvider> = HashMap::new();
+        provider.insert(
+            config.provider.clone(),
+            OpencodeJsonProvider {
+                npm: "@ai-sdk/openai-compatible".to_string(),
+                name: display_name,
+                options: OpencodeJsonProviderOptions {
+                    api_key: api_key.to_string(),
+                    base_url: config.base_url.clone(),
+                },
+                models,
+            },
+        );
+
+        serde_json::to_string_pretty(&OpencodeJson {
+            server: OpencodeJsonServer {
+                port: config.port,
+                hostname: config.hostname.clone(),
+            },
+            provider,
+            model: format!("{}/{}", config.provider, config.model),
+            compaction: OpencodeJsonCompaction { auto: true },
+        })
+        .context("serialize opencode.json")?
     };
-
-    let json = serde_json::to_string_pretty(&doc).context("serialize opencode.json")?;
 
     // Atomic write: write to .tmp then rename
     let out_path = config_dir.join("opencode.json");
