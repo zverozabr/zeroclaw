@@ -27,8 +27,12 @@ use crate::opencode::status::StatusBuilder;
 pub enum PollingStatus {
     /// Model is thinking — preview of text so far
     Thinking(String),
-    /// Tool call with name and status ("running" / "completed")
-    Tool { name: String, status: String },
+    /// Tool call with name, status ("running" / "completed"), and optional detail
+    Tool {
+        name: String,
+        status: String,
+        detail: Option<String>,
+    },
     /// New reasoning step started
     StepStart,
 }
@@ -455,14 +459,26 @@ impl OpenCodeManager {
                                             .pointer("/state/status")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("running");
+                                        // Extract description or command for context
+                                        let detail = part
+                                            .extra
+                                            .pointer("/state/input/description")
+                                            .and_then(|v| v.as_str())
+                                            .or_else(|| {
+                                                part.extra
+                                                    .pointer("/state/input/command")
+                                                    .and_then(|v| v.as_str())
+                                            })
+                                            .map(|s| s.chars().take(60).collect::<String>());
                                         on_status(PollingStatus::Tool {
                                             name: tool_name.to_string(),
                                             status: status.to_string(),
+                                            detail,
                                         });
                                     }
                                     "text" => {
                                         if let Some(t) = &part.text {
-                                            let preview: String = t.chars().take(80).collect();
+                                            let preview: String = t.chars().take(100).collect();
                                             if !preview.is_empty() {
                                                 on_status(PollingStatus::Thinking(preview));
                                             }

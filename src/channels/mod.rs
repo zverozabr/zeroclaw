@@ -1227,11 +1227,19 @@ async fn handle_oc_bypass_if_needed(
                 PollingStatus::Thinking(preview) => {
                     format!("\u{1f4ad} {preview}")
                 }
-                PollingStatus::Tool { name, status } => {
+                PollingStatus::Tool {
+                    name,
+                    status,
+                    detail,
+                } => {
+                    let desc = detail
+                        .as_deref()
+                        .map(|d| format!(" \u{2014} {d}"))
+                        .unwrap_or_default();
                     if status == "completed" {
-                        format!("\u{2705} `{name}` done")
+                        format!("\u{2705} `{name}`{desc}")
                     } else {
-                        format!("\u{2699}\u{fe0f} Running `{name}`\u{2026}")
+                        format!("\u{2699}\u{fe0f} `{name}`{desc}")
                     }
                 }
                 PollingStatus::StepStart => "\u{1f4ad} Thinking\u{2026}".to_string(),
