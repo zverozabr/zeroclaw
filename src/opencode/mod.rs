@@ -303,7 +303,10 @@ impl OpenCodeManager {
                             Ok(r) => Ok(r),
                             Err(_retry_err) => {
                                 // Session may have been deleted (FK constraint) — create fresh
-                                tracing::warn!(history_key, "OC retry failed, creating fresh session");
+                                tracing::warn!(
+                                    history_key,
+                                    "OC retry failed, creating fresh session"
+                                );
                                 let directory = self.workspace_dir.to_string_lossy().to_string();
                                 match self.http_client.create_session(&directory).await {
                                     Ok(new_sid) => {
@@ -318,13 +321,22 @@ impl OpenCodeManager {
                                         );
                                         drop(map);
                                         self.http_client
-                                            .send_message(&new_sid, text, &self.provider, &self.model)
+                                            .send_message(
+                                                &new_sid,
+                                                text,
+                                                &self.provider,
+                                                &self.model,
+                                            )
                                             .await
                                             .map_err(|e| {
-                                                anyhow::anyhow!("OC prompt failed with fresh session: {e}")
+                                                anyhow::anyhow!(
+                                                    "OC prompt failed with fresh session: {e}"
+                                                )
                                             })
                                     }
-                                    Err(e) => Err(anyhow::anyhow!("OC fresh session creation failed: {e}")),
+                                    Err(e) => Err(anyhow::anyhow!(
+                                        "OC fresh session creation failed: {e}"
+                                    )),
                                 }
                             }
                         }

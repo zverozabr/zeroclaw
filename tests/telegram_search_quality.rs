@@ -2200,6 +2200,58 @@ async fn i12_submit_contacts_delivers_private_media() {
     );
 }
 
+/// I13: Bot must respond after /new (session reset) without OC crash.
+///
+/// Regression test for FOREIGN KEY constraint failure: when /new deletes the
+/// OpenCode session from SQLite, subsequent messages must create a fresh session
+/// instead of crashing with "OC prompt failed after restart".
+///
+/// Flow:
+///   1. Send /new to clear session
+///   2. Wait for "Conversation history cleared" confirmation
+///   3. Send a simple query
+///   4. Assert bot replies (not an error message)
+///
+/// Requirements:
+///   - Daemon running with live binary
+///   - zverozabr_session authorized
+#[tokio::test]
+#[ignore = "requires live daemon + authorized zverozabr_session"]
+async fn i13_bot_responds_after_session_reset() {
+    let bot = "zGsR_bot";
+
+    // Step 1-2: reset session and confirm
+    reset_bot_session(bot).await;
+
+    // Step 3: send a simple query
+    let query = "Скажи ок";
+    println!("Sending to @{bot}: {query}");
+    let sent_id = send_to_bot(bot, query).await;
+    println!("Sent message id={sent_id}");
+
+    let start = Instant::now();
+    let reply = wait_for_bot_reply(bot, sent_id, Duration::from_secs(120)).await;
+    println!("Elapsed: {}s", start.elapsed().as_secs());
+
+    let text = reply.unwrap_or_else(|| {
+        let log = read_daemon_log_tail(30);
+        panic!(
+            "Bot did not reply within 120s after /new + query. \
+             Possible OC session crash.\nDaemon log tail:\n{log}"
+        )
+    });
+    println!("Bot reply: {text}");
+
+    // Must not be an OC error
+    assert!(
+        !text.contains("OpenCode error") && !text.contains("OC prompt failed"),
+        "Bot returned OC error after session reset:\n{text}"
+    );
+
+    // Must have some content (even just "ок")
+    assert!(text.len() >= 2, "Bot reply too short after reset:\n{text}");
+}
+
 /// I8: search_global results must include a non-empty message_link field.
 ///
 /// Validates that telegram_reader.py produces clickable t.me URLs for
