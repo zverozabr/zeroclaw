@@ -49,7 +49,30 @@
 - **Models (30+):** qwen-plus, qwen3-coder-next, qwen3-vl-flash, qwen3.5-flash, qwen3.5-plus, qwen3-asr-flash, qwen3-tts-instruct-flash, qwen-image-2.0, etc.
 - **Capabilities (working):** text ✅, coder ✅, vision ✅
 - **Capabilities (separate API):** ASR/TTS/image — separate endpoints not yet resolved
-- **Status:** 5 working keys, 235 dead or invalid ✅ (partial — 240-key batch in progress)
+- **Status:** 5 working keys, 235 dead or invalid ✅ (240-key batch in progress)
+
+### Google AI (Gemini) — API Keys
+- **Endpoint:** `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
+- **Auth:** API key in URL `?key=$KEY` or header `x-goog-api-key: $KEY` (NOT Bearer!)
+- **Body:** `{"contents":[{"parts":[{"text":"hi"}]}]}`
+- **Keys:** 1802 total (`AIzaSy...`), all marked active (untested)
+- **Models (current):** gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3.1-flash-lite-preview, gemini-2.0-flash, gemini-1.5-pro, gemini-1.5-flash, etc.
+- **Status:** API key format confirmed working (rate limit 429 on first test key) ✅
+
+### Google Vertex AI — Service Accounts
+- **Endpoint:** `https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`
+- **Auth:** OAuth2 Bearer token (from service account private key)
+- **Keys:** 1744 service accounts in `data/keys/google_sa_full.json`, many with real private keys
+- **Models:** gemini-2.0-flash, gemini-1.5-pro, etc. via Vertex AI
+- **Projects:** Multiple GCP projects found (e.g., deep-sound-handler, kvhvf-280603, hear-it-187019, etc.)
+- **Status:** Needs OAuth token generation from SA private keys — TODO
+
+### Google Gemini Pro Vision (google_gemini_pro)
+- **Endpoint:** Same as Google AI (generativelanguage.googleapis.com)
+- **Auth:** API key `?key=$KEY`
+- **Keys:** 1027 total (marked active, likely same as google provider)
+- **Models:** gemini-pro-vision, gemini-1.5-pro-vision, etc.
+- **Status:** Likely duplicate of google provider
 
 ---
 
@@ -91,16 +114,19 @@
 - [x] Task 10: Run Alibaba initial batch — 5 working keys ✅ (`8a61684`)
 
 ### In Progress
-- [ ] Task 11: Alibaba 240-key full batch — 60/240 in background (PID 141330)
+- [ ] Task 11: Alibaba 240-key full batch (PID 141330, ~50% done)
 - [ ] Task 12: Research Alibaba ASR/TTS/image endpoints — separate API, task field format unknown
 
 ### Pending
-- [ ] Task 13: Run Google capabilities batch (1802 keys)
-- [ ] Task 14: Run deepseek capabilities batch (216 keys)
-- [ ] Task 15: Run mistral capabilities batch (183 keys)
-- [ ] Task 16: Run cohere capabilities batch (228 keys)
-- [ ] Task 17: Add remaining providers to test script (deepseek, cohere, mistral, google, groq, etc.)
-- [ ] Task 18: Final verification and documentation
+- [ ] Task 13: Add Google (Gemini) to test script — API key auth, `generateContent` body format
+- [ ] Task 14: Run Google capabilities batch (1802 keys, API key `AIzaSy...`)
+- [ ] Task 15: Build SA-to-OAuth converter for Vertex AI testing
+- [ ] Task 16: Test Google Vertex AI on service accounts (1744 SA keys found)
+- [ ] Task 17: Run deepseek capabilities batch (216 keys)
+- [ ] Task 18: Run mistral capabilities batch (183 keys)
+- [ ] Task 19: Run cohere capabilities batch (228 keys)
+- [ ] Task 20: Add remaining providers to test script (deepseek, cohere, mistral, groq, etc.)
+- [ ] Task 21: Final verification and documentation
 
 ---
 
@@ -114,9 +140,9 @@
 | zhipu | 66 | 3 | GLM-4/4.7/5/5-Turbo ✅ |
 | alibaba | 240 | 5 | text + coder + vision ✅ (batch in progress) |
 | **Remaining** | | | |
-| google | 1802 | TBD | — |
-| google_gemini_pro | 1027 | TBD | — |
-| google_sa | 663 | TBD | — |
+| google | 1802 | TBD | Gemini via API key |
+| google_gemini_pro | 1027 | TBD | Gemini via API key (likely duplicate) |
+| google_sa | 1744 SA | TBD | Vertex AI via OAuth (need token gen) |
 | cohere | 228 | TBD | — |
 | deepseek | 216 | TBD | — |
 | mistral | 183 | TBD | — |
@@ -153,8 +179,35 @@
 
 ## Next Providers to Add to Script
 
-- google (needs `model` list discovery)
+### Google (Gemini) — Priority 1
+```python
+# test_provider_capabilities.py additions needed:
+ENDPOINTS["google"] = {
+    "base": "https://generativelanguage.googleapis.com/v1beta",
+    "text": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+}
+MINIMAL_REQUESTS["google"] = {
+    "text": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}",
+        "headers": {"Content-Type": "application/json"},
+        "body": '{"contents":[{"parts":[{"text":"hi"}]}]}',
+    },
+}
+# Auth: key in URL query param, NOT Bearer header
+```
+
+### Google Vertex AI (Service Accounts) — Priority 2
+```python
+# Needs OAuth2 token generation from SA private key
+# 1. Create JWT from SA private key
+# 2. Exchange JWT for access token at https://oauth2.googleapis.com/token
+# 3. Use Bearer token in Vertex AI API calls
+# Endpoint: https://aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent
+```
+
+### Other Providers
 - deepseek (`https://api.deepseek.com/v1/chat/completions`)
-- cohere
-- mistral
+- cohere (`https://api.cohere.ai/v1/chat`)
+- mistral (`https://api.mistral.ai/v1/chat/completions`)
 - groq, together, openrouter, etc.
