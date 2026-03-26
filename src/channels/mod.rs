@@ -2859,7 +2859,7 @@ async fn process_channel_message(
                         },
                         ctx.tool_call_dedup_exempt.as_ref(),
                         ctx.activated_tools.as_ref(),
-                        Some(model_switch_callback.clone()),
+                        Some(model_switch_slot.clone()),
                         &ctx.pacing,
                     ),
                     ),
