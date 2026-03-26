@@ -1584,6 +1584,12 @@ pub struct OpenCodeConfig {
     /// Key profile name for the fallback provider in fallback_api_keys.
     #[serde(default)]
     pub fallback_api_key_profile: Option<String>,
+    /// Warn after this many seconds of stall (no activity). Default: 30.
+    #[serde(default = "OpenCodeConfig::default_stall_warn_secs")]
+    pub stall_warn_secs: u64,
+    /// Abort after this many seconds of stall (no activity). Default: 120.
+    #[serde(default = "OpenCodeConfig::default_stall_abort_secs")]
+    pub stall_abort_secs: u64,
 }
 
 impl Default for OpenCodeConfig {
@@ -1603,6 +1609,8 @@ impl Default for OpenCodeConfig {
             fallback_model: None,
             fallback_base_url: None,
             fallback_api_key_profile: None,
+            stall_warn_secs: Self::default_stall_warn_secs(),
+            stall_abort_secs: Self::default_stall_abort_secs(),
         }
     }
 }
@@ -1631,6 +1639,12 @@ impl OpenCodeConfig {
     }
     fn default_idle_timeout_secs() -> u64 {
         1800
+    }
+    fn default_stall_warn_secs() -> u64 {
+        30
+    }
+    fn default_stall_abort_secs() -> u64 {
+        120
     }
 }
 
