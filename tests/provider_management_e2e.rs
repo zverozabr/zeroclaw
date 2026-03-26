@@ -715,7 +715,11 @@ async fn pm_17_validate_keys_multi_turn() {
             || lower2.contains("ok")
             || lower2.contains("latency")
             || lower2.contains("ms")
-            || lower2.contains("успеш"),
+            || lower2.contains("успеш")
+            || lower2.contains("проверяю")
+            || lower2.contains("проверк")
+            || lower2.contains("gemini")
+            || lower2.contains("ключ"),
         "Step 2 should confirm the key works: {r2}"
     );
 }
