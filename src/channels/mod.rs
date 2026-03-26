@@ -503,6 +503,8 @@ enum ChannelRuntimeCommand {
     Skills,
     PiSteer(Option<String>), // /ps [text] — abort + optional followup message
     PiFollowup(String),      // /pf <text> — queue message while Pi busy
+    Abort,                   // /abort — stop current OC agent loop
+    Oc(Option<String>),      // /oc [on|off] — toggle OpenCode mode
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1286,13 +1288,16 @@ async fn handle_oc_bypass_if_needed(
     let status_lines: Arc<std::sync::Mutex<Vec<String>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     const MAX_VISIBLE_LINES: usize = 10;
+    let cancel = CancellationToken::new();
 
     let result = mgr
-        .prompt_with_polling(&history_key, &oc_message, history_ref, move |status| {
+        .prompt_with_polling(&history_key, &oc_message, history_ref, cancel, move |status| {
             use crate::opencode::PollingStatus;
-            let line = match &status {
+
+            // Determine whether this status replaces the last line (heartbeat) or appends
+            let (line, replace_last) = match &status {
                 PollingStatus::Thinking(preview) => {
-                    format!("\u{1f4ad} {preview}")
+                    (format!("\u{1f4ad} {preview}"), false)
                 }
                 PollingStatus::Tool {
                     name,
@@ -1328,14 +1333,25 @@ async fn handle_oc_bypass_if_needed(
                             parts.push(format!("\u{2699}\u{fe0f} `{name}`{desc}"));
                         }
                     }
-                    parts.join("\n")
+                    (parts.join("\n"), false)
                 }
-                PollingStatus::StepStart => "\u{1f4ad} Thinking\u{2026}".to_string(),
+                PollingStatus::StepStart => ("\u{1f4ad} Thinking\u{2026}".to_string(), false),
+                // Heartbeat replaces the last line (always last in buffer)
+                PollingStatus::Heartbeat { idle_secs } => {
+                    (format!("\u{23f3} Waiting for response\u{2026} ({idle_secs}s)"), true)
+                }
+                // Retrying and Stalled append as new lines (important state transitions)
+                PollingStatus::Retrying => ("\u{1f504} Agent stalled, retrying\u{2026}".to_string(), false),
+                PollingStatus::Stalled => ("\u{274c} Agent stalled after retry, please try again".to_string(), false),
             };
 
-            // Append line to scrolling buffer
+            // Update scrolling buffer
             let text = {
                 let mut lines = status_lines.lock().unwrap_or_else(|e| e.into_inner());
+                if replace_last && !lines.is_empty() {
+                    // Heartbeat: replace last line instead of appending
+                    lines.pop();
+                }
                 lines.push(line);
                 let start = lines.len().saturating_sub(MAX_VISIBLE_LINES);
                 lines[start..].join("\n")
@@ -1475,6 +1491,15 @@ fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRun
                 None
             } else {
                 Some(ChannelRuntimeCommand::PiFollowup(text))
+            }
+        }
+        "/abort" => Some(ChannelRuntimeCommand::Abort),
+        "/oc" => {
+            let arg = parts.collect::<Vec<_>>().join(" ").trim().to_string();
+            if arg.is_empty() {
+                Some(ChannelRuntimeCommand::Oc(None))
+            } else {
+                Some(ChannelRuntimeCommand::Oc(Some(arg)))
             }
         }
         _ => None,
@@ -2609,6 +2634,57 @@ fn handle_pf_command(ctx: &ChannelRuntimeContext, sender_key: &str, text: String
     "Queued".to_string()
 }
 
+/// `/oc [on|off]` — toggle OpenCode (Pi) mode.
+/// - `/oc on`  → enable OC mode
+/// - `/oc off` → disable OC mode
+/// - `/oc`     → toggle current state
+fn handle_oc_command(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+    current: &mut ChannelRouteSelection,
+    arg: Option<&str>,
+) -> String {
+    let target_on = match arg {
+        Some(s) if s.eq_ignore_ascii_case("on") => Some(true),
+        Some(s) if s.eq_ignore_ascii_case("off") => Some(false),
+        _ => None, // toggle
+    };
+
+    let will_be_on = target_on.unwrap_or(!current.pi_mode);
+
+    if will_be_on {
+        // Activating OC mode
+        current.pi_mode = true;
+        set_route_selection(ctx, sender_key, current.clone());
+        tracing::info!(sender = %sender_key, "OC mode activated via /oc");
+        if let Some(mgr) = crate::opencode::oc_manager() {
+            let key = sender_key.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = mgr.ensure_session(&key).await {
+                    tracing::error!(error = %e, "Failed to create OC session on /oc on");
+                }
+            });
+        }
+        "\u{1f7e2} OpenCode mode enabled".to_string()
+    } else {
+        // Deactivating OC mode
+        if current.pi_mode {
+            current.pi_mode = false;
+            set_route_selection(ctx, sender_key, current.clone());
+            tracing::info!(sender = %sender_key, "OC mode deactivated via /oc");
+            if let Some(mgr) = crate::opencode::oc_manager() {
+                let key = sender_key.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = mgr.stop(&key).await {
+                        tracing::warn!(error = %e, "Failed to stop OC session on /oc off");
+                    }
+                });
+            }
+        }
+        "\u{1f534} OpenCode mode disabled".to_string()
+    }
+}
+
 fn handle_models_command(
     ctx: &ChannelRuntimeContext,
     sender_key: &str,
@@ -2924,6 +3000,20 @@ async fn handle_runtime_command_if_needed(
         ChannelRuntimeCommand::Skills => format_skills_list(&ctx.loaded_skills),
         ChannelRuntimeCommand::PiSteer(text) => handle_ps_command(ctx, &sender_key, text),
         ChannelRuntimeCommand::PiFollowup(text) => handle_pf_command(ctx, &sender_key, text),
+        ChannelRuntimeCommand::Abort => {
+            if let Some(mgr) = crate::opencode::oc_manager() {
+                let key = sender_key.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = mgr.abort(&key).await {
+                        tracing::warn!(sender_key = %key, error = %e, "/abort abort error");
+                    }
+                });
+                "\u{26f0}\u{fe0f} Aborted".to_string()
+            } else {
+                "OpenCode not available".to_string()
+            }
+        }
+        ChannelRuntimeCommand::Oc(arg) => handle_oc_command(ctx, &sender_key, &mut current, arg.as_deref()),
         // Upstream granular provider/model commands — delegate to our unified handler.
         ChannelRuntimeCommand::ShowProviders => {
             handle_models_command(ctx, &sender_key, &mut current, None)

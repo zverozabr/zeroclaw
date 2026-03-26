@@ -263,6 +263,8 @@ mod tests {
             fallback_model: None,
             fallback_base_url: None,
             fallback_api_key_profile: None,
+            stall_warn_secs: 30,
+            stall_abort_secs: 120,
         }
     }
 

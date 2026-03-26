@@ -12,6 +12,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::config::OpenCodeConfig;
@@ -39,6 +40,12 @@ pub enum PollingStatus {
     },
     /// New reasoning step started
     StepStart,
+    /// No progress for stall_warn_secs — model may be stuck
+    Heartbeat { idle_secs: u64 },
+    /// Stall detected, abort+retry in progress
+    Retrying,
+    /// Final failure after retry also stalled
+    Stalled,
 }
 
 // ── Session entry ─────────────────────────────────────────────────────────────
@@ -448,27 +455,31 @@ impl OpenCodeManager {
         Ok((response, new_sid))
     }
 
-    async fn send_with_transport_recovery(
+    /// Send a message asynchronously with transport recovery (fire-and-forget).
+    ///
+    /// - On success (204): returns `Ok(())`.
+    /// - On 404: session is gone — creates a fresh session and re-injects history.
+    /// - On transport error: restarts OC and retries once.
+    async fn send_async_with_recovery(
         &self,
         history_key: &str,
         session_id: &str,
         text: &str,
         history: Option<&[crate::providers::ChatMessage]>,
-    ) -> anyhow::Result<(crate::opencode::client::MessageResponse, String)> {
+    ) -> anyhow::Result<()> {
         match self
             .http_client
-            .send_message(session_id, text, &self.provider, &self.model)
+            .send_message_async(session_id, text, &self.provider, &self.model)
             .await
         {
-            Ok(response) => return Ok((response, session_id.to_string())),
+            Ok(()) => return Ok(()),
             Err(crate::opencode::client::OpenCodeError::ServerError { status: 404, .. }) => {
                 warn!(
                     history_key,
                     session_id, "OC session missing, creating fresh session"
                 );
-                return self
-                    .send_with_fresh_session(history_key, text, history)
-                    .await;
+                self.send_with_fresh_session(history_key, text, history).await?;
+                return Ok(());
             }
             Err(crate::opencode::client::OpenCodeError::Http(initial_err)) => {
                 warn!(history_key, error = %initial_err, "OC HTTP error, attempting server restart and retry");
@@ -489,14 +500,14 @@ impl OpenCodeManager {
 
         match self
             .http_client
-            .send_message(session_id, text, &self.provider, &self.model)
+            .send_message_async(session_id, text, &self.provider, &self.model)
             .await
         {
-            Ok(response) => Ok((response, session_id.to_string())),
+            Ok(()) => Ok(()),
             Err(retry_err) => {
                 warn!(history_key, error = %retry_err, "OC retry failed, creating fresh session");
-                self.send_with_fresh_session(history_key, text, history)
-                    .await
+                self.send_with_fresh_session(history_key, text, history).await?;
+                Ok(())
             }
         }
     }
@@ -506,16 +517,30 @@ impl OpenCodeManager {
     /// OC 1.3 SSE `/event` endpoint doesn't forward session events, so instead
     /// we poll `GET /session/{id}/message` every 2s and report new parts
     /// (tool calls, thinking text) via `on_status`.
+    ///
+    /// Uses fire-and-forget `prompt_async` to send the prompt, then polls
+    /// until the session is idle with non-empty assistant text (completion).
+    ///
+    /// If the session stalls (no activity for `stall_abort_secs`), the method
+    /// retries once by aborting and re-sending. After the retry also stalls,
+    /// returns `Stalled` error.
+    ///
+    /// The `cancel` token can be used to interrupt the polling loop (e.g. from `/abort`).
     pub async fn prompt_with_polling<F>(
         &self,
         history_key: &str,
         text: &str,
         history: Option<&[crate::providers::ChatMessage]>,
+        cancel: CancellationToken,
         on_status: F,
     ) -> anyhow::Result<String>
     where
         F: Fn(PollingStatus) + Send + Sync + 'static,
     {
+        // Hardcoded timeouts until OpenCodeConfig fields are added in Task 3.
+        const STALL_WARN_SECS: u64 = 30;
+        const STALL_ABORT_SECS: u64 = 120;
+
         let session_id = self.ensure_session(history_key).await?;
 
         // Inject history if needed
@@ -527,132 +552,187 @@ impl OpenCodeManager {
         }
         self.touch_session(history_key).await;
 
-        // Poll messages every 2s while send is in-flight
+        // Fire-and-forget: send prompt asynchronously
+        self.prompt_async(history_key, text).await?;
+
         let on_status = Arc::new(on_status);
-        let mut seen_parts = 0usize;
         let poll_interval = Duration::from_secs(2);
+        let start = Instant::now();
+        let mut last_activity = start;
+        let mut first_part_seen = false;
+        let mut seen_parts = 0usize;
+        let mut retry_count = 0usize;
         let mut poll_session_id = session_id.clone();
 
-        let send_future =
-            self.send_with_transport_recovery(history_key, &session_id, text, history);
-        tokio::pin!(send_future);
-
-        let result = loop {
+        loop {
             tokio::select! {
-                res = &mut send_future => break res,
+                // Allow /abort to cancel the polling loop
+                _ = cancel.cancelled() => {
+                    return Err(anyhow::anyhow!("prompt_with_polling cancelled"));
+                }
                 () = tokio::time::sleep(poll_interval) => {
                     if let Some(active_sid) = self.get_session_id(history_key).await {
                         poll_session_id = active_sid;
                     }
 
-                    if let Ok(messages) = self.http_client.get_messages(&poll_session_id).await {
-                        let mut current_idx = 0usize;
-                        for msg_resp in &messages {
-                            if msg_resp.info.role == "assistant" || msg_resp.info.role.is_empty() {
-                                for part in &msg_resp.parts {
-                                    if current_idx >= seen_parts {
-                                        match part.kind.as_str() {
-                                            "tool" => {
-                                                let tool_name = part
-                                                    .extra
-                                                    .get("tool")
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("tool");
-                                                let status = part
-                                                    .extra
-                                                    .pointer("/state/status")
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("running");
-                                                // Extract description or command for context
-                                                let detail = part
-                                                    .extra
-                                                    .pointer("/state/input/description")
-                                                    .and_then(|v| v.as_str())
-                                                    .or_else(|| {
-                                                        part.extra
-                                                            .pointer("/state/input/command")
-                                                            .and_then(|v| v.as_str())
-                                                    })
-                                                    .map(|s| s.chars().take(120).collect::<String>());
-                                                // Full input (command, file path, etc.)
-                                                let input = part
-                                                    .extra
+                    let messages = match self.http_client.get_messages(&poll_session_id).await {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!(session_id = %poll_session_id, error = %e, "get_messages failed, continuing");
+                            continue;
+                        }
+                    };
+
+                    let mut new_parts_found = false;
+
+                    // Collect all assistant text parts for completion detection
+                    let mut assistant_texts: Vec<String> = Vec::new();
+
+                    for msg_resp in &messages {
+                        let is_assistant = msg_resp.info.role == "assistant" || msg_resp.info.role.is_empty();
+                        let mut part_idx = 0usize;
+
+                        for part in &msg_resp.parts {
+                            if is_assistant && part.kind == "text" {
+                                if let Some(ref t) = part.text {
+                                    if !t.is_empty() {
+                                        assistant_texts.push(t.clone());
+                                    }
+                                }
+                            }
+
+                            if part_idx >= seen_parts {
+                                new_parts_found = true;
+                                match part.kind.as_str() {
+                                    "tool" => {
+                                        let tool_name = part
+                                            .extra
+                                            .get("tool")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("tool");
+                                        let status = part
+                                            .extra
+                                            .pointer("/state/status")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("running");
+                                        let detail = part
+                                            .extra
+                                            .pointer("/state/input/description")
+                                            .and_then(|v| v.as_str())
+                                            .or_else(|| {
+                                                part.extra
                                                     .pointer("/state/input/command")
                                                     .and_then(|v| v.as_str())
-                                                    .or_else(|| {
-                                                        part.extra
-                                                            .pointer("/state/input/file_path")
-                                                            .and_then(|v| v.as_str())
-                                                    })
-                                                    .map(|s| s.chars().take(200).collect::<String>());
-                                                // Tool output/result
-                                                let output = part
-                                                    .extra
-                                                    .pointer("/state/output")
+                                            })
+                                            .map(|s| s.chars().take(120).collect::<String>());
+                                        let input = part
+                                            .extra
+                                            .pointer("/state/input/command")
+                                            .and_then(|v| v.as_str())
+                                            .or_else(|| {
+                                                part.extra
+                                                    .pointer("/state/input/file_path")
                                                     .and_then(|v| v.as_str())
-                                                    .map(|s| s.chars().take(300).collect::<String>());
-                                                on_status(PollingStatus::Tool {
-                                                    name: tool_name.to_string(),
-                                                    status: status.to_string(),
-                                                    detail,
-                                                    input,
-                                                    output,
-                                                });
+                                            })
+                                            .map(|s| s.chars().take(200).collect::<String>());
+                                        let output = part
+                                            .extra
+                                            .pointer("/state/output")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.chars().take(300).collect::<String>());
+                                        on_status(PollingStatus::Tool {
+                                            name: tool_name.to_string(),
+                                            status: status.to_string(),
+                                            detail,
+                                            input,
+                                            output,
+                                        });
+                                    }
+                                    "text" => {
+                                        if let Some(ref t) = part.text {
+                                            let preview: String = t.chars().take(300).collect();
+                                            if !preview.is_empty() {
+                                                on_status(PollingStatus::Thinking(preview));
                                             }
-                                            "text" => {
-                                                if let Some(t) = &part.text {
-                                                    let preview: String = t.chars().take(300).collect();
-                                                    if !preview.is_empty() {
-                                                        on_status(PollingStatus::Thinking(preview));
-                                                    }
-                                                }
-                                            }
-                                            "step-start" => {
-                                                on_status(PollingStatus::StepStart);
-                                            }
-                                            _ => {}
                                         }
                                     }
-                                    current_idx += 1;
+                                    "step-start" => {
+                                        on_status(PollingStatus::StepStart);
+                                    }
+                                    _ => {}
                                 }
-                            } else {
-                                current_idx += msg_resp.parts.len();
                             }
+                            part_idx += 1;
                         }
-                        if current_idx > seen_parts {
-                            seen_parts = current_idx;
+
+                        // Update seen_parts for assistant messages (we counted them above)
+                        if is_assistant {
+                            seen_parts += part_idx;
+                        } else {
+                            seen_parts += msg_resp.parts.len();
                         }
                     }
-                }
-            }
-        };
 
-        self.touch_session(history_key).await;
+                    if new_parts_found {
+                        last_activity = Instant::now();
+                        first_part_seen = true;
+                    }
 
-        match result {
-            Ok((response, response_session_id)) => {
-                let final_text = response.text();
-                if final_text.is_empty() {
-                    // Fallback: extract text from polled messages
-                    if let Ok(messages) = self.http_client.get_messages(&response_session_id).await
-                    {
-                        let text: String = messages
-                            .iter()
-                            .filter(|m| m.info.role == "assistant" || m.info.role.is_empty())
-                            .flat_map(|m| m.parts.iter())
-                            .filter(|p| p.kind == "text")
-                            .filter_map(|p| p.text.as_deref())
-                            .collect::<Vec<_>>()
-                            .join("");
-                        Ok(text)
+                    // Check completion: session idle AND has assistant text with content
+                    let is_idle = !messages.iter().any(|msg| {
+                        msg.parts.iter().any(|p| {
+                            p.kind == "tool"
+                                && p.extra
+                                    .pointer("/state/status")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s == "running" || s == "pending")
+                                    .unwrap_or(false)
+                        })
+                    });
+
+                    if is_idle && first_part_seen && !assistant_texts.is_empty() {
+                        let final_text = assistant_texts.join("");
+                        self.touch_session(history_key).await;
+                        return Ok(final_text);
+                    }
+
+                    // Timeout logic
+                    let idle = last_activity.elapsed();
+                    let effective_timeout = if first_part_seen {
+                        Duration::from_secs(STALL_ABORT_SECS)
                     } else {
-                        Ok(String::new())
+                        // Grace period for startup: no parts yet, use double timeout
+                        Duration::from_secs(STALL_ABORT_SECS * 2)
+                    };
+
+                    if idle > Duration::from_secs(STALL_WARN_SECS) {
+                        on_status(PollingStatus::Heartbeat {
+                            idle_secs: idle.as_secs(),
+                        });
                     }
-                } else {
-                    Ok(final_text)
+
+                    if idle > effective_timeout {
+                        if retry_count == 0 {
+                            // First stall: abort and retry once
+                            warn!(session_id = %poll_session_id, "session stalled, aborting and retrying");
+                            let _ = self.http_client.abort(&poll_session_id).await;
+                            self.prompt_async(history_key, text).await?;
+                            retry_count = 1;
+                            last_activity = Instant::now(); // Reset after retry
+                            on_status(PollingStatus::Retrying);
+                        } else {
+                            // Second stall: give up
+                            warn!(session_id = %poll_session_id, "session stalled after retry, giving up");
+                            let _ = self.http_client.abort(&poll_session_id).await;
+                            on_status(PollingStatus::Stalled);
+                            return Err(anyhow::anyhow!(
+                                "OpenCode session stalled after retry (idle={}s)",
+                                idle.as_secs()
+                            ));
+                        }
+                    }
                 }
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -1046,13 +1126,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_transport_recovery_404_uses_fresh_session() {
+    async fn send_async_with_recovery_404_creates_fresh_session() {
         let server = MockServer::start().await;
+        // First prompt_async call returns 404 (session gone)
         Mock::given(method("POST"))
-            .and(path("/session/ses_old/message"))
+            .and(path("/session/ses_old/prompt_async"))
             .respond_with(ResponseTemplate::new(404).set_body_string("missing"))
             .mount(&server)
             .await;
+        // Fresh session creation
         Mock::given(method("POST"))
             .and(path("/session"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1060,25 +1142,22 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        // Retry with fresh session (returns 204 for fire-and-forget)
         Mock::given(method("POST"))
-            .and(path("/session/ses_new/message"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "info": {"id": "msg_2", "role": "assistant"},
-                "parts": [{"type": "text", "text": "recovered"}]
-            })))
+            .and(path("/session/ses_new/prompt_async"))
+            .respond_with(ResponseTemplate::new(204))
             .mount(&server)
             .await;
 
         let dir = tempdir().unwrap();
         let mgr = make_manager_with_base_url(dir.path(), &server.uri());
 
-        let (resp, sid) = mgr
-            .send_with_transport_recovery("hk", "ses_old", "hello", None)
+        // send_async_with_recovery returns () on success
+        mgr.send_async_with_recovery("hk", "ses_old", "hello", None)
             .await
             .unwrap();
 
-        assert_eq!(sid, "ses_new");
-        assert_eq!(resp.text(), "recovered");
+        // New session should be persisted
         assert_eq!(mgr.get_session_id("hk").await.as_deref(), Some("ses_new"));
     }
 
