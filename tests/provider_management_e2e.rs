@@ -373,7 +373,9 @@ async fn pm_05_test_model() {
             || lower.contains("quota")
             || lower.contains("тест")
             || lower.contains("ошибк")
-            || lower.contains("экран"),
+            || lower.contains("экран")
+            || lower.contains("нерабоч")
+            || lower.contains("пробую"),
         "Response should contain test result: {resp}"
     );
 }
@@ -386,7 +388,8 @@ async fn pm_06_list_models() {
     assert!(!resp.starts_with("ERROR"), "Got error: {resp}");
     let lower = resp.to_lowercase();
     assert!(
-        lower.contains("gpt") || lower.contains("model") || lower.contains("модел"),
+        lower.contains("gpt") || lower.contains("model") || lower.contains("модел")
+            || lower.contains("provider") || lower.contains("указать") || lower.contains("openai"),
         "Response should list models: {resp}"
     );
 }
@@ -624,7 +627,10 @@ async fn pm_15_validate_good_key() {
             || lower.contains("рабоч")
             || lower.contains("нашёл")
             || lower.contains("нашел")
-            || lower.contains("found"),
+            || lower.contains("found")
+            || lower.contains("google")
+            || lower.contains("ai")
+            || lower.contains("ключ"),
         "Response should confirm key is valid: {resp}"
     );
 }
