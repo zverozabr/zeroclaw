@@ -1218,8 +1218,13 @@ impl Provider for ReliableProvider {
         options: StreamOptions,
     ) -> stream::BoxStream<'static, StreamResult<StreamEvent>> {
         let needs_tool_events = request.tools.is_some_and(|tools| !tools.is_empty());
+        let models: Vec<&str> = self.model_chain(model);
 
-        for (provider_name, provider) in &self.providers {
+        for (provider_idx, (provider_name, provider)) in self.providers.iter().enumerate() {
+            if self.is_in_cooldown(provider_idx) {
+                tracing::debug!(provider = %provider_name, "Skipping provider (rate-limit cooldown)");
+                continue;
+            }
             if !provider.supports_streaming() || !options.enabled {
                 continue;
             }
@@ -1228,42 +1233,48 @@ impl Provider for ReliableProvider {
                 continue;
             }
 
-            let provider_clone = provider_name.clone();
-
-            let current_model = self
-                .model_chain(model)
-                .first()
-                .copied()
-                .unwrap_or(model)
-                .to_string();
-
-            let req = ChatRequest {
-                messages: request.messages,
-                tools: request.tools,
-            };
-            let stream = provider.stream_chat(req, &current_model, temperature, options);
-            let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamEvent>>(100);
-
-            tokio::spawn(async move {
-                let mut stream = stream;
-                while let Some(event) = stream.next().await {
-                    if let Err(ref e) = event {
-                        tracing::warn!(
-                            provider = provider_clone,
-                            model = current_model,
-                            "Streaming error: {e}"
-                        );
-                    }
-                    if tx.send(event).await.is_err() {
-                        break;
-                    }
+            // Try each model in the chain until one is compatible
+            for current_model in &models {
+                if !is_model_compatible(provider_name, current_model) {
+                    tracing::debug!(
+                        provider = %provider_name,
+                        model = *current_model,
+                        "Skipping incompatible model for provider"
+                    );
+                    continue;
                 }
-            });
 
-            return stream::unfold(rx, |mut rx| async move {
-                rx.recv().await.map(|event| (event, rx))
-            })
-            .boxed();
+                let provider_clone = provider_name.clone();
+                let model_clone = (*current_model).to_string();
+
+                let req = ChatRequest {
+                    messages: request.messages,
+                    tools: request.tools,
+                };
+                let stream = provider.stream_chat(req, &model_clone, temperature, options);
+                let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamEvent>>(100);
+
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    while let Some(event) = stream.next().await {
+                        if let Err(ref e) = event {
+                            tracing::warn!(
+                                provider = provider_clone,
+                                model = model_clone,
+                                "Streaming error: {e}"
+                            );
+                        }
+                        if tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                return stream::unfold(rx, |mut rx| async move {
+                    rx.recv().await.map(|event| (event, rx))
+                })
+                .boxed();
+            }
         }
 
         let message = if needs_tool_events {
@@ -1283,7 +1294,8 @@ impl Provider for ReliableProvider {
         options: StreamOptions,
     ) -> stream::BoxStream<'static, StreamResult<StreamChunk>> {
         // Try each provider/model combination for streaming
-        // For streaming, we use the first provider that supports it and has streaming enabled
+        // For streaming, we use the first compatible provider+model combo that supports it
+        let models: Vec<&str> = self.model_chain(model);
         for (provider_idx, (provider_name, provider)) in self.providers.iter().enumerate() {
             if self.is_in_cooldown(provider_idx) {
                 tracing::debug!(provider = %provider_name, "Skipping provider (rate-limit cooldown)");
@@ -1293,49 +1305,56 @@ impl Provider for ReliableProvider {
                 continue;
             }
 
-            // Clone provider data for the stream
-            let provider_clone = provider_name.clone();
-
-            // Try the first model in the chain for streaming
-            let current_model = match self.model_chain(model).first() {
-                Some(m) => m.to_string(),
-                None => model.to_string(),
-            };
-
-            // For streaming, we attempt once and propagate errors
-            // The caller can retry the entire request if needed
-            let stream = provider.stream_chat_with_system(
-                system_prompt,
-                message,
-                &current_model,
-                temperature,
-                options,
-            );
-
-            // Use a channel to bridge the stream with logging
-            let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamChunk>>(100);
-
-            tokio::spawn(async move {
-                let mut stream = stream;
-                while let Some(chunk) = stream.next().await {
-                    if let Err(ref e) = chunk {
-                        tracing::warn!(
-                            provider = provider_clone,
-                            model = current_model,
-                            "Streaming error: {e}"
-                        );
-                    }
-                    if tx.send(chunk).await.is_err() {
-                        break; // Receiver dropped
-                    }
+            // Try each model in the chain until one is compatible
+            for current_model in &models {
+                if !is_model_compatible(provider_name, current_model) {
+                    tracing::debug!(
+                        provider = %provider_name,
+                        model = *current_model,
+                        "Skipping incompatible model for provider"
+                    );
+                    continue;
                 }
-            });
 
-            // Convert channel receiver to stream
-            return stream::unfold(rx, |mut rx| async move {
-                rx.recv().await.map(|chunk| (chunk, rx))
-            })
-            .boxed();
+                // Clone provider data for the stream
+                let provider_clone = provider_name.clone();
+                let model_clone = (*current_model).to_string();
+
+                // For streaming, we attempt once and propagate errors
+                // The caller can retry the entire request if needed
+                let stream = provider.stream_chat_with_system(
+                    system_prompt,
+                    message,
+                    &model_clone,
+                    temperature,
+                    options,
+                );
+
+                // Use a channel to bridge the stream with logging
+                let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamChunk>>(100);
+
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    while let Some(chunk) = stream.next().await {
+                        if let Err(ref e) = chunk {
+                            tracing::warn!(
+                                provider = provider_clone,
+                                model = model_clone,
+                                "Streaming error: {e}"
+                            );
+                        }
+                        if tx.send(chunk).await.is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                });
+
+                // Convert channel receiver to stream
+                return stream::unfold(rx, |mut rx| async move {
+                    rx.recv().await.map(|chunk| (chunk, rx))
+                })
+                .boxed();
+            }
         }
 
         // No streaming support available
@@ -1357,43 +1376,56 @@ impl Provider for ReliableProvider {
         // Try each provider/model combination for streaming with history.
         // Mirrors stream_chat_with_system but delegates to the underlying
         // provider's stream_chat_with_history, preserving the full conversation.
-        for (provider_name, provider) in &self.providers {
+        let models: Vec<&str> = self.model_chain(model);
+        for (provider_idx, (provider_name, provider)) in self.providers.iter().enumerate() {
+            if self.is_in_cooldown(provider_idx) {
+                tracing::debug!(provider = %provider_name, "Skipping provider (rate-limit cooldown)");
+                continue;
+            }
             if !provider.supports_streaming() || !options.enabled {
                 continue;
             }
 
-            let provider_clone = provider_name.clone();
-
-            let current_model = match self.model_chain(model).first() {
-                Some(m) => m.to_string(),
-                None => model.to_string(),
-            };
-
-            let stream =
-                provider.stream_chat_with_history(messages, &current_model, temperature, options);
-
-            let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamChunk>>(100);
-
-            tokio::spawn(async move {
-                let mut stream = stream;
-                while let Some(chunk) = stream.next().await {
-                    if let Err(ref e) = chunk {
-                        tracing::warn!(
-                            provider = provider_clone,
-                            model = current_model,
-                            "Streaming error: {e}"
-                        );
-                    }
-                    if tx.send(chunk).await.is_err() {
-                        break; // Receiver dropped
-                    }
+            // Try each model in the chain until one is compatible
+            for current_model in &models {
+                if !is_model_compatible(provider_name, current_model) {
+                    tracing::debug!(
+                        provider = %provider_name,
+                        model = *current_model,
+                        "Skipping incompatible model for provider"
+                    );
+                    continue;
                 }
-            });
 
-            return stream::unfold(rx, |mut rx| async move {
-                rx.recv().await.map(|chunk| (chunk, rx))
-            })
-            .boxed();
+                let provider_clone = provider_name.clone();
+                let model_clone = (*current_model).to_string();
+
+                let stream =
+                    provider.stream_chat_with_history(messages, &model_clone, temperature, options);
+
+                let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamChunk>>(100);
+
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    while let Some(chunk) = stream.next().await {
+                        if let Err(ref e) = chunk {
+                            tracing::warn!(
+                                provider = provider_clone,
+                                model = model_clone,
+                                "Streaming error: {e}"
+                            );
+                        }
+                        if tx.send(chunk).await.is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                });
+
+                return stream::unfold(rx, |mut rx| async move {
+                    rx.recv().await.map(|chunk| (chunk, rx))
+                })
+                .boxed();
+            }
         }
 
         // No streaming support available
