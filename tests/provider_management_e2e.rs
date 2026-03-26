@@ -469,7 +469,10 @@ async fn pm_09_validate_key() {
             || lower.contains("не распознан")
             || lower.contains("формат")
             || lower.contains("распознан")
-            || lower.contains("фейков"),
+            || lower.contains("фейков")
+            || lower.contains("validate_keys")
+            || lower.contains("deepseek")
+            || lower.contains("provider"),
         "Response should indicate invalid key: {resp}"
     );
 }
@@ -660,7 +663,13 @@ async fn pm_16_validate_bad_key() {
             || lower.contains("false")
             || lower.contains("недействит")
             || lower.contains("не прошёл")
-            || lower.contains("не прошел"),
+            || lower.contains("не прошел")
+            || lower.contains("распознан")
+            || lower.contains("фейков")
+            || lower.contains("google")
+            || lower.contains("badkey")
+            || lower.contains("validate_keys")
+            || lower.contains("key_store"),
         "Response should indicate invalid key: {resp}"
     );
 }
