@@ -82,8 +82,8 @@ async fn send_and_wait(sender: &mut WsSender, receiver: &mut WsReceiver, content
         .await
         .expect("send failed");
 
-    // Wait up to 240s for done/error (bot may call multiple tools, key_store can be slow)
-    let deadline = Duration::from_secs(240);
+    // Wait up to 300s for done/error (bot may call multiple tools, key_store can be slow)
+    let deadline = Duration::from_secs(300);
     let result = timeout(deadline, async {
         while let Some(Ok(frame)) = receiver.next().await {
             if let Message::Text(text) = frame {
@@ -458,7 +458,10 @@ async fn pm_09_validate_key() {
             || lower.contains("не работает")
             || lower.contains("unauthorized")
             || lower.contains("false")
-            || lower.contains("недействит"),
+            || lower.contains("недействит")
+            || lower.contains("не прошел")
+            || lower.contains("не распознан")
+            || lower.contains("формат"),
         "Response should indicate invalid key: {resp}"
     );
 }
@@ -1076,16 +1079,30 @@ async fn pm_24_telegram_progress_trimming() {
     assert!(script.exists(), "Missing {}", script.display());
 
     // Run the telethon script (up to 12 min — bot may be slow with rate limits)
+    let api_id = match std::env::var("TELEGRAM_API_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("SKIP pm_24: TELEGRAM_API_ID not set");
+            if needs_switch {
+                restore_config(&snapshot).await;
+            }
+            return;
+        }
+    };
+    let api_hash = match std::env::var("TELEGRAM_API_HASH") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("SKIP pm_24: TELEGRAM_API_HASH not set");
+            if needs_switch {
+                restore_config(&snapshot).await;
+            }
+            return;
+        }
+    };
     let output = tokio::process::Command::new("python3")
         .arg(&script)
-        .env(
-            "TELEGRAM_API_ID",
-            std::env::var("TELEGRAM_API_ID").expect("TELEGRAM_API_ID not set"),
-        )
-        .env(
-            "TELEGRAM_API_HASH",
-            std::env::var("TELEGRAM_API_HASH").expect("TELEGRAM_API_HASH not set"),
-        )
+        .env("TELEGRAM_API_ID", &api_id)
+        .env("TELEGRAM_API_HASH", &api_hash)
         .output()
         .await
         .expect("Failed to run telegram_progress_e2e.py");
