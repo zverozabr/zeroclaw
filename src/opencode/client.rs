@@ -115,7 +115,6 @@ impl OpenCodeClient {
     pub fn new(port: u16) -> Self {
         let password = std::env::var("OPENCODE_SERVER_PASSWORD").ok();
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(600))
             .connect_timeout(Duration::from_secs(5))
             .no_proxy()
             .build()
@@ -195,6 +194,33 @@ impl OpenCodeClient {
                 Err(OpenCodeError::ServerError { status, body })
             }
         }
+    }
+
+    /// Returns `true` if the session is idle (no tool parts with
+    /// `state.status == "running"` or `"pending"`). Returns `false` on any
+    /// error including 404 (session not found).
+    pub async fn is_session_idle(&self, session_id: &str) -> ClientResult<bool> {
+        // First verify the session still exists.
+        if self.get_session(session_id).await? .is_none() {
+            return Ok(false);
+        }
+
+        // Poll messages and look for active tool states.
+        let messages = self.get_messages(session_id).await?;
+        for msg in messages {
+            for part in msg.parts {
+                if part.kind == "tool" {
+                    if let Some(status) = part.extra.get("state").and_then(|s| s.get("status")) {
+                        if let Some(s) = status.as_str() {
+                            if s == "running" || s == "pending" {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(true)
     }
 
     // ── Messaging ─────────────────────────────────────────────────────────────
