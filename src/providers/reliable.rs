@@ -4,10 +4,25 @@ use super::traits::{
 use super::Provider;
 use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+// ── Model-specific Temperature Overrides ────────────────────────────────
+// Some models require a fixed temperature and will reject or behave poorly
+// with values other than the canonical one. This function centralises that
+// logic so every call-site benefits automatically.
+
+/// Return a forced temperature for models that require one, or `None` if the
+/// caller's default should be used unchanged.
+fn forced_temperature(model: &str) -> Option<f64> {
+    match model {
+        m if m.contains("thinking") || m == "kimi-k2.5" => Some(1.0),
+        _ => None,
+    }
+}
 
 // ── Provider Fallback Notification ──────────────────────────────────────
 // When ReliableProvider uses a fallback (different provider or model than
@@ -29,7 +44,7 @@ pub struct ProviderFallbackInfo {
 }
 
 tokio::task_local! {
-    static PROVIDER_FALLBACK: std::cell::RefCell<Option<ProviderFallbackInfo>>;
+    static PROVIDER_FALLBACK: RefCell<Option<ProviderFallbackInfo>>;
 }
 
 /// Take (consume) the last provider fallback info, if any.
@@ -46,9 +61,7 @@ pub fn take_last_provider_fallback() -> Option<ProviderFallbackInfo> {
 /// `take_last_provider_fallback` (post-loop channel code) must execute
 /// within this scope for the data to be visible.
 pub async fn scope_provider_fallback<F: std::future::Future>(future: F) -> F::Output {
-    PROVIDER_FALLBACK
-        .scope(std::cell::RefCell::new(None), future)
-        .await
+    PROVIDER_FALLBACK.scope(RefCell::new(None), future).await
 }
 
 /// Record a provider fallback event.
@@ -66,20 +79,6 @@ fn record_provider_fallback(
             actual_model: actual_model.to_string(),
         });
     });
-}
-
-// ── Model-specific Temperature Overrides ────────────────────────────────
-// Some models require a fixed temperature and will reject or behave poorly
-// with values other than the canonical one. This function centralises that
-// logic so every call-site benefits automatically.
-
-/// Return a forced temperature for models that require one, or `None` if the
-/// caller's default should be used unchanged.
-fn forced_temperature(model: &str) -> Option<f64> {
-    match model {
-        m if m.contains("thinking") || m == "kimi-k2.5" => Some(1.0),
-        _ => None,
-    }
 }
 
 // ── Error Classification ─────────────────────────────────────────────────
@@ -3238,5 +3237,49 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallback_records_provider_fallback_info() {
+        scope_provider_fallback(async {
+            let provider = ReliableProvider::new(
+                vec![
+                    (
+                        "broken".into(),
+                        Box::new(MockProvider {
+                            calls: Arc::new(AtomicUsize::new(0)),
+                            fail_until_attempt: 99, // always fail
+                            response: "unused",
+                            error: "401 Unauthorized",
+                        }),
+                    ),
+                    (
+                        "working".into(),
+                        Box::new(MockProvider {
+                            calls: Arc::new(AtomicUsize::new(0)),
+                            fail_until_attempt: 0,
+                            response: "hello from working",
+                            error: "unused",
+                        }),
+                    ),
+                ],
+                2,
+                1,
+            );
+
+            let resp = provider.simple_chat("hi", "test-model", 0.0).await.unwrap();
+            assert_eq!(resp, "hello from working");
+
+            let fb = take_last_provider_fallback();
+            assert!(fb.is_some(), "fallback info should be recorded");
+            let fb = fb.unwrap();
+            assert_eq!(fb.requested_provider, "broken");
+            assert_eq!(fb.actual_provider, "working");
+            assert_eq!(fb.actual_model, "test-model");
+
+            // Second take should be None.
+            assert!(take_last_provider_fallback().is_none());
+        })
+        .await;
     }
 }

@@ -80,6 +80,7 @@ mod tests {
                 subject: None,
                 thread_ts: None,
                 reply_to_message_id: None,
+                cancellation_token: None,
             })
             .await;
         assert!(result.is_ok());
@@ -95,6 +96,7 @@ mod tests {
                 subject: None,
                 thread_ts: None,
                 reply_to_message_id: None,
+                cancellation_token: None,
             })
             .await;
         assert!(result.is_ok());

@@ -114,6 +114,7 @@ use crate::identity;
 use crate::memory::{self, Memory};
 use crate::observability::traits::{ObserverEvent, ObserverMetric};
 use crate::observability::{self, runtime_trace, Observer};
+use crate::providers::reliable::{scope_provider_fallback, take_last_provider_fallback};
 use crate::providers::{self, ChatMessage, Provider};
 use crate::runtime;
 use crate::security::{AutonomyLevel, SecurityPolicy};
@@ -3002,7 +3003,7 @@ async fn build_memory_context(
         }
 
         if included > 0 {
-            context.push('\n');
+            context.push_str("[/Memory context]\n\n");
         }
     }
 
@@ -3110,8 +3111,9 @@ fn sanitize_channel_response(response: &str, tools: &[Box<dyn Tool>]) -> String 
         .map(|tool| tool.name().to_ascii_lowercase())
         .collect();
     // Strip any [Used tools: ...] prefix that the LLM may have echoed from
-    // history context (#4400).
-    let stripped_summary = strip_tool_summary_prefix(response);
+    // history context (#4400). Trim first to handle leading/trailing whitespace.
+    let trimmed_response = response.trim();
+    let stripped_summary = strip_tool_summary_prefix(trimmed_response);
     // Strip XML-style tool-call tags (e.g. <tool_call>...</tool_call>)
     let stripped_xml = strip_tool_call_tags(&stripped_summary);
     // Strip isolated tool-call JSON artifacts
@@ -3797,26 +3799,27 @@ async fn process_channel_message(
     }
     let mut history = vec![ChatMessage::system(system_prompt)];
     history.extend(prior_turns);
-    let use_streaming = target_channel
+    let use_draft_streaming = target_channel
         .as_ref()
         .is_some_and(|ch| ch.supports_draft_updates());
 
     tracing::debug!(
         channel = %msg.channel,
         has_target_channel = target_channel.is_some(),
-        use_streaming,
-        supports_draft = target_channel.as_ref().map_or(false, |ch| ch.supports_draft_updates()),
-        "Draft streaming decision"
+        use_draft_streaming,
+        "Streaming decision"
     );
 
-    let (delta_tx, delta_rx) = if use_streaming {
+    // Partial mode: delta channel for draft updates (progress + text).
+    let (delta_tx, delta_rx) = if use_draft_streaming {
         let (tx, rx) = tokio::sync::mpsc::channel::<crate::agent::loop_::DraftEvent>(64);
         (Some(tx), Some(rx))
     } else {
         (None, None)
     };
 
-    let draft_message_id = if use_streaming {
+    // Partial mode: send an initial draft message for progressive editing.
+    let draft_message_id = if use_draft_streaming {
         if let Some(channel) = target_channel.as_ref() {
             match channel
                 .send_draft(
@@ -3839,42 +3842,48 @@ async fn process_channel_message(
         None
     };
 
-    let draft_updater = if let (Some(mut rx), Some(draft_id_ref), Some(channel_ref)) = (
-        delta_rx,
-        draft_message_id.as_deref(),
-        target_channel.as_ref(),
-    ) {
-        let channel = Arc::clone(channel_ref);
-        let reply_target = msg.reply_target.clone();
-        let draft_id = draft_id_ref.to_string();
-        Some(tokio::spawn(async move {
-            use crate::agent::loop_::DraftEvent;
-            let mut accumulated = String::new();
-            while let Some(event) = rx.recv().await {
-                match event {
-                    DraftEvent::Clear => {
-                        accumulated.clear();
-                    }
-                    DraftEvent::Progress(text) => {
-                        if let Err(e) = channel
-                            .update_draft_progress(&reply_target, &draft_id, &text)
-                            .await
-                        {
-                            tracing::debug!("Draft progress update failed: {e}");
+    // Spawn the appropriate handler for the delta channel.
+    let draft_updater = if use_draft_streaming {
+        // Partial: accumulate text and edit a single draft message.
+        if let (Some(mut rx), Some(draft_id_ref), Some(channel_ref)) = (
+            delta_rx,
+            draft_message_id.as_deref(),
+            target_channel.as_ref(),
+        ) {
+            let channel = Arc::clone(channel_ref);
+            let reply_target = msg.reply_target.clone();
+            let draft_id = draft_id_ref.to_string();
+            Some(tokio::spawn(async move {
+                use crate::agent::loop_::DraftEvent;
+                let mut accumulated = String::new();
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        DraftEvent::Clear => {
+                            accumulated.clear();
                         }
-                    }
-                    DraftEvent::Content(text) => {
-                        accumulated.push_str(&text);
-                        if let Err(e) = channel
-                            .update_draft(&reply_target, &draft_id, &accumulated)
-                            .await
-                        {
-                            tracing::debug!("Draft update failed: {e}");
+                        DraftEvent::Progress(text) => {
+                            if let Err(e) = channel
+                                .update_draft_progress(&reply_target, &draft_id, &text)
+                                .await
+                            {
+                                tracing::debug!("Draft progress update failed: {e}");
+                            }
+                        }
+                        DraftEvent::Content(text) => {
+                            accumulated.push_str(&text);
+                            if let Err(e) = channel
+                                .update_draft(&reply_target, &draft_id, &accumulated)
+                                .await
+                            {
+                                tracing::debug!("Draft update failed: {e}");
+                            }
                         }
                     }
                 }
-            }
-        }))
+            }))
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -3891,7 +3900,16 @@ async fn process_channel_message(
         }
     }
 
-    let typing_cancellation = target_channel.as_ref().map(|_| CancellationToken::new());
+    // Skip typing only for Partial mode — the draft message itself provides
+    // visual feedback. MultiMessage and Off both keep typing active.
+    let is_partial_draft = target_channel
+        .as_ref()
+        .is_some_and(|ch| ch.supports_draft_updates() && !ch.supports_multi_message_streaming());
+    let typing_cancellation = if is_partial_draft {
+        None
+    } else {
+        target_channel.as_ref().map(|_| CancellationToken::new())
+    };
     let typing_task = match (target_channel.as_ref(), typing_cancellation.as_ref()) {
         (Some(channel), Some(token)) => Some(spawn_scoped_typing_task(
             Arc::clone(channel),
@@ -4091,140 +4109,139 @@ async fn process_channel_message(
     #[allow(clippy::cast_possible_truncation)]
     let elapsed_before_llm_ms = started_at.elapsed().as_millis() as u64;
     tracing::info!(elapsed_before_llm_ms, "⏱ Starting LLM call");
-    let (llm_result, fallback_info) =
-        crate::providers::reliable::scope_provider_fallback(Box::pin(async {
-            let llm_result = loop {
-                let loop_result = tokio::select! {
-                    () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
-                    result = tokio::time::timeout(
-                        Duration::from_secs(timeout_budget_secs),
-                        scope_thread_id(
-                            msg.interruption_scope_id.clone()
-                                .or_else(|| msg.thread_ts.clone())
-                                .or_else(|| Some(msg.id.clone())),
-                            Some(history_key.clone()),
-                            scope_reply_to_message_id(
-                                msg.reply_to_message_id.clone(),
-                                crate::agent::loop_::TOOL_LOOP_COST_TRACKING_CONTEXT.scope(
-                                    cost_tracking_context.clone(),
-                                    run_tool_call_loop(
-                                        active_provider.as_ref(),
-                                        &mut history,
-                                        ctx.tools_registry.as_ref(),
-                                        notify_observer.as_ref() as &dyn Observer,
-                                        route.provider.as_str(),
-                                        route.model.as_str(),
-                                        runtime_defaults.temperature,
-                                        true,
-                                        Some(effective_approval),
-                                        msg.channel.as_str(),
-                                        Some(msg.reply_target.as_str()),
-                                        &ctx.multimodal,
-                                        ctx.max_tool_iterations,
-                                        Some(cancellation_token.clone()),
-                                        delta_tx.clone(),
-                                        ctx.hooks.as_deref(),
-                                        effective_excluded,
-                                        ctx.tool_call_dedup_exempt.as_ref(),
-                                        ctx.max_parallel_tool_calls,
-                                        ctx.max_tool_result_chars,
-                                        0,
-                                        session_recorder.as_ref(),
-                                        session_debug,
-                                        ctx.activated_tools.as_ref(),
-                                        Some(model_switch_slot.clone()),
-                                        &ctx.pacing,
-                                    ),
-                                ),
+    let (llm_result, fallback_info) = scope_provider_fallback(async {
+        let llm_result = loop {
+            let loop_result = tokio::select! {
+                () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
+                result = tokio::time::timeout(
+                    Duration::from_secs(timeout_budget_secs),
+                    scope_thread_id(
+                        msg.interruption_scope_id.clone()
+                            .or_else(|| msg.thread_ts.clone())
+                            .or_else(|| Some(msg.id.clone())),
+                        Some(history_key.clone()),
+                        scope_reply_to_message_id(
+                            msg.reply_to_message_id.clone(),
+                            crate::agent::loop_::TOOL_LOOP_COST_TRACKING_CONTEXT.scope(
+                                cost_tracking_context.clone(),
+                            run_tool_call_loop(
+                                active_provider.as_ref(),
+                                &mut history,
+                                ctx.tools_registry.as_ref(),
+                                notify_observer.as_ref() as &dyn Observer,
+                                route.provider.as_str(),
+                                route.model.as_str(),
+                                runtime_defaults.temperature,
+                                true,
+                                Some(&*ctx.approval_manager),
+                                msg.channel.as_str(),
+                                Some(msg.reply_target.as_str()),
+                                &ctx.multimodal,
+                                ctx.max_tool_iterations,
+                                Some(cancellation_token.clone()),
+                                delta_tx.clone(),
+                                ctx.hooks.as_deref(),
+                                if msg.channel == "cli"
+                                    || ctx.autonomy_level == AutonomyLevel::Full
+                                {
+                                    &[]
+                                } else {
+                                    ctx.non_cli_excluded_tools.as_ref()
+                                },
+                                ctx.tool_call_dedup_exempt.as_ref(),
+                                ctx.max_parallel_tool_calls,
+                                ctx.max_tool_result_chars,
+                                0,
+                                session_recorder.as_ref(),
+                                session_debug,
+                                ctx.activated_tools.as_ref(),
+                                Some(model_switch_slot.clone()),
+                                &ctx.pacing,
+                            ),
                             ),
                         ),
-                    ) => LlmExecutionResult::Completed(result),
-                };
+                    ),
+                ) => LlmExecutionResult::Completed(result),
+            };
 
-                // Handle model switch: re-create the provider and retry
-                if let LlmExecutionResult::Completed(Ok(Err(ref e))) = loop_result {
-                    if let Some((new_provider, new_model)) = is_model_switch_requested(e) {
-                        tracing::info!(
-                            "Model switch requested, switching from {} {} to {} {}",
-                            route.provider,
-                            route.model,
-                            new_provider,
-                            new_model
-                        );
+            // Handle model switch: re-create the provider and retry
+            if let LlmExecutionResult::Completed(Ok(Err(ref e))) = loop_result {
+                if let Some((new_provider, new_model)) = is_model_switch_requested(e) {
+                    tracing::info!(
+                        "Model switch requested, switching from {} {} to {} {}",
+                        route.provider,
+                        route.model,
+                        new_provider,
+                        new_model
+                    );
 
-                        match create_resilient_provider_nonblocking(
-                            &new_provider,
-                            ctx.api_key.clone(),
-                            ctx.api_url.clone(),
-                            ctx.reliability.as_ref().clone(),
-                            ctx.provider_runtime_options.clone(),
-                        )
-                        .await
-                        {
-                            Ok(new_prov) => {
-                                active_provider = Arc::from(new_prov);
-                                route.provider = new_provider;
-                                route.model = new_model;
-                                clear_model_switch_request();
+                    match create_resilient_provider_nonblocking(
+                        &new_provider,
+                        ctx.api_key.clone(),
+                        ctx.api_url.clone(),
+                        ctx.reliability.as_ref().clone(),
+                        ctx.provider_runtime_options.clone(),
+                    )
+                    .await
+                    {
+                        Ok(new_prov) => {
+                            active_provider = Arc::from(new_prov);
+                            route.provider = new_provider;
+                            route.model = new_model;
+                            clear_model_switch_request();
 
-                                ctx.observer.record_event(&ObserverEvent::AgentStart {
-                                    provider: route.provider.clone(),
-                                    model: route.model.clone(),
-                                });
+                            ctx.observer.record_event(&ObserverEvent::AgentStart {
+                                provider: route.provider.clone(),
+                                model: route.model.clone(),
+                            });
 
-                                continue;
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    "Failed to create provider after model switch: {err}"
-                                );
-                                clear_model_switch_request();
-                                // Fall through with the original error
-                            }
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::error!("Failed to create provider after model switch: {err}");
+                            clear_model_switch_request();
+                            // Fall through with the original error
                         }
                     }
                 }
-
-                break loop_result;
-            };
-
-            // Per-chat model switch: persist switch applied by the agent loop.
-            // The agent loop writes into the per-request model_switch_slot callback.
-            // Fall back to MODEL_SWITCH_REQUEST for the case where the loop exits before applying.
-            {
-                let pending = model_switch_slot
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .or_else(|| get_model_switch_state().lock().unwrap().take());
-                if let Some((new_provider, new_model)) = pending {
-                    tracing::info!(
-                        sender_key = %history_key,
-                        new_provider, new_model,
-                        "Applying model_switch tool request as per-chat route override"
-                    );
-                    set_route_selection(
-                        ctx.as_ref(),
-                        &history_key,
-                        ChannelRouteSelection {
-                            provider: new_provider,
-                            model: new_model,
-                            api_key: None,
-                            pi_mode: false,
-                        },
-                    );
-                    clear_sender_history(ctx.as_ref(), &history_key);
-                }
             }
 
-            // Extract fallback info while still inside the task_local scope.
-            let fb = crate::providers::reliable::take_last_provider_fallback();
-            (llm_result, fb)
-        }))
-        .await;
+            break loop_result;
+        };
 
-    // Drop the delta sender so the draft updater task can finish
-    // (rx.recv() returns None only when all senders are dropped).
+        // Per-chat model switch: persist switch applied by the agent loop.
+        {
+            let pending = model_switch_slot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .or_else(|| get_model_switch_state().lock().unwrap().take());
+            if let Some((new_provider, new_model)) = pending {
+                tracing::info!(
+                    sender_key = %history_key,
+                    new_provider, new_model,
+                    "Applying model_switch tool request as per-chat route override"
+                );
+                set_route_selection(
+                    ctx.as_ref(),
+                    &history_key,
+                    ChannelRouteSelection {
+                        provider: new_provider,
+                        model: new_model,
+                        api_key: None,
+                        pi_mode: false,
+                    },
+                );
+                clear_sender_history(ctx.as_ref(), &history_key);
+            }
+        }
+
+        let fb = take_last_provider_fallback();
+        (llm_result, fb)
+    })
+    .await;
+
+    // Drop all senders so updater tasks can exit (rx.recv() returns None).
     tracing::debug!("Post-loop: dropping delta_tx and awaiting draft updater");
     drop(delta_tx);
     if let Some(handle) = draft_updater {
@@ -4377,16 +4394,17 @@ async fn process_channel_message(
                 let same_family = req_base == act_base
                     || req_base.starts_with(act_base)
                     || act_base.starts_with(req_base);
-                if !same_family && !delivered_response.contains("unavailable — response from") {
+                if !same_family && !delivered_response.contains("unavailable") {
                     use std::fmt::Write as _;
                     write!(
                         delivered_response,
-                        "\n\n---\n\u{26A1} `{}` unavailable — response from **{}** (`{}`)\nSwitch model: /models",
+                        "\n\n---\n\u{26A1} `{}` unavailable \u{2014} response from **{}** (`{}`)\nSwitch model: /models",
                         fb.requested_provider, fb.actual_provider, fb.actual_model,
                     )
                     .ok();
                 }
             }
+
             runtime_trace::record_event(
                 "channel_message_outbound",
                 Some(msg.channel.as_str()),
@@ -4493,7 +4511,8 @@ async fn process_channel_message(
                         .send(
                             &SendMessage::new(delivered_response, &msg.reply_target)
                                 .in_thread(msg.thread_ts.clone())
-                                .reply_to(msg.reply_to_message_id.clone()),
+                                .reply_to(msg.reply_to_message_id.clone())
+                                .with_cancellation(cancellation_token.clone()),
                         )
                         .await
                     {
@@ -5500,6 +5519,11 @@ fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn Chan
                     dc.listen_to_bots,
                     dc.mention_only,
                 )
+                .with_streaming(
+                    dc.stream_mode,
+                    dc.draft_update_interval_ms,
+                    dc.multi_message_delay_ms,
+                )
                 .with_transcription(config.transcription.clone()),
             ))
         }
@@ -5606,6 +5630,11 @@ fn collect_configured_channels(
                     dc.listen_to_bots,
                     dc.mention_only,
                 )
+                .with_streaming(
+                    dc.stream_mode,
+                    dc.draft_update_interval_ms,
+                    dc.multi_message_delay_ms,
+                )
                 .with_proxy_url(dc.proxy_url.clone())
                 .with_transcription(config.transcription.clone()),
             ),
@@ -5699,6 +5728,11 @@ fn collect_configured_channels(
                     mx.device_id.clone(),
                     config.config_path.parent().map(|path| path.to_path_buf()),
                 )
+                .with_streaming(
+                    mx.stream_mode,
+                    mx.draft_update_interval_ms,
+                    mx.multi_message_delay_ms,
+                )
                 .with_transcription(config.transcription.clone()),
             ),
         });
@@ -5749,7 +5783,9 @@ fn collect_configured_channels(
                                 wa.verify_token.clone().unwrap_or_default(),
                                 wa.allowed_numbers.clone(),
                             )
-                            .with_proxy_url(wa.proxy_url.clone()),
+                            .with_proxy_url(wa.proxy_url.clone())
+                            .with_dm_mention_patterns(wa.dm_mention_patterns.clone())
+                            .with_group_mention_patterns(wa.group_mention_patterns.clone()),
                         ),
                     });
                 } else {
@@ -5774,7 +5810,9 @@ fn collect_configured_channels(
                                 wa.self_chat_mode,
                             )
                             .with_transcription(config.transcription.clone())
-                            .with_tts(config.tts.clone()),
+                            .with_tts(config.tts.clone())
+                            .with_dm_mention_patterns(wa.dm_mention_patterns.clone())
+                            .with_group_mention_patterns(wa.group_mention_patterns.clone()),
                         ),
                     });
                 } else {
@@ -6206,6 +6244,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         reaction_handle_ch,
         _channel_map_handle,
         ask_user_handle_ch,
+        escalate_handle_ch,
     ) = tools::all_tools_with_runtime(
         Arc::new(config.clone()),
         &security,
@@ -6516,6 +6555,14 @@ pub async fn start_channels(config: Config) -> Result<()> {
         }
     }
 
+    // Populate the escalate_to_human tool's channel map now that channels are initialized.
+    if let Some(ref handle) = escalate_handle_ch {
+        let mut map = handle.write();
+        for (name, ch) in channels_by_name.as_ref() {
+            map.insert(name.clone(), Arc::clone(ch));
+        }
+    }
+
     let max_in_flight_messages = compute_max_in_flight_messages(channels.len());
 
     println!("  🚦 In-flight message limit: {max_in_flight_messages}");
@@ -6646,22 +6693,41 @@ pub async fn start_channels(config: Config) -> Result<()> {
     });
 
     // Hydrate in-memory conversation histories from persisted JSONL session files.
+    // If the last persisted turn is a user message (orphan from a crash mid-query),
+    // close it with a marker so the LLM doesn't try to continue the old request.
     if let Some(ref store) = runtime_ctx.session_store {
         let mut hydrated = 0usize;
+        let mut orphans_closed = 0usize;
         let mut histories = runtime_ctx
             .conversation_histories
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         for key in store.list_sessions() {
-            let msgs = store.load(&key);
-            if !msgs.is_empty() {
-                hydrated += 1;
-                histories.insert(key, msgs);
+            let mut msgs = store.load(&key);
+            if msgs.is_empty() {
+                continue;
             }
+            // Close orphaned user turns from crashed sessions.
+            if msgs.last().is_some_and(|m| m.role == "user") {
+                let closure =
+                    ChatMessage::assistant("[Session interrupted — not continuing this request]");
+                if let Err(e) = store.append(&key, &closure) {
+                    tracing::debug!("Failed to persist orphan closure for {key}: {e}");
+                }
+                msgs.push(closure);
+                orphans_closed += 1;
+            }
+            hydrated += 1;
+            histories.insert(key, msgs);
         }
         drop(histories);
         if hydrated > 0 {
             tracing::info!("📂 Restored {hydrated} session(s) from disk");
+        }
+        if orphans_closed > 0 {
+            tracing::info!(
+                "🔒 Closed {orphans_closed} orphaned session turn(s) from previous crash"
+            );
         }
     }
 
@@ -6882,6 +6948,18 @@ mod tests {
             strip_tool_summary_prefix(input),
             "The command output is 42."
         );
+    }
+
+    #[test]
+    fn sanitize_channel_response_strips_used_tools_with_leading_whitespace() {
+        let tools: Vec<Box<dyn Tool>> = Vec::new();
+        // Issue #4478: response with leading whitespace before [Used tools: ...]
+        let input = "  [Used tools: web_search_tool]\nHere is the search result.";
+
+        let result = sanitize_channel_response(input, &tools);
+
+        assert!(!result.contains("[Used tools:"));
+        assert!(result.contains("Here is the search result."));
     }
 
     #[test]

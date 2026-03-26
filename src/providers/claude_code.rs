@@ -427,10 +427,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let path = dir.join("fake_claude.sh");
-        let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "#!/bin/sh\ncat /dev/stdin").unwrap();
-        f.sync_all().unwrap();
-        drop(f);
+        std::fs::write(&path, "#!/bin/sh\ncat /dev/stdin\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 /// A message received from or sent to a channel
 #[derive(Debug, Clone)]
@@ -37,6 +38,8 @@ pub struct SendMessage {
     pub thread_ts: Option<String>,
     /// Platform-specific message ID to reply to (e.g. Telegram `message_id`).
     pub reply_to_message_id: Option<String>,
+    /// Optional cancellation token for interruptible delivery (e.g. multi-message mode).
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 impl SendMessage {
@@ -48,6 +51,7 @@ impl SendMessage {
             subject: None,
             thread_ts: None,
             reply_to_message_id: None,
+            cancellation_token: None,
         }
     }
 
@@ -63,6 +67,7 @@ impl SendMessage {
             subject: Some(subject.into()),
             thread_ts: None,
             reply_to_message_id: None,
+            cancellation_token: None,
         }
     }
 
@@ -75,6 +80,12 @@ impl SendMessage {
     /// Set the platform-specific message ID this message replies to.
     pub fn reply_to(mut self, reply_to_message_id: Option<String>) -> Self {
         self.reply_to_message_id = reply_to_message_id;
+        self
+    }
+
+    /// Attach a cancellation token for interruptible delivery.
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
         self
     }
 }
@@ -124,6 +135,19 @@ pub trait Channel: Send + Sync {
     /// Whether this channel supports progressive message updates via draft edits.
     fn supports_draft_updates(&self) -> bool {
         false
+    }
+
+    /// Whether this channel supports multi-message streaming delivery, where
+    /// the response is sent as multiple separate messages at paragraph
+    /// boundaries as tokens arrive from the provider.
+    fn supports_multi_message_streaming(&self) -> bool {
+        false
+    }
+
+    /// Minimum delay (ms) between sending each paragraph in multi-message mode.
+    /// Channels should override this to avoid platform rate limits.
+    fn multi_message_delay_ms(&self) -> u64 {
+        800
     }
 
     /// Send an initial draft message. Returns a platform-specific message ID for later edits.
