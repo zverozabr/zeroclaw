@@ -567,7 +567,7 @@ impl OpenCodeManager {
         loop {
             tokio::select! {
                 // Allow /abort to cancel the polling loop
-                _ = cancel.cancelled() => {
+                () = cancel.cancelled() => {
                     return Err(anyhow::anyhow!("prompt_with_polling cancelled"));
                 }
                 () = tokio::time::sleep(poll_interval) => {
