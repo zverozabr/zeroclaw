@@ -1460,11 +1460,7 @@ pub async fn handle_api_session_state(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     #[allow(clippy::unused_async)]
-    async fn inner(
-        state: &AppState,
-        headers: &HeaderMap,
-        id: &str,
-    ) -> impl IntoResponse {
+    async fn inner(state: &AppState, headers: &HeaderMap, id: &str) -> impl IntoResponse {
         if let Err(e) = require_auth(state, headers) {
             return e.into_response();
         }
