@@ -635,7 +635,6 @@ struct ChannelRuntimeContext {
     activated_tools: Option<std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     cost_tracking: Option<ChannelCostTrackingState>,
     pacing: crate::config::PacingConfig,
-    max_tool_result_chars: usize,
     context_token_budget: usize,
     debouncer: Arc<debounce::MessageDebouncer>,
 }
@@ -4183,6 +4182,8 @@ async fn process_channel_message(
                                 ctx.activated_tools.as_ref(),
                                 Some(model_switch_slot.clone()),
                                 &ctx.pacing,
+                                0,    // context_token_budget
+                                None, // shared_budget
                             ),
                             ),
                         ),
@@ -6925,7 +6926,6 @@ pub async fn start_channels(config: Config) -> Result<()> {
             prices: Arc::new(config.cost.prices.clone()),
         }),
         pacing: config.pacing.clone(),
-        max_tool_result_chars: config.agent.max_tool_result_chars,
         context_token_budget: config.agent.max_context_tokens,
         debouncer: Arc::new(debounce::MessageDebouncer::new(Duration::from_millis(
             config.channels_config.debounce_ms,

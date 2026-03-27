@@ -1350,10 +1350,6 @@ pub struct AgentConfig {
     /// If the LLM requests more calls, they are batched into sequential groups.
     #[serde(default = "default_max_parallel_tool_calls")]
     pub max_parallel_tool_calls: usize,
-    /// Maximum chars kept per tool result in conversation history. Default: `4000`.
-    /// Results exceeding this are truncated with a `...(truncated)` suffix.
-    #[serde(default = "default_max_tool_result_chars")]
-    pub max_tool_result_chars: usize,
     /// Per-turn MCP tool schema filtering groups.
     ///
     /// When non-empty, only MCP tools matched by an active group are included in the
@@ -1423,10 +1419,6 @@ fn default_max_parallel_tool_calls() -> usize {
     5
 }
 
-fn default_max_tool_result_chars() -> usize {
-    4000
-}
-
 fn default_max_system_prompt_chars() -> usize {
     0
 }
@@ -1452,7 +1444,6 @@ impl Default for AgentConfig {
             auto_classify: None,
             context_compression:
                 crate::agent::context_compressor::ContextCompressionConfig::default(),
-            max_tool_result_chars: default_max_tool_result_chars(),
         }
     }
 }

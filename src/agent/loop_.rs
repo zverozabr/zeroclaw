@@ -44,7 +44,6 @@ const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
 pub(crate) use super::history::{
     emergency_history_trim, estimate_history_tokens, fast_trim_tool_results,
     load_interactive_session_history, save_interactive_session_history, trim_history,
-    truncate_tool_result,
 };
 
 /// Minimum user-message length (in chars) for auto-save to memory.
@@ -314,18 +313,6 @@ const COMPACTION_MAX_SOURCE_CHARS: usize = 12_000;
 /// Max characters retained in stored compaction summary.
 const COMPACTION_MAX_SUMMARY_CHARS: usize = 2_000;
 
-/// Estimate token count for a message history using ~4 chars/token heuristic.
-/// Includes a small overhead per message for role/framing tokens.
-fn estimate_history_tokens(history: &[ChatMessage]) -> usize {
-    history
-        .iter()
-        .map(|m| {
-            // ~4 chars per token + ~4 framing tokens per message (role, delimiters)
-            m.content.len().div_ceil(4) + 4
-        })
-        .sum()
-}
-
 /// Minimum interval between progress sends to avoid flooding the draft channel.
 pub(crate) const PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 
@@ -363,7 +350,7 @@ fn truncate_tool_args_for_progress(name: &str, args: &serde_json::Value, max_len
 }
 
 /// Truncate a tool result to `max_chars`, preserving UTF-8 boundaries.
-fn truncate_tool_result(output: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_tool_result(output: &str, max_chars: usize) -> String {
     if output.len() <= max_chars {
         return output.to_string();
     }
@@ -2303,8 +2290,7 @@ pub(crate) async fn agent_turn(
         activated_tools,
         model_switch_callback,
         &crate::config::PacingConfig::default(),
-        0,    // max_tool_result_chars: 0 = disabled (legacy callers)
-        0,    // context_token_budget: 0 = disabled (legacy callers)
+        0,    // context_token_budget: 0 = disabled
         None, // shared_budget: no shared budget for legacy callers
     )
     .await
@@ -2446,7 +2432,6 @@ pub(crate) async fn run_tool_call_loop(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     model_switch_callback: Option<ModelSwitchCallback>,
     pacing: &crate::config::PacingConfig,
-    max_tool_result_chars: usize,
     context_token_budget: usize,
     shared_budget: Option<Arc<std::sync::atomic::AtomicUsize>>,
 ) -> Result<String> {
@@ -4416,8 +4401,7 @@ pub async fn run(
                 activated_handle.as_ref(),
                 Some(model_switch_callback.clone()),
                 &config.pacing,
-                config.agent.max_tool_result_chars,
-                config.agent.max_context_tokens,
+                0,    // context_token_budget
                 None, // shared_budget
             )
             .await
@@ -4730,8 +4714,7 @@ pub async fn run(
                     activated_handle.as_ref(),
                     Some(model_switch_callback.clone()),
                     &config.pacing,
-                    config.agent.max_tool_result_chars,
-                    config.agent.max_context_tokens,
+                    0,    // context_token_budget
                     None, // shared_budget
                 )
                 .await
