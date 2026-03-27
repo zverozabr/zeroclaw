@@ -3271,4 +3271,91 @@ mod tests {
         );
         assert!(stream.next().await.is_none());
     }
+
+    // ── Streaming model compatibility tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn stream_chat_with_system_skips_incompatible_models() {
+        // When kimi provider receives gemini model (which it doesn't support),
+        // and there's no fallback chain, it should fail gracefully.
+        let provider = ReliableProvider::new(
+            vec![(
+                "kimi".into(),
+                Box::new(MockProvider {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    fail_until_attempt: 0,
+                    response: "ok",
+                    error: "kimi only supports kimi/moonshot models",
+                }) as Box<dyn Provider>,
+            )],
+            0,
+            1,
+        );
+
+        let mut stream =
+            provider.stream_chat_with_system(Some("sys"), "hello", "gemini-3-flash-preview", 0.0, StreamOptions::new(true));
+
+        // Should get error because kimi doesn't support gemini model
+        let first = stream.next().await.unwrap();
+        assert!(
+            first.is_err(),
+            "should fail because kimi doesn't support gemini model, got: {first:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_chat_with_history_skips_incompatible_models() {
+        // Test that when the first provider supports streaming but the model is
+        // incompatible (kimi doesn't support gemini), it falls through to the next
+        // provider in the chain (openai-codex supports gpt-4o).
+        let kimi_calls = Arc::new(AtomicUsize::new(0));
+        let codex_calls = Arc::new(AtomicUsize::new(0));
+
+        let mut fallbacks = HashMap::new();
+        fallbacks.insert(
+            "gemini-3-flash-preview".to_string(),
+            vec!["gpt-4o".to_string()],
+        );
+
+        let provider = ReliableProvider::new(
+            vec![
+                (
+                    "kimi".into(),
+                    Box::new(StreamingHistoryMock {
+                        stream_calls: Arc::clone(&kimi_calls),
+                        supports: true,
+                    }) as Box<dyn Provider>,
+                ),
+                (
+                    "openai-codex".into(),
+                    Box::new(StreamingHistoryMock {
+                        stream_calls: Arc::clone(&codex_calls),
+                        supports: true,
+                    }) as Box<dyn Provider>,
+                ),
+            ],
+            0,
+            1,
+        )
+        .with_model_fallbacks(fallbacks);
+
+        let messages = vec![ChatMessage::user("hello")];
+        let mut stream =
+            provider.stream_chat_with_history(&messages, "gemini-3-flash-preview", 0.0, StreamOptions::new(true));
+
+        // Collect all stream output
+        let mut found_codex = false;
+        while let Some(item) = stream.next().await {
+            let chunk = item.expect("stream should succeed");
+            if chunk.delta.contains('1') {
+                found_codex = true;
+            }
+        }
+
+        // kimi should NOT have been called (it doesn't support gemini model)
+        // openai-codex SHOULD have been called with fallback gpt-4o
+        assert_eq!(kimi_calls.load(Ordering::SeqCst), 0,
+            "kimi should not have been called for gemini model");
+        assert!(found_codex, "openai-codex should have been called with fallback gpt model");
+    }
 }
