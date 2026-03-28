@@ -1552,14 +1552,33 @@ async fn fetch_anthropic_models(api_key: Option<&str>) -> Result<Vec<String>> {
 }
 
 async fn fetch_gemini_models(api_key: Option<&str>) -> Result<Vec<String>> {
-    let Some(api_key) = api_key else {
+    fetch_gemini_models_with_auth(api_key, false).await
+}
+
+async fn fetch_gemini_models_bearer(bearer_token: &str) -> Result<Vec<String>> {
+    fetch_gemini_models_with_auth(Some(bearer_token), true).await
+}
+
+async fn fetch_gemini_models_with_auth(
+    credential: Option<&str>,
+    use_bearer: bool,
+) -> Result<Vec<String>> {
+    let Some(credential) = credential else {
         bail!("Gemini model fetch requires API key");
     };
 
     let client = build_model_fetch_client()?;
-    let payload: Value = client
+    let mut req = client
         .get("https://generativelanguage.googleapis.com/v1beta/models")
-        .query(&[("key", api_key), ("pageSize", "200")])
+        .query(&[("pageSize", "200")]);
+
+    if use_bearer {
+        req = req.header("Authorization", format!("Bearer {credential}"));
+    } else {
+        req = req.query(&[("key", credential)]);
+    }
+
+    let payload: Value = req
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
@@ -1665,10 +1684,52 @@ fn resolve_live_models_endpoint(
     models_endpoint_for_provider(provider_name).map(str::to_string)
 }
 
+/// Try to resolve an OAuth access token for providers that support device-flow auth.
+///
+/// Returns `None` (not an error) when no auth profile exists or refresh fails,
+/// so the caller can fall back to env-var resolution.
+async fn resolve_oauth_token_for_model_fetch(
+    config: &Config,
+    provider_name: &str,
+) -> Option<String> {
+    let auth_service = crate::auth::AuthService::from_config(config);
+    resolve_oauth_token_via_auth_service(&auth_service, provider_name).await
+}
+
+/// Workspace-only variant used in the interactive wizard where a full [`Config`]
+/// is not yet available.
+async fn resolve_oauth_token_for_model_fetch_from_workspace(
+    workspace_dir: &std::path::Path,
+    provider_name: &str,
+) -> Option<String> {
+    let auth_service = crate::auth::AuthService::new(workspace_dir, false);
+    resolve_oauth_token_via_auth_service(&auth_service, provider_name).await
+}
+
+async fn resolve_oauth_token_via_auth_service(
+    auth_service: &crate::auth::AuthService,
+    provider_name: &str,
+) -> Option<String> {
+    match canonical_provider_name(provider_name) {
+        "gemini" => auth_service
+            .get_valid_gemini_access_token(None)
+            .await
+            .ok()
+            .flatten(),
+        "openai-codex" => auth_service
+            .get_valid_openai_access_token(None)
+            .await
+            .ok()
+            .flatten(),
+        _ => None,
+    }
+}
+
 async fn fetch_live_models_for_provider(
     provider_name: &str,
     api_key: &str,
     provider_api_url: Option<&str>,
+    oauth_bearer: bool,
 ) -> Result<Vec<String>> {
     let requested_provider_name = provider_name;
     let provider_name = canonical_provider_name(provider_name);
@@ -1699,6 +1760,9 @@ async fn fetch_live_models_for_provider(
     let models = match provider_name {
         "openrouter" => fetch_openrouter_models(api_key.as_deref()).await?,
         "anthropic" => fetch_anthropic_models(api_key.as_deref()).await?,
+        "gemini" if oauth_bearer => {
+            fetch_gemini_models_bearer(api_key.as_deref().unwrap_or("")).await?
+        }
         "gemini" => fetch_gemini_models(api_key.as_deref()).await?,
         "ollama" => {
             if ollama_remote {
@@ -2036,9 +2100,23 @@ pub async fn run_models_refresh(
         }
     }
 
-    let api_key = config.api_key.clone().unwrap_or_default();
+    let mut api_key = config.api_key.clone().unwrap_or_default();
+    let mut oauth_bearer = false;
 
-    match fetch_live_models_for_provider(&provider_name, &api_key, config.api_url.as_deref()).await
+    if api_key.trim().is_empty() && provider_supports_device_flow(&provider_name) {
+        if let Some(token) = resolve_oauth_token_for_model_fetch(config, &provider_name).await {
+            api_key = token;
+            oauth_bearer = true;
+        }
+    }
+
+    match fetch_live_models_for_provider(
+        &provider_name,
+        &api_key,
+        config.api_url.as_deref(),
+        oauth_bearer,
+    )
+    .await
     {
         Ok(models) if !models.is_empty() => {
             cache_live_models_for_provider(&config.workspace_dir, &provider_name, &models).await?;
@@ -2254,12 +2332,22 @@ pub async fn refresh_models_quiet(
         }
     }
 
-    let owned_key = api_key.unwrap_or("").to_string();
+    let mut owned_key = api_key.unwrap_or("").to_string();
+    let mut oauth_bearer = false;
+    if owned_key.trim().is_empty() && provider_supports_device_flow(&provider_name) {
+        if let Some(token) =
+            resolve_oauth_token_for_model_fetch_from_workspace(workspace_dir, &provider_name).await
+        {
+            owned_key = token;
+            oauth_bearer = true;
+        }
+    }
+
     let owned_url = api_url.map(str::to_string);
     let pname = provider_name.clone();
 
     let result = tokio::spawn(async move {
-        fetch_live_models_for_provider(&pname, &owned_key, owned_url.as_deref()).await
+        fetch_live_models_for_provider(&pname, &owned_key, owned_url.as_deref(), oauth_bearer).await
     })
     .await;
 
@@ -2999,7 +3087,16 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
             && ollama_uses_remote_endpoint(provider_api_url.as_deref());
         let can_fetch_without_key =
             allows_unauthenticated_model_fetch(provider_name) && !ollama_remote;
+        let oauth_fetch_token = if api_key.trim().is_empty()
+            && provider_supports_device_flow(provider_name)
+        {
+            resolve_oauth_token_for_model_fetch_from_workspace(workspace_dir, provider_name).await
+        } else {
+            None
+        };
+
         let has_api_key = !api_key.trim().is_empty()
+            || oauth_fetch_token.is_some()
             || ((canonical_provider != "ollama" || ollama_remote)
                 && std::env::var(provider_env_var(provider_name))
                     .ok()
@@ -3047,10 +3144,20 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
                 .interact()?;
 
             if should_fetch_now {
+                let mut fetch_key = api_key.clone();
+                let mut oauth_bearer = false;
+                if fetch_key.trim().is_empty() {
+                    if let Some(token) = oauth_fetch_token.clone() {
+                        fetch_key = token;
+                        oauth_bearer = true;
+                    }
+                }
+
                 match fetch_live_models_for_provider(
                     provider_name,
-                    &api_key,
+                    &fetch_key,
                     provider_api_url.as_deref(),
+                    oauth_bearer,
                 )
                 .await
                 {
@@ -7839,5 +7946,25 @@ mod tests {
 
         let model = resolve_default_model_for_provider(&ws, "unknown", &[]).await;
         assert_eq!(model, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_oauth_falls_back_when_no_profile() {
+        let tmp = TempDir::new().unwrap();
+        let config = Config {
+            workspace_dir: tmp.path().to_path_buf(),
+            config_path: tmp.path().join("config.toml"),
+            ..Config::default()
+        };
+
+        assert!(resolve_oauth_token_for_model_fetch(&config, "gemini")
+            .await
+            .is_none());
+        assert!(resolve_oauth_token_for_model_fetch(&config, "openai-codex")
+            .await
+            .is_none());
+        assert!(resolve_oauth_token_for_model_fetch(&config, "openrouter")
+            .await
+            .is_none());
     }
 }
